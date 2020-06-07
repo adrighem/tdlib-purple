@@ -8,6 +8,7 @@ set(NoPkgConfig FALSE CACHE BOOL "Do not use pkg-config")
 set(NoWebp FALSE CACHE BOOL "Do not decode webp stickers")
 set(API_ID "" CACHE STRING "API id")
 set(API_HASH "" CACHE STRING "API hash")
+set(STUFF "" CACHE STRING "")
 
 if (NOT NoPkgConfig)
     include(FindPkgConfig)
