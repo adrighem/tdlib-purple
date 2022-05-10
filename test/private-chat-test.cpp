@@ -29,7 +29,7 @@ TEST_F(PrivateChatTest, AddContactByPhone)
         "",
         0
     ));
-    tgl.verifyRequest(importContacts(std::move(contacts)));
+    tgl.verifyRequest(*importContacts(std::move(contacts)));
 
     tgl.update(make_object<updateUser>(makeUser(
         userIds[0],
@@ -43,7 +43,7 @@ TEST_F(PrivateChatTest, AddContactByPhone)
         std::vector<int32_t>()
     ));
 
-    tgl.verifyRequest(addContact(
+    tgl.verifyRequest(*addContact(
         make_object<contact>(
             userPhones[0],
             "Local",
@@ -66,7 +66,7 @@ TEST_F(PrivateChatTest, AddContactByPhone)
     // is_contact was true, so add buddy
     tgl.reply(make_object<ok>());
 
-    tgl.verifyRequest(createPrivateChat(userIds[0], false));
+    tgl.verifyRequest(*createPrivateChat(userIds[0], false));
 
     tgl.update(make_object<updateNewChat>(makeChat(
         chatIds[0],
@@ -104,7 +104,7 @@ TEST_F(PrivateChatTest, AddContactByUsername)
     // The buddy is deleted right away, to be replaced later
     prpl.verifyEvents(RemoveBuddyEvent(account, "username"));
 
-    tgl.verifyRequest(searchPublicChat("username"));
+    tgl.verifyRequest(*searchPublicChat("username"));
 
     tgl.update(make_object<updateUser>(makeUser(
         userIds[0],
@@ -122,7 +122,7 @@ TEST_F(PrivateChatTest, AddContactByUsername)
     ));
     prpl.verifyNoEvents();
 
-    tgl.verifyRequest(addContact(
+    tgl.verifyRequest(*addContact(
         make_object<contact>(
             "",
             "Local",
@@ -148,7 +148,7 @@ TEST_F(PrivateChatTest, AddContactByUsername)
 
     tgl.reply(make_object<ok>());
 
-    tgl.verifyRequest(createPrivateChat(userIds[0], false));
+    tgl.verifyRequest(*createPrivateChat(userIds[0], false));
 
     // is_contact was true, so add buddy
     prpl.verifyEvents(AddBuddyEvent(
@@ -180,7 +180,7 @@ TEST_F(PrivateChatTest, AddContactByUsername_DoesntBecomeContact)
     // The buddy is deleted right away, to be replaced later
     prpl.verifyEvents(RemoveBuddyEvent(account, "username"));
 
-    tgl.verifyRequest(searchPublicChat("username"));
+    tgl.verifyRequest(*searchPublicChat("username"));
 
     tgl.update(make_object<updateUser>(makeUser(
         userIds[0],
@@ -198,7 +198,7 @@ TEST_F(PrivateChatTest, AddContactByUsername_DoesntBecomeContact)
     ));
     prpl.verifyNoEvents();
 
-    tgl.verifyRequest(addContact(
+    tgl.verifyRequest(*addContact(
         make_object<contact>(
             "",
             "Local",
@@ -218,7 +218,7 @@ TEST_F(PrivateChatTest, AddContactByUsername_DoesntBecomeContact)
     )));
     tgl.reply(make_object<ok>());
 
-    tgl.verifyRequest(createPrivateChat(userIds[0], false));
+    tgl.verifyRequest(*createPrivateChat(userIds[0], false));
     prpl.verifyNoEvents();
 
     tgl.reply(makeChat(
@@ -271,7 +271,7 @@ TEST_F(PrivateChatTest, ContactedByNew)
         PURPLE_MESSAGE_RECV,
         date
     ));
-    tgl.verifyRequest(viewMessages(
+    tgl.verifyRequest(*viewMessages(
         chatIds[0],
         {messageId},
         true
@@ -322,7 +322,7 @@ TEST_F(PrivateChatTest, ContactedByNew_ImmediatePhoneNumber)
         PURPLE_MESSAGE_RECV,
         date
     ));
-    tgl.verifyRequest(viewMessages(
+    tgl.verifyRequest(*viewMessages(
         chatIds[0],
         {messageId},
         true
@@ -340,7 +340,7 @@ TEST_F(PrivateChatTest, ContactWithoutChatAtLogin)
         {}, {}, {}
     );
 
-    tgl.verifyRequest(createPrivateChat(userIds[0], false));
+    tgl.verifyRequest(*createPrivateChat(userIds[0], false));
 
     tgl.update(standardPrivateChat(0));
     prpl.verifyEvents(
@@ -386,7 +386,7 @@ TEST_F(PrivateChatTest, Document)
             make_object<formattedText>("document", std::vector<object_ptr<textEntity>>())
         )
     )));
-    tgl.verifyRequest(downloadFile(fileId, 1, 0, 0, true));
+    tgl.verifyRequest(*downloadFile(fileId, 1, 0, 0, true));
     prpl.verifyNoEvents();
 
     tgl.reply(make_object<file>(
@@ -399,7 +399,7 @@ TEST_F(PrivateChatTest, Document)
         "<a href=\"file:///path\">doc.file.name [mime/type]</a>\ndocument",
         PURPLE_MESSAGE_RECV, date
     ));
-    tgl.verifyRequest(viewMessages(chatIds[0], {messageId}, true));
+    tgl.verifyRequest(*viewMessages(chatIds[0], {messageId}, true));
 }
 
 TEST_F(PrivateChatTest, Video)
@@ -428,7 +428,7 @@ TEST_F(PrivateChatTest, Video)
             false
         )
     )));
-    tgl.verifyRequest(downloadFile(fileId, 1, 0, 0, true));
+    tgl.verifyRequest(*downloadFile(fileId, 1, 0, 0, true));
     prpl.verifyNoEvents();
 
     tgl.reply(make_object<file>(
@@ -445,7 +445,7 @@ TEST_F(PrivateChatTest, Video)
             date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {messageId}, true));
+    tgl.verifyRequest(*viewMessages(chatIds[0], {messageId}, true));
 }
 
 TEST_F(PrivateChatTest, Audio)
@@ -474,7 +474,7 @@ TEST_F(PrivateChatTest, Audio)
             make_object<formattedText>("audio", std::vector<object_ptr<textEntity>>())
         )
     )));
-    tgl.verifyRequest(downloadFile(fileId, 1, 0, 0, true));
+    tgl.verifyRequest(*downloadFile(fileId, 1, 0, 0, true));
     prpl.verifyNoEvents();
 
     tgl.reply(make_object<file>(
@@ -491,7 +491,7 @@ TEST_F(PrivateChatTest, Audio)
             date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {messageId}, true));
+    tgl.verifyRequest(*viewMessages(chatIds[0], {messageId}, true));
 }
 
 TEST_F(PrivateChatTest, OtherMessage)
@@ -507,7 +507,7 @@ TEST_F(PrivateChatTest, OtherMessage)
         date,
         make_object<messageGame>()
     )));
-    tgl.verifyRequest(viewMessages(
+    tgl.verifyRequest(*viewMessages(
         chatIds[0],
         {1},
         true
@@ -551,7 +551,7 @@ TEST_F(PrivateChatTest, Photo)
             false
         )
     )));
-    tgl.verifyRequest(downloadFile(fileId, 1, 0, 0, true));
+    tgl.verifyRequest(*downloadFile(fileId, 1, 0, 0, true));
     prpl.verifyNoEvents();
 
     tgl.update(make_object<updateFile>(make_object<file>(
@@ -578,7 +578,7 @@ TEST_F(PrivateChatTest, Photo)
         "photo",
         (PurpleMessageFlags)(PURPLE_MESSAGE_RECV | PURPLE_MESSAGE_IMAGES), date
     ));
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*viewMessages(chatIds[0], {1}, true));
 
     tgl.update(make_object<updateFile>(make_object<file>(
         fileId, 10000, 10000,
@@ -616,7 +616,7 @@ TEST_F(PrivateChatTest, AlreadyDownloadedPhoto)
         )
     )));
     tgl.verifyRequest(
-        viewMessages(chatIds[0], std::vector<int64_t>(1, 1), true)
+        *viewMessages(chatIds[0], std::vector<int64_t>(1, 1), true)
     );
     prpl.verifyEvents(
         ServGotImEvent(
@@ -802,7 +802,7 @@ TEST_F(PrivateChatTest, ReplyToOldMessage)
     message->reply_to_message_id_ = srcMsgId;
 
     tgl.update(make_object<updateNewMessage>(std::move(message)));
-    tgl.verifyRequest(getMessage(chatIds[0], srcMsgId));
+    tgl.verifyRequest(*getMessage(chatIds[0], srcMsgId));
     prpl.verifyNoEvents();
 
     tgl.reply(makeMessage(
@@ -822,7 +822,7 @@ TEST_F(PrivateChatTest, ReplyToOldMessage)
             date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {msgId}, true));
+    tgl.verifyRequest(*viewMessages(chatIds[0], {msgId}, true));
 }
 
 TEST_F(PrivateChatTest, ReplyToOldMessage_FetchTimeout)
@@ -845,7 +845,7 @@ TEST_F(PrivateChatTest, ReplyToOldMessage_FetchTimeout)
 
     tgl.update(make_object<updateNewMessage>(std::move(message)));
     uint64_t getMessageReqId = tgl.verifyRequest(
-        getMessage(chatIds[0], srcMsgId)
+        *getMessage(chatIds[0], srcMsgId)
     );
     prpl.verifyNoEvents();
 
@@ -859,7 +859,7 @@ TEST_F(PrivateChatTest, ReplyToOldMessage_FetchTimeout)
             date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {msgId}, true));
+    tgl.verifyRequest(*viewMessages(chatIds[0], {msgId}, true));
 
     tgl.reply(getMessageReqId, makeMessage(
         srcMsgId, userIds[0], chatIds[0], false, srcDate,
@@ -873,16 +873,16 @@ TEST_F(PrivateChatTest, TypingNotification)
     loginWithOneContact();
 
     pluginInfo().send_typing(connection, purpleUserName(0).c_str(), PURPLE_TYPING);
-    tgl.verifyRequest(sendChatAction(chatIds[0], make_object<chatActionTyping>()));
+    tgl.verifyRequest(*sendChatAction(chatIds[0], make_object<chatActionTyping>()));
 
     pluginInfo().send_typing(connection, purpleUserName(0).c_str(), PURPLE_TYPED);
-    tgl.verifyRequest(sendChatAction(chatIds[0], make_object<chatActionCancel>()));
+    tgl.verifyRequest(*sendChatAction(chatIds[0], make_object<chatActionCancel>()));
 
     pluginInfo().send_typing(connection, purpleUserName(0).c_str(), PURPLE_TYPING);
-    tgl.verifyRequest(sendChatAction(chatIds[0], make_object<chatActionTyping>()));
+    tgl.verifyRequest(*sendChatAction(chatIds[0], make_object<chatActionTyping>()));
 
     pluginInfo().send_typing(connection, purpleUserName(0).c_str(), PURPLE_NOT_TYPING);
-    tgl.verifyRequest(sendChatAction(chatIds[0], make_object<chatActionCancel>()));
+    tgl.verifyRequest(*sendChatAction(chatIds[0], make_object<chatActionCancel>()));
 }
 
 TEST_F(PrivateChatTest, DeleteContact)
@@ -915,14 +915,14 @@ TEST_F(PrivateChatTest, DeleteContact)
     tgl.update(makeUpdateRemoveFromChatList(groupChatId, make_object<chatListArchive>()));
 }
 
-TODO: test moving from main to archive or vice versa now that it's not atomic
+// TODO: test moving from main to archive or vice versa now that it's not atomic
 
 TEST_F(PrivateChatTest, MessageSendResponseError)
 {
     loginWithOneContact();
 
     ASSERT_EQ(0, pluginInfo().send_im(connection, purpleUserName(0).c_str(), "message", PURPLE_MESSAGE_SEND));
-    tgl.verifyRequest(sendMessage(
+    tgl.verifyRequest(*sendMessage(
         chatIds[0],
         0,
         nullptr,
@@ -954,7 +954,7 @@ TEST_F(PrivateChatTest, SendMessage_SpecialCharactersAndHtml)
         "<font size=\"3\">1&lt;2 3&gt;2</font>",
         PURPLE_MESSAGE_SEND
     ));
-    tgl.verifyRequest(sendMessage(
+    tgl.verifyRequest(*sendMessage(
         chatIds[0],
         0,
         nullptr,
@@ -988,7 +988,7 @@ TEST_F(PrivateChatTest, ReceiveMessage_SpecialCharacters)
         PURPLE_MESSAGE_RECV,
         date
     ));
-    tgl.verifyRequest(viewMessages(chatIds[0], {messageId}, true));
+    tgl.verifyRequest(*viewMessages(chatIds[0], {messageId}, true));
 }
 
 TEST_F(PrivateChatTest, WriteToNonContact_CreatePrivateChatFail)
@@ -1003,7 +1003,7 @@ TEST_F(PrivateChatTest, WriteToNonContact_CreatePrivateChatFail)
         "message",
         PURPLE_MESSAGE_SEND
     ));
-    tgl.verifyRequest(createPrivateChat(userIds[1], false));
+    tgl.verifyRequest(*createPrivateChat(userIds[1], false));
 
     tgl.reply(make_object<error>(100, "error"));
     prpl.verifyEvents(
@@ -1079,7 +1079,7 @@ TEST_F(PrivateChatTest, CallEnded)
         make_object<messageCall>(nullptr, 137)
     )));
 
-    tgl.verifyRequest(viewMessages(
+    tgl.verifyRequest(*viewMessages(
         chatIds[0],
         {messageId},
         true
@@ -1112,7 +1112,7 @@ TEST_F(PrivateChatTest, RemoteSend)
     ASSERT_NE(nullptr, message->sending_state_);
     message->sending_state_ = nullptr;
     tgl.update(make_object<updateNewMessage>(std::move(message)));
-    tgl.verifyRequest(viewMessages(
+    tgl.verifyRequest(*viewMessages(
         chatIds[0],
         {messageId},
         true
@@ -1143,7 +1143,7 @@ void PrivateChatTest::testReadReceipt(bool shouldSend)
     ));
 
     if (shouldSend)
-        tgl.verifyRequest(viewMessages(chatIds[0], {messageId}, true));
+        tgl.verifyRequest(*viewMessages(chatIds[0], {messageId}, true));
     else
         tgl.verifyNoRequests();
 }

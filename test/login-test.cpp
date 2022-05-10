@@ -66,7 +66,7 @@ TEST_F(LoginTest, ConnectionReadyBeforeAuthReady)
     )));
     tgl.reply(make_object<users>());
 
-    tgl.verifyRequest(getChatsRequest());
+    tgl.verifyRequest(*getChatsRequest());
     prpl.verifyNoEvents();
     tgl.reply(getChatsNoChatsResponse());
 
@@ -166,7 +166,7 @@ TEST_F(LoginTest, RegisterNewAccount_WithAlias_ConnectionReadyBeforeAuthReady)
     )));
     tgl.reply(make_object<users>());
 
-    tgl.verifyRequest(getChatsRequest());
+    tgl.verifyRequest(*getChatsRequest());
     prpl.verifyNoEvents();
     tgl.reply(getChatsNoChatsResponse());
 
@@ -341,8 +341,8 @@ TEST_F(LoginTest, RenameBuddyAtConnect)
 
     login(
         {standardUpdateUser(0), standardPrivateChat(0), makeUpdateChatListMain(chatIds[0])},
-        make_object<users>(1, std::vector<int32_t>(1, userIds[0])),
-        make_object<chats>(std::vector<int64_t>(1, chatIds[0])),
+        make_object<users>(1, std::vector<int64_t>(1, userIds[0])),
+        make_object<chats>(1, std::vector<int64_t>(1, chatIds[0])),
         {
             std::make_unique<AliasBuddyEvent>(purpleUserName(0), userFirstNames[0] + " " + userLastNames[0]),
         }, {},
@@ -599,9 +599,9 @@ TEST_F(LoginTest, getChatsSequence)
     object_ptr<updateNewChat> chat1 = standardPrivateChat(0, make_object<chatListMain>());
     object_ptr<updateNewChat> chat2 = standardPrivateChat(1, make_object<chatListMain>());
     object_ptr<updateNewChat> chat3 = standardPrivateChat(1, make_object<chatListMain>());
-    chat1->chat_->order_ = 10;
-    chat2->chat_->order_ = 20;
-    chat3->chat_->order_ = 30;
+    //FIXME chat1->chat_->order_ = 10;
+    //FIXME chat2->chat_->order_ = 20;
+    //FIXME chat3->chat_->order_ = 30;
     chat3->chat_->id_ = chatIds[1]+1;
     tgl.update(std::move(chat1));
     tgl.update(std::move(chat2));
@@ -618,7 +618,7 @@ TEST_F(LoginTest, getChatsSequence)
     ));
     tgl.reply(make_object<ok>());
 
-    tgl.verifyRequest(getChatsRequest());
+    tgl.verifyRequest(*getChatsRequest());
     tgl.update(standardPrivateChat(1));
     tgl.reply(getChatsNoChatsResponse());
 
@@ -669,6 +669,7 @@ TEST_F(LoginTest, IncomingGroupChatMessageAtLoginWhileChatListStillNull)
     const int64_t     groupChatId         = 7000;
     const std::string groupChatTitle      = "Title";
     const std::string groupChatPurpleName = "chat" + std::to_string(groupChatId);
+    constexpr int64_t threadId     = 23456; // FIXME?
     constexpr int64_t messageId    = 10000;
     constexpr int32_t date         = 123456;
     constexpr int     purpleChatId = 1;
@@ -703,7 +704,7 @@ TEST_F(LoginTest, IncomingGroupChatMessageAtLoginWhileChatListStillNull)
             std::make_unique<AddChatEvent>(groupChatPurpleName, groupChatTitle, account, nullptr, nullptr)
         },
         {
-            make_object<viewMessages>(groupChatId, std::vector<int64_t>(1, messageId), true),
+            make_object<viewMessages>(groupChatId, threadId, std::vector<int64_t>(1, messageId), true),
             make_object<getBasicGroupFullInfo>(groupId)
         }
     );
