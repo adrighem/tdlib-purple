@@ -9,7 +9,7 @@ mkdir build
 pushd build
   git clone https://github.com/tdlib/td.git
   pushd td
-    git checkout 1d1bc07eded7d3ee7df7c567e008bbf926cba081 # spoilers
+    git checkout 1fa2a372a88c26369dcac2ce476166531df74a77 # 1.8.34
     mkdir build
     pushd build
       cmake -DCMAKE_BUILD_TYPE=Release ..

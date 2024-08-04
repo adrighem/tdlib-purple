@@ -1,5 +1,7 @@
 #include "identifiers.h"
 #include <glib.h>
+#include <purple.h>
+#include "config.h"
 
 const UserId       UserId::invalid       = UserId(0);
 const ChatId       ChatId::invalid       = ChatId(0);
@@ -58,7 +60,7 @@ UserId getSenderUserId(const td::td_api::message &message)
     return getUserId(message.sender_id_);
 }
 
-UserId getSenderUserId(const td::td_api::messageForwardOriginUser &forwardOrigin)
+UserId getSenderUserId(const td::td_api::messageOriginUser &forwardOrigin)
 {
     return UserId(forwardOrigin.sender_user_id_);
 }
@@ -105,7 +107,7 @@ ChatId getChatId(const td::td_api::updateChatTitle &update)
     return ChatId(update.chat_id_);
 }
 
-ChatId getChatId(const td::td_api::messageForwardOriginChannel &forwardOrigin)
+ChatId getChatId(const td::td_api::messageOriginChannel &forwardOrigin)
 {
     return ChatId(forwardOrigin.chat_id_);
 }
@@ -152,5 +154,10 @@ SecretChatId getSecretChatId(const td::td_api::chatTypeSecret &chatType)
 
 MessageId getReplyMessageId(const td::td_api::message &message)
 {
-    return MessageId(message.reply_to_message_id_);
+    if (message.reply_to_) {
+        const td::td_api::messageReplyToMessage &reply_to = static_cast<const td::td_api::messageReplyToMessage &>(*message.reply_to_);
+        return MessageId(static_cast<const td::td_api::messageReplyToMessage &>(*message.reply_to_).message_id_);
+    } else {
+        return MessageId(0);
+    }
 }
