@@ -243,10 +243,21 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
 void PurpleTdClient::processAuthorizationState(td::td_api::AuthorizationState &authState)
 {
     switch (authState.get_id()) {
-    case td::td_api::authorizationStateWaitEncryptionKey::ID:
+/*    case td::td_api::authorizationStateWaitEncryptionKey::ID:
         purple_debug_misc(config::pluginId, "Authorization state update: encriytion key requested\n");
         m_transceiver.sendQuery(td::td_api::make_object<td::td_api::checkDatabaseEncryptionKey>(""),
                                 &PurpleTdClient::authResponse);
+        break;*/
+
+
+    case td::td_api::authorizationStateWaitEmailAddress::ID:
+        purple_debug_misc(config::pluginId, "Authorization email requested\n");
+        requestAuthEmail();
+        break;
+
+    case td::td_api::authorizationStateWaitEmailCode::ID:
+    purple_debug_misc(config::pluginId, "Authorization email confirmation code requested\n");
+        requestAuthEmailCode();
         break;
 
     case td::td_api::authorizationStateWaitTdlibParameters::ID: 
@@ -375,7 +386,7 @@ std::string PurpleTdClient::getBaseDatabasePath()
     return std::string(purple_user_dir()) + G_DIR_SEPARATOR_S + config::configSubdir;
 }
 
-static void stuff(td::td_api::tdlibParameters &parameters)
+static void stuff(td::td_api::setTdlibParameters &parameters)
 {
     std::string s(config::stuff);
     for (size_t i = 0; i < s.length(); i++)
@@ -390,7 +401,7 @@ static void stuff(td::td_api::tdlibParameters &parameters)
 
 void PurpleTdClient::sendTdlibParameters()
 {
-    auto parameters = td::td_api::make_object<td::td_api::tdlibParameters>();
+    auto parameters = td::td_api::make_object<td::td_api::setTdlibParameters>();
     const char *username = purple_account_get_username(m_account);
     const char *api_id = purple_account_get_string(m_account, AccountOptions::ApiId, "");
     const char *api_hash = purple_account_get_string(m_account, AccountOptions::ApiHash, "");
@@ -410,9 +421,8 @@ void PurpleTdClient::sendTdlibParameters()
     parameters->device_model_ = "Desktop";
     parameters->system_version_ = "Unknown";
     parameters->application_version_ = "1.0";
-    parameters->enable_storage_optimizer_ = (purple_account_get_bool(m_account, AccountOptions::KeepInlineDownloads,
-                                                                     AccountOptions::KeepInlineDownloadsDefault) == FALSE);
-    m_transceiver.sendQuery(td::td_api::make_object<td::td_api::setTdlibParameters>(std::move(parameters)),
+
+    m_transceiver.sendQuery(std::move(parameters),
                             &PurpleTdClient::authResponse);
 }
 
@@ -482,6 +492,87 @@ void PurpleTdClient::requestAuthCode(const td::td_api::authenticationCodeInfo *c
                                NULL, // conversation
                                this);
 }
+
+void PurpleTdClient::requestAuthEmail()
+{
+    std::string message = _("Enter authentication email") + std::string("\n");
+
+    purple_request_input (purple_account_get_connection(m_account),
+                               // TRANSLATOR: Authentication dialog, title.
+                               _("Authentication email"),
+                               message.c_str(),
+                               NULL, // secondary message
+                               NULL, // default value
+                               FALSE, // multiline input
+                               FALSE, // masked input
+                               NULL,
+                               // TRANSLATOR: Authentication dialog, alternative is "_Cancel". The underscore marks accelerator keys, they must be different!
+                               _("_OK"), G_CALLBACK(requestAuthEmailEntered),
+                               // TRANSLATOR: Authentication dialog, alternative is "_OK". The underscore marks accelerator keys, they must be different!
+                               _("_Cancel"), G_CALLBACK(requestAuthEmailCancelled),
+                               m_account,
+                               NULL, // buddy
+                               NULL, // conversation
+                               this);
+}
+
+
+void PurpleTdClient::requestAuthEmailEntered(PurpleTdClient *self, const gchar *email)
+{
+    purple_debug_misc(config::pluginId, "Authentication email entered: '%s'\n", email);
+    auto authEmail = td::td_api::make_object<td::td_api::setAuthenticationEmailAddress>(email);
+
+    self->m_transceiver.sendQuery(std::move(authEmail), &PurpleTdClient::authResponse);
+}
+
+void PurpleTdClient::requestAuthEmailCancelled(PurpleTdClient *self)
+{
+    purple_connection_error(purple_account_get_connection(self->m_account),
+                            // TRANSLATOR: Connection failure, error message (title; empty content)
+                            _("Authentication email required"));
+}
+
+
+void PurpleTdClient::requestAuthEmailCode()
+{
+    std::string message = _("Enter code sent to authentication email") + std::string("\n");
+
+    purple_request_input (purple_account_get_connection(m_account),
+                               // TRANSLATOR: Authentication dialog, title.
+                               _("Code from authentication email"),
+                               message.c_str(),
+                               NULL, // secondary message
+                               NULL, // default value
+                               FALSE, // multiline input
+                               FALSE, // masked input
+                               NULL,
+                               // TRANSLATOR: Authentication dialog, alternative is "_Cancel". The underscore marks accelerator keys, they must be different!
+                               _("_OK"), G_CALLBACK(requestAuthEmailCodeEntered),
+                               // TRANSLATOR: Authentication dialog, alternative is "_OK". The underscore marks accelerator keys, they must be different!
+                               _("_Cancel"), G_CALLBACK(requestAuthEmailCodeCancelled),
+                               m_account,
+                               NULL, // buddy
+                               NULL, // conversation
+                               this);
+}
+
+
+void PurpleTdClient::requestAuthEmailCodeEntered(PurpleTdClient *self, const gchar *code)
+{
+    purple_debug_misc(config::pluginId, "Authentication email code entered: '%s'\n", code);
+    auto authEmailCode = td::td_api::make_object<td::td_api::checkAuthenticationEmailCode>(
+                                               td::td_api::make_object<td::td_api::emailAddressAuthenticationCode>(code));
+
+    self->m_transceiver.sendQuery(std::move(authEmailCode), &PurpleTdClient::authResponse);
+}
+
+void PurpleTdClient::requestAuthEmailCodeCancelled(PurpleTdClient *self)
+{
+    purple_connection_error(purple_account_get_connection(self->m_account),
+                            // TRANSLATOR: Connection failure, error message (title; empty content)
+                            _("Authentication email required"));
+}
+
 
 void PurpleTdClient::requestCodeEntered(PurpleTdClient *self, const gchar *code)
 {
@@ -582,7 +673,7 @@ void PurpleTdClient::registerUser()
                 "Registration is required but this libpurple doesn't support input requests");
         }
     } else
-        m_transceiver.sendQuery(td::td_api::make_object<td::td_api::registerUser>(firstName, lastName),
+        m_transceiver.sendQuery(td::td_api::make_object<td::td_api::registerUser>(firstName, lastName, false),
                                 &PurpleTdClient::authResponse);
 }
 
@@ -595,7 +686,7 @@ void PurpleTdClient::displayNameEntered(PurpleTdClient *self, const gchar *name)
                                 // TRANSLATOR: Connection error message after failed registration.
                                 _("Display name is required for registration"));
     else
-        self->m_transceiver.sendQuery(td::td_api::make_object<td::td_api::registerUser>(firstName, lastName),
+        self->m_transceiver.sendQuery(td::td_api::make_object<td::td_api::registerUser>(firstName, lastName, false),
                                       &PurpleTdClient::authResponse);
 }
 
@@ -618,10 +709,10 @@ void PurpleTdClient::notifyAuthError(const td::td_api::object_ptr<td::td_api::Ob
 {
     std::string message;
     switch (m_lastAuthState) {
-    case td::td_api::authorizationStateWaitEncryptionKey::ID:
+    /*case td::td_api::authorizationStateWaitEncryptionKey::ID:
         // TRANSLATOR: Connection error message, argument is text (a proper reason)
         message = _("Error applying database encryption key: {}");
-        break;
+        break;*/
     default:
         // TRANSLATOR: Connection error message, argument is text (a proper reason)
         message = _("Authentication error: {}");
@@ -2232,7 +2323,7 @@ void PurpleTdClient::cancelUpload(PurpleXfer *xfer)
     if (m_data.getFileIdForTransfer(xfer, fileId)) {
         purple_debug_misc(config::pluginId, "Cancelling upload of %s (file id %d)\n",
                           purple_xfer_get_local_filename(xfer), fileId);
-        auto cancelRequest = td::td_api::make_object<td::td_api::cancelUploadFile>(fileId);
+        auto cancelRequest = td::td_api::make_object<td::td_api::cancelPreliminaryUploadFile>(fileId);
         m_transceiver.sendQuery(std::move(cancelRequest), nullptr);
         m_data.removeFileTransfer(fileId);
         purple_xfer_unref(xfer);

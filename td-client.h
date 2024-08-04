@@ -67,11 +67,17 @@ private:
     void       removeOldProxies();
     void       sendTdlibParameters();
     void       sendPhoneNumber();
+    void       requestAuthEmail();
+    void       requestAuthEmailCode();
     void       requestAuthCode(const td::td_api::authenticationCodeInfo *authCodeInfo);
     void       requestPassword(const td::td_api::authorizationStateWaitPassword &pwInfo);
     void       registerUser();
     static void requestCodeEntered(PurpleTdClient *self, const gchar *code);
     static void requestCodeCancelled(PurpleTdClient *self);
+    static void requestAuthEmailEntered(PurpleTdClient *self, const gchar *email);
+    static void requestAuthEmailCancelled(PurpleTdClient *self);
+    static void requestAuthEmailCodeEntered(PurpleTdClient *self, const gchar *code);
+    static void requestAuthEmailCodeCancelled(PurpleTdClient *self);
     static void passwordEntered(PurpleTdClient *self, const gchar *code);
     static void passwordCancelled(PurpleTdClient *self);
     static void displayNameEntered(PurpleTdClient *self, const gchar *name);
