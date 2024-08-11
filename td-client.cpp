@@ -243,20 +243,13 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
 void PurpleTdClient::processAuthorizationState(td::td_api::AuthorizationState &authState)
 {
     switch (authState.get_id()) {
-/*    case td::td_api::authorizationStateWaitEncryptionKey::ID:
-        purple_debug_misc(config::pluginId, "Authorization state update: encriytion key requested\n");
-        m_transceiver.sendQuery(td::td_api::make_object<td::td_api::checkDatabaseEncryptionKey>(""),
-                                &PurpleTdClient::authResponse);
-        break;*/
-
-
     case td::td_api::authorizationStateWaitEmailAddress::ID:
         purple_debug_misc(config::pluginId, "Authorization email requested\n");
         requestAuthEmail();
         break;
 
     case td::td_api::authorizationStateWaitEmailCode::ID:
-    purple_debug_misc(config::pluginId, "Authorization email confirmation code requested\n");
+        purple_debug_misc(config::pluginId, "Authorization email confirmation code requested\n");
         requestAuthEmailCode();
         break;
 
@@ -708,17 +701,8 @@ void PurpleTdClient::authResponse(uint64_t requestId, td::td_api::object_ptr<td:
 void PurpleTdClient::notifyAuthError(const td::td_api::object_ptr<td::td_api::Object> &response)
 {
     std::string message;
-    switch (m_lastAuthState) {
-    /*case td::td_api::authorizationStateWaitEncryptionKey::ID:
-        // TRANSLATOR: Connection error message, argument is text (a proper reason)
-        message = _("Error applying database encryption key: {}");
-        break;*/
-    default:
-        // TRANSLATOR: Connection error message, argument is text (a proper reason)
-        message = _("Authentication error: {}");
-        break;
-    }
 
+    message = _("Authentication error: {}");
     message = formatMessage(message.c_str(), getDisplayedError(response));
 
     purple_connection_error(purple_account_get_connection(m_account), message.c_str());
