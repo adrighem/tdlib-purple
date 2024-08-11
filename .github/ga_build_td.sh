@@ -5,7 +5,7 @@ cd "$(dirname $0)/.."
 
 # == CONFIGURATION ==
 if [ "$#" != "2" ] ; then
-    echo "USAGE: $0 TAG MARK"
+    echo "USAGE: $0 TAG/COMMIT MARK"
     exit 1
 fi
 TD_TAG="$1"
@@ -27,7 +27,19 @@ fi
 # == BUILD TDLIB ==
 mkdir -p "${CACHE_DIR}"
 rm -rf td_repo # Just in case
-git clone -q -c advice.detachedHead=false -b "${TD_TAG}" --depth 1 https://github.com/tdlib/td.git td_repo
+
+if [ "${#TD_TAG}" = "40" ] ; then
+  echo "Clonning at commit ${TD_TAG}"
+  git clone -q -c advice.detachedHead=false -b "master" --depth 1 https://github.com/tdlib/td.git td_repo
+  cd td_repo
+  git fetch --depth=1 origin "${TD_TAG}"
+  git checkout "${TD_TAG}"
+  cd ..
+else
+  echo "Clonning at tag ${TD_TAG}"
+  git clone -q -c advice.detachedHead=false -b "${TD_TAG}" --depth 1 https://github.com/tdlib/td.git td_repo
+fi
+
 cd td_repo
     mkdir build
     cd build

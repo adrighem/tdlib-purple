@@ -14,8 +14,8 @@ permissions:
 env:
   # Must be updated manually. Increment 'TD_MARK' to invalidate the cache.
   # Must not contain spaces, minuses, or any special characters.
-  TD_TAG: "v1.8.0"
-  TD_MARK: "m1"
+  TD_TAG: "1fa2a372a88c26369dcac2ce476166531df74a77"
+  TD_MARK: "m2"
 
 jobs:
   build_and_test_linux:
