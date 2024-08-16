@@ -1,0 +1,4 @@
+[submodule "td"]
+	path = td
+	url = https://github.com/tdlib/td.git
+	branch = 1fa2a372a88c26369dcac2ce476166531df74a77
