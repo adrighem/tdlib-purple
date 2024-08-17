@@ -4,7 +4,7 @@ set -e
 
 JOBS="$(nproc || echo 1)"
 
-git submodule update
+git submodule update --init --recursive
 pushd td
   rm -rf build
   mkdir build
