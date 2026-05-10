@@ -14,12 +14,12 @@ permissions:
 env:
   # Must be updated manually. Increment 'TD_MARK' to invalidate the cache.
   # Must not contain spaces, minuses, or any special characters.
-  TD_TAG: "8d08b34e22a08e58db8341839c4e18ee06c516c5"
-  TD_MARK: "m2"
+  TD_TAG: "7f163d850abbebecf749e99fb412271cc1f4e805"
+  TD_MARK: "m3"
 
 jobs:
   build_and_test_linux:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04
 
     strategy:
       fail-fast: false
@@ -67,7 +67,7 @@ jobs:
 
     # === BASIC SETUP ===
 
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Dump config
       run: echo "install-local" ${{matrix.INSTALL_LOCAL_LOTTIE}} "cmakeflags" ${{matrix.CMAKE_FLAGS}} "end"
     - name: Purge interfering packages
@@ -96,7 +96,7 @@ jobs:
         LINTACCEL_IGNORE_MISSING: y
       run: ${{ github.workspace }}/po/lint_accelerators.py
     - name: tdlib cache
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: ${{ github.workspace }}/.ga_cache/td_destdir_${{env.TD_TAG}}_${{env.TD_MARK}}.tar*
         key: ${{ runner.os }}-td-${{env.TD_TAG}}-${{env.TD_MARK}}
@@ -113,7 +113,7 @@ jobs:
         # TODO: Add this here? ↑
         # -Dtgvoip_LIBRARIES='tgvoip;opus;webrtc_audio_processing' -Dtgvoip_INCLUDE_DIRS=/usr/include/libtgvoip/
     - name: Initialize CodeQL Static Analysis for C++
-      uses: github/codeql-action/init@v2
+      uses: github/codeql-action/init@v3
       with:
         languages: cpp
         config-file: ./.github/codeql/config.yml
@@ -137,4 +137,4 @@ jobs:
       working-directory: ${{ github.workspace }}/build
       run: DESTDIR=tdprpl_destdir ninja install
     - name: Perform post build CodeQL Analysis
-      uses: github/codeql-action/analyze@v2
+      uses: github/codeql-action/analyze@v3
