@@ -32,7 +32,7 @@ You can easily build from source:
 - Make sure you already have installed g++, cmake, git, pkg-config.
 - Install the development packages for purple, webp, openssl, and png, using your OS's package manager
 -    For Debian systems, like Ubuntu, install these build dependencies like this:
-  `sudo apt install  libpurple-dev libwebp-dev libpng-dev g++ cmake git pkg-config gettext libssl-dev`
+  `sudo apt install  libpurple-dev libwebp-dev libpng-dev g++ cmake git pkg-config gettext libssl-dev gperf`
 - Run `./build_and_install.sh` to build, it will ask for your sudo password just before installing tdlib-purple systemwide
 - Restart pidgin to load the new plugin.
 
