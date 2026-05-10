@@ -876,8 +876,13 @@ static PurplePluginProtocolInfo prpl_info = {
     .get_attention_types      = NULL,
     .struct_size              = sizeof(PurplePluginProtocolInfo),
     .get_account_text_table   = tgprpl_get_account_text_table,
+#ifndef NoVoip
     .initiate_media           = initiateMedia,
     .get_media_caps           = getMediaCaps,
+#else
+    .initiate_media           = NULL,
+    .get_media_caps           = NULL,
+#endif
     .get_moods                = NULL,
     .set_public_alias         = NULL,
     .get_public_alias         = NULL,
