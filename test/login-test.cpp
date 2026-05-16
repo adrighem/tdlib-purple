@@ -409,7 +409,7 @@ TEST_F(LoginTest, AddedProxyCofiguration)
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
     tgl.verifyRequests({
         make_object<disableProxy>(),
-        make_object<addProxy>(host, port, true, make_object<proxyTypeSocks5>(username, password)),
+        make_object<addProxy>(make_object<proxy>(host, port, make_object<proxyTypeSocks5>(username, password)), true, ""),
         make_object<getProxies>(),
         make_object<setTdlibParameters>(make_object<tdlibParameters>(
             false,
@@ -432,10 +432,10 @@ TEST_F(LoginTest, AddedProxyCofiguration)
     });
 
     tgl.reply(make_object<ok>()); // reply to disableProxy
-    tgl.reply(make_object<proxy>(2, "", 0, 0, false, nullptr));
-    std::vector<object_ptr<proxy>> proxyList;
-    proxyList.push_back(make_object<proxy>(2, "", 0, 0, true, nullptr));
-    tgl.reply(make_object<proxies>(std::move(proxyList)));
+    tgl.reply(make_object<addedProxy>(2, 0, false, "", nullptr));
+    std::vector<object_ptr<addedProxy>> proxyList;
+    proxyList.push_back(make_object<addedProxy>(2, 0, true, "", nullptr));
+    tgl.reply(make_object<addedProxies>(std::move(proxyList)));
     tgl.reply(make_object<ok>());
 }
 
@@ -462,7 +462,7 @@ TEST_F(LoginTest, ChangedProxyCofiguration)
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
     tgl.verifyRequests({
         make_object<disableProxy>(),
-        make_object<addProxy>(host, port, true, make_object<proxyTypeSocks5>(username, password)),
+        make_object<addProxy>(make_object<proxy>(host, port, make_object<proxyTypeSocks5>(username, password)), true, ""),
         make_object<getProxies>(),
         make_object<setTdlibParameters>(make_object<tdlibParameters>(
             false,
@@ -485,11 +485,11 @@ TEST_F(LoginTest, ChangedProxyCofiguration)
     });
 
     tgl.reply(make_object<ok>()); // reply to disableProxy
-    tgl.reply(make_object<proxy>(2, "", 0, 0, false, nullptr));
-    std::vector<object_ptr<proxy>> proxyList;
-    proxyList.push_back(make_object<proxy>(1, "", 0, 0, false, nullptr));
-    proxyList.push_back(make_object<proxy>(2, "", 0, 0, true, nullptr));
-    tgl.reply(make_object<proxies>(std::move(proxyList)));
+    tgl.reply(make_object<addedProxy>(2, 0, false, "", nullptr));
+    std::vector<object_ptr<addedProxy>> proxyList;
+    proxyList.push_back(make_object<addedProxy>(1, 0, false, "", nullptr));
+    proxyList.push_back(make_object<addedProxy>(2, 0, true, "", nullptr));
+    tgl.reply(make_object<addedProxies>(std::move(proxyList)));
     tgl.reply(make_object<ok>());
 
     tgl.verifyRequest(removeProxy(1));
@@ -528,9 +528,9 @@ TEST_F(LoginTest, RemovedProxyCofiguration)
     });
 
     tgl.reply(make_object<ok>()); // reply to disableProxy
-    std::vector<object_ptr<proxy>> proxyList;
-    proxyList.push_back(make_object<proxy>(1, "", 0, 0, false, nullptr));
-    tgl.reply(make_object<proxies>(std::move(proxyList)));
+    std::vector<object_ptr<addedProxy>> proxyList;
+    proxyList.push_back(make_object<addedProxy>(1, 0, false, "", nullptr));
+    tgl.reply(make_object<addedProxies>(std::move(proxyList)));
     tgl.reply(make_object<ok>());
 
     tgl.verifyRequest(removeProxy(1));

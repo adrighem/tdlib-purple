@@ -38,7 +38,7 @@ add_executable(tests EXCLUDE_FROM_ALL
     ../secret-chat.cpp
 )
 
-set_property(TARGET tests PROPERTY CXX_STANDARD 14)
+set_property(TARGET tests PROPERTY CXX_STANDARD 17)
 target_include_directories(tests PRIVATE ${CMAKE_SOURCE_DIR})
 target_link_libraries(tests PRIVATE gtest fmt::fmt Td::TdStatic ${GLIB_LIBRARIES})
 
