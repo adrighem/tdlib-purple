@@ -152,8 +152,8 @@ private:
     bool                  m_chatListReady = false;
     bool                  m_isProxyAdded = false;
     std::vector<PurpleRoomlist *>               m_pendingRoomLists;
-    td::td_api::object_ptr<td::td_api::proxy>   m_addedProxy;
-    td::td_api::object_ptr<td::td_api::proxies> m_proxies;
+    td::td_api::object_ptr<td::td_api::addedProxy>   m_addedProxy;
+    td::td_api::object_ptr<td::td_api::addedProxies> m_proxies;
 
     struct ChatGap {
         ChatId    chatId;

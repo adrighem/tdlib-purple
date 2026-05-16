@@ -937,7 +937,7 @@ std::string responseToString(const td::TlObject &object)
         C(pollTypeRegular)
         C(pollTypeQuiz)
         C(profilePhoto)
-        C(proxies)
+        C(addedProxies)
         C(proxy)
         
         C(proxyTypeSocks5)

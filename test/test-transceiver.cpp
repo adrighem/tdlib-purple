@@ -326,11 +326,10 @@ static void compare(const proxyTypeSocks5 &actual, const proxyTypeSocks5 &expect
     COMPARE(password_);
 }
 
-static void compare(const addProxy &actual, const addProxy &expected)
+static void compare(const proxy &actual, const proxy &expected)
 {
     COMPARE(server_);
     COMPARE(port_);
-    COMPARE(enable_);
     COMPARE(type_ != nullptr);
     if (actual.type_ != nullptr) {
         COMPARE(type_->get_id());
@@ -347,6 +346,16 @@ static void compare(const addProxy &actual, const addProxy &expected)
                 ASSERT_TRUE(false) << "Unsupported proxy type";
         }
     }
+}
+
+static void compare(const addProxy &actual, const addProxy &expected)
+{
+    COMPARE(proxy_ != nullptr);
+    if (actual.proxy_ != nullptr) {
+        compare(*actual.proxy_, *expected.proxy_);
+    }
+    COMPARE(enable_);
+    COMPARE(comment_);
 }
 
 static void compare(const removeProxy &actual, const removeProxy &expected)
