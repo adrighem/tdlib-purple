@@ -3,21 +3,21 @@
 This plan outlines the steps to upgrade TDLib to version 1.8.64 and verify the integration.
 
 ## Phase 1: Environment & Dependency Update
-- [ ] Task: Update TDLib dependency to 1.8.64
-    - [ ] Update Git submodule or source directory for TDLib
-    - [ ] Update `CMakeLists.txt` version requirement to 1.8.64
-- [ ] Task: Build TDLib 1.8.64
-    - [ ] Execute TDLib build process as described in README
-    - [ ] Ensure TDLib headers and libraries are available for the plugin build
-- [ ] Task: Conductor - User Manual Verification 'Phase 1: Environment & Dependency Update' (Protocol in workflow.md)
+- [x] Task: Update TDLib dependency to 1.8.64
+    - [x] Update Git submodule or source directory for TDLib
+    - [x] Update `CMakeLists.txt` version requirement to 1.8.64
+- [x] Task: Build TDLib 1.8.64
+    - [x] Execute TDLib build process as described in README
+    - [x] Ensure TDLib headers and libraries are available for the plugin build
+- [x] Task: Conductor - User Manual Verification 'Phase 1: Environment & Dependency Update' (Protocol in workflow.md)
 
 ## Phase 2: Compilation & Refactoring
-- [ ] Task: Adapt codebase to TDLib 1.8.64 changes
-    - [ ] Identify and fix any compilation errors due to breaking changes in TDLib API
-    - [ ] Refactor code to use new TDLib patterns if recommended
-- [ ] Task: Compile tdlib-purple with new TDLib
-    - [ ] Run CMake configuration
-    - [ ] Execute build and ensure `telegram-tdlib` SHARED library is generated
+- [x] Task: Adapt codebase to TDLib 1.8.64 changes
+    - [x] Identify and fix any compilation errors due to breaking changes in TDLib API
+    - [x] Refactor code to use new TDLib patterns if recommended
+- [x] Task: Compile tdlib-purple with new TDLib
+    - [x] Run CMake configuration
+    - [x] Execute build and ensure `telegram-tdlib` SHARED library is generated (Tests still failing)
 - [ ] Task: Conductor - User Manual Verification 'Phase 2: Compilation & Refactoring' (Protocol in workflow.md)
 
 ## Phase 3: Verification & Testing
