@@ -24,8 +24,8 @@ This plan outlines the steps to upgrade TDLib to version 1.8.64 and verify the i
 - [x] Task: Update and Run Automated Tests [26097a5]
     - [x] Write Tests: Add new test cases if new TDLib features are utilized or if API changes require new verification logic
     - [x] Run Tests: Execute `make run-tests` and ensure all tests pass
-- [ ] Task: Manual Functional Verification
-    - [ ] Verify basic messaging (send/receive)
-    - [ ] Verify media handling (photos/stickers)
-    - [ ] Verify Secret Chat functionality
+- [x] Task: Manual Functional Verification
+    - [x] Verify basic messaging (send/receive)
+    - [x] Verify media handling (photos/stickers)
+    - [x] Verify Secret Chat functionality
 - [ ] Task: Conductor - User Manual Verification 'Phase 3: Verification & Testing' (Protocol in workflow.md)
