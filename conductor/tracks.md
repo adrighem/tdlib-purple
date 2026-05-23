@@ -4,5 +4,5 @@ This file tracks all major tracks for the project. Each track has its own detail
 
 ---
 
-- [ ] **Track: Upgrade to tdlib 1.8.64**
+- [x] **Track: Upgrade to tdlib 1.8.64**
   *Link: [./tracks/upgrade_tdlib_20260520/](./tracks/upgrade_tdlib_20260520/)*
