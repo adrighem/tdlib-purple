@@ -21,7 +21,7 @@ This plan outlines the steps to upgrade TDLib to version 1.8.64 and verify the i
 - [x] Task: Conductor - User Manual Verification 'Phase 2: Compilation & Refactoring' (Protocol in workflow.md)
 
 ## Phase 3: Verification & Testing
-- [x] Task: Update and Run Automated Tests
+- [x] Task: Update and Run Automated Tests [26097a5]
     - [x] Write Tests: Add new test cases if new TDLib features are utilized or if API changes require new verification logic
     - [x] Run Tests: Execute `make run-tests` and ensure all tests pass
 - [ ] Task: Manual Functional Verification
