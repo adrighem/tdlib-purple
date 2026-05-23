@@ -11,14 +11,14 @@ This plan outlines the steps to upgrade TDLib to version 1.8.64 and verify the i
     - [x] Ensure TDLib headers and libraries are available for the plugin build
 - [x] Task: Conductor - User Manual Verification 'Phase 1: Environment & Dependency Update' (Protocol in workflow.md)
 
-## Phase 2: Compilation & Refactoring
+## Phase 2: Compilation & Refactoring [checkpoint: 787214a]
 - [x] Task: Adapt codebase to TDLib 1.8.64 changes
     - [x] Identify and fix any compilation errors due to breaking changes in TDLib API
     - [x] Refactor code to use new TDLib patterns if recommended
 - [x] Task: Compile tdlib-purple with new TDLib
     - [x] Run CMake configuration
     - [x] Execute build and ensure `telegram-tdlib` SHARED library is generated (Tests still failing)
-- [ ] Task: Conductor - User Manual Verification 'Phase 2: Compilation & Refactoring' (Protocol in workflow.md)
+- [~] Task: Conductor - User Manual Verification 'Phase 2: Compilation & Refactoring' (Protocol in workflow.md)
 
 ## Phase 3: Verification & Testing
 - [ ] Task: Update and Run Automated Tests
