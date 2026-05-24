@@ -3,3 +3,5 @@ build/
 /td_repo/
 /td_destdir/
 *.kdev4
+*.log
+conductor/
