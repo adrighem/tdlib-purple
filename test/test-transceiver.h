@@ -8,9 +8,8 @@
 class TestTransceiver: public ITransceiverBackend {
 public:
     void  send(td::Client::Request &&request) override;
-    guint addTimeout(guint interval, GSourceFunc function, gpointer data) override;
-    void  cancelTimer(guint id) override;
-    void  runTimeouts();
+    guint addTimeout(guint interval, GSourceFunc function, gpointer data);
+    void  cancelTimer(guint id);
 
     // Check that given requests, and no others, have been received, and clear the queue
     uint64_t verifyRequest(const td::td_api::Function &request);
@@ -19,6 +18,7 @@ public:
     void verifyNoRequests();
 
     void update(td::td_api::object_ptr<td::td_api::Object> object);
+    void runTimeouts();
 
     // Replies to the first non-replied request from the last verifyRequest(s) batch, or fails the
     // test case if there is no such request
@@ -34,7 +34,9 @@ private:
     };
 
     std::queue<td::Client::Request> m_requests;
-    std::vector<uint64_t>           m_lastRequestIds;
+    std::queue<uint64_t>            m_verifiedRequestIds;
+    uint64_t                        m_lastReceivedRequestId = 0;
+    const td::td_api::Function     *expectedRequest = nullptr;
     uint64_t                        expectedRequestId = 1;
     std::vector<std::string>        m_inputPhotoPaths;
     std::vector<TimerInfo>          m_timers;
@@ -48,10 +50,14 @@ private:
 namespace td {
 namespace td_api {
 
+std::string requestToString(const td::td_api::Function &request);
+
 object_ptr<user> makeUser(std::int32_t id_, std::string const &first_name_,
                           std::string const &last_name_,
                           std::string const &phone_number_,
                           object_ptr<UserStatus> &&status_);
+
+object_ptr<users> makeUsers(std::vector<int64_t> user_ids);
 
 object_ptr<chat> makeChat(std::int64_t id_,
                           object_ptr<ChatType> &&type_,
@@ -64,6 +70,7 @@ object_ptr<chat> makeChat(std::int64_t id_,
 object_ptr<updateChatPosition> makeUpdateChatListMain(int64_t chatId);
 object_ptr<updateChatPosition> makeUpdateChatList(int64_t chatId, object_ptr<ChatList> &&chatList);
 object_ptr<updateChatPosition> makeUpdateRemoveFromChatList(int64_t chatId, object_ptr<ChatList> &&removeFrom);
+
 object_ptr<loadChats> getChatsRequest();
 object_ptr<Object> getChatsNoChatsResponse();
 
@@ -77,6 +84,7 @@ object_ptr<photo> makePhotoLocal(int32_t fileId, unsigned size, const std::strin
                                  unsigned width, unsigned height);
 object_ptr<photo> makePhotoUploading(int32_t fileId, unsigned size, unsigned uploaded, const std::string &path,
                                      unsigned width, unsigned height);
+
 object_ptr<chatMember> makeChatMember(int32_t userId, int32_t inviteUserId, time_t joinTime,
                                       object_ptr<ChatMemberStatus> &&memberStatus, const void *);
 object_ptr<createChatInviteLink> makeInviteLinkRequest(int64_t chatId);

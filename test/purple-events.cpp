@@ -1,5 +1,6 @@
 #include "purple-events.h"
 #include "libpurple-mock.h"
+#include <algorithm>
 #include <gtest/gtest.h>
 
 PurpleEventReceiver g_purpleEvents;
@@ -7,6 +8,12 @@ PurpleEventReceiver g_purpleEvents;
 void PurpleEventReceiver::addEvent(std::unique_ptr<PurpleEvent> event)
 {
     std::cout << "Libpurple event: " << event->toString() << "\n";
+    if (event->type == PurpleEventType::RequestInput) {
+        const RequestInputEvent &inputEvent = static_cast<const RequestInputEvent &>(*event);
+        inputOkCb     = inputEvent.ok_cb;
+        inputCancelCb = inputEvent.cancel_cb;
+        inputUserData = inputEvent.user_data;
+    }
     m_events.push(std::move(event));
 }
 
@@ -369,12 +376,7 @@ void PurpleEventReceiver::verifyEvent(const PurpleEvent &event)
     if (!m_events.empty()) {
         compareEvents(*m_events.front(), event);
 
-        if (m_events.front()->type == PurpleEventType::RequestInput) {
-            const RequestInputEvent &inputEvent = static_cast<const RequestInputEvent &>(*m_events.front());
-            inputOkCb     = inputEvent.ok_cb;
-            inputCancelCb = inputEvent.cancel_cb;
-            inputUserData = inputEvent.user_data;
-        } else if (m_events.front()->type == PurpleEventType::RequestAction) {
+        if (m_events.front()->type == PurpleEventType::RequestAction) {
             const RequestActionEvent &actionEvent = static_cast<const RequestActionEvent &>(*m_events.front());
             actionCallbacks.resize(actionEvent.callbacks.size());
             for (unsigned i = 0; i < actionEvent.callbacks.size(); i++)
@@ -392,7 +394,7 @@ void PurpleEventReceiver::verifyEvent(const PurpleEvent &event)
     }
 }
 
-void PurpleEventReceiver::verifyEvents2(std::initializer_list<std::unique_ptr<PurpleEvent>> events)
+void PurpleEventReceiver::verifyEvents2(std::vector<std::shared_ptr<PurpleEvent>> events)
 {
     for (auto &pEvent: events)
         verifyEvent(*pEvent);

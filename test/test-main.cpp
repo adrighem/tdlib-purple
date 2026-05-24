@@ -1,3 +1,5 @@
+#include <purple.h>
+#include <stdio.h>
 #include <gtest/gtest.h>
 
 class TestConfig : public ::testing::Environment

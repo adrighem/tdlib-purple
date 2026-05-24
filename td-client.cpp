@@ -728,7 +728,7 @@ void PurpleTdClient::onLoggedIn()
 
 void PurpleTdClient::getContactsResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
 {
-    purple_debug_misc(config::pluginId, "getContacts response to request %" G_GUINT64_FORMAT "\n", requestId);
+    purple_debug_misc(config::pluginId, "getContacts response to request %" G_GUINT64_FORMAT ", id %d\n", requestId, object ? object->get_id() : 0);
     if (object && (object->get_id() == td::td_api::users::ID)) {
         m_data.setContacts(*td::move_tl_object_as<td::td_api::users>(object));
         auto getChatsRequest = td::td_api::make_object<td::td_api::loadChats>();

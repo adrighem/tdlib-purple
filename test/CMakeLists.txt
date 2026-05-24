@@ -7,6 +7,35 @@ set(GLIB_LIBRARIES "glib-2.0" CACHE STRING "GLib libraries")
 # Compiling plugin sources again is not optimal but it's the easy way
 add_executable(tests EXCLUDE_FROM_ALL
     test-main.cpp
+    login-test.cpp
+    # private-chat-test.cpp
+    # group-chat-test.cpp
+    # supergroup-test.cpp
+    # file-transfer-test.cpp
+    # secret-chat-test.cpp
+    # message-split-test.cpp
+    # message-order-test.cpp
+    # message-history-test.cpp
+    test-transceiver.cpp
+    libpurple-mock.cpp
+    printout.cpp
+    purple-events.cpp
+    fixture.cpp
+
+    ../tdlib-purple.cpp
+    ../td-client.cpp
+    ../transceiver.cpp
+    ../account-data.cpp
+    ../purple-info.cpp
+    ${CMAKE_BINARY_DIR}/config.cpp
+    ../client-utils.cpp
+    ../receiving.cpp
+    ../format.cpp
+    ../sticker.cpp
+    ../file-transfer.cpp
+    ../call.cpp
+    ../identifiers.cpp
+    ../secret-chat.cpp
 )
 
 set_property(TARGET tests PROPERTY CXX_STANDARD 17)

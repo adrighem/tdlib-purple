@@ -322,7 +322,7 @@ conversation_updated_cb(PurpleConversation *conv, PurpleConvUpdateType type)
 
 static void tgprpl_login (PurpleAccount *acct)
 {
-    purple_debug_misc(config::pluginId, "version %s\n", config::versionString);
+    purple_debug_misc(config::pluginId, "version %s, test backend: %p\n", config::versionString, g_testBackend);
     PurpleConnection *gc       = purple_account_get_connection (acct);
     PurpleTdClient   *tdClient = new PurpleTdClient(acct, g_testBackend);
 
@@ -915,7 +915,7 @@ static void addChoice(GList *&choices, const char *description, const char *valu
     choices = g_list_append(choices, kvp);
 }
 
-static PurplePluginInfo *getPluginInfo();
+PurplePluginInfo *getPluginInfo();
 
 static gboolean tdlibFatalErrorHandler(void *data)
 {
@@ -1174,7 +1174,7 @@ extern "C" {
     PURPLE_INIT_PLUGIN (telegram_tdlib, tgprpl_init, plugin_info)
 }
 
-static PurplePluginInfo *getPluginInfo()
+PurplePluginInfo *getPluginInfo()
 {
     return &plugin_info;
 }

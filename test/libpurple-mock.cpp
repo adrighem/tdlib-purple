@@ -3,6 +3,7 @@
 #include <purple.h>
 #include <stdarg.h>
 #include <vector>
+#include <algorithm>
 #include <gtest/gtest.h>
 
 struct AccountInfo {
@@ -109,7 +110,7 @@ void purple_account_destroy(PurpleAccount *account)
     free(account->alias);
 
     auto it = std::find_if(g_accounts.begin(), g_accounts.end(),
-                           [account](const AccountInfo &info) { return (info.account == account); });
+                           [account](const AccountInfo &info) { return info.account == account; });
     ASSERT_FALSE(it == g_accounts.end()) << "Destroying unknown account";
     while (!it->buddies.empty())
         purple_blist_remove_buddy(it->buddies.back());
@@ -172,7 +173,7 @@ void purple_blist_add_buddy(PurpleBuddy *buddy, PurpleContact *contact, PurpleGr
 {
     ASSERT_EQ(NULL, node) << "Not supported";
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [buddy](const AccountInfo &info) { return (info.account == buddy->account); });
+                                 [buddy](const AccountInfo &info) { return info.account == buddy->account; });
     ASSERT_FALSE(pAccount == g_accounts.end()) << "Adding buddy with unknown account";
 
     ASSERT_TRUE(std::find_if(pAccount->buddies.begin(), pAccount->buddies.end(), 
@@ -196,7 +197,7 @@ void purple_blist_remove_account(PurpleAccount *account)
 void purple_blist_remove_buddy(PurpleBuddy *buddy)
 {
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [buddy](const AccountInfo &info) { return (info.account == buddy->account); });
+                                 [buddy](const AccountInfo &info) { return info.account == buddy->account; });
     ASSERT_FALSE(pAccount == g_accounts.end()) << "Removing buddy with unknown account";
 
     auto it = std::find(pAccount->buddies.begin(), pAccount->buddies.end(), buddy);
@@ -241,7 +242,7 @@ static char *getChatName(const PurpleChat *chat)
 void purple_blist_remove_chat(PurpleChat *chat)
 {
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [chat](const AccountInfo &info) { return (info.account == chat->account); });
+                                 [chat](const AccountInfo &info) { return info.account == chat->account; });
     ASSERT_FALSE(pAccount == g_accounts.end()) << "Removing buddy with unknown account";
 
     auto it = std::find(pAccount->chats.begin(), pAccount->chats.end(), chat);
@@ -347,7 +348,7 @@ void purple_blist_add_chat(PurpleChat *chat, PurpleGroup *group, PurpleBlistNode
     char *name = getChatName(chat);
 
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [chat](const AccountInfo &info) { return (info.account == chat->account); });
+                                 [chat](const AccountInfo &info) { return info.account == chat->account; });
     ASSERT_FALSE(pAccount == g_accounts.end()) << "Adding chat with unknown account";
 
     ASSERT_TRUE(std::find_if(pAccount->chats.begin(), pAccount->chats.end(), 
@@ -370,7 +371,7 @@ PurpleChat *purple_blist_find_chat(PurpleAccount *account, const char *name)
         return NULL;
 
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [account](const AccountInfo &info) { return (info.account == account); });
+                                 [account](const AccountInfo &info) { return info.account == account; });
     EXPECT_FALSE(pAccount == g_accounts.end()) << "Searching chat with unknown account";
 
     if (pAccount != g_accounts.end()) {
@@ -446,7 +447,7 @@ static PurpleConversation *purple_conversation_new_impl(PurpleConversationType t
 										const char *name)
 {
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [account](const AccountInfo &info) { return (info.account == account); });
+                                 [account](const AccountInfo &info) { return info.account == account; });
     EXPECT_FALSE(pAccount == g_accounts.end()) << "Adding conversation with unknown account";
 
     if (pAccount != g_accounts.end()) {
@@ -495,7 +496,7 @@ PurpleConversation *purple_conversation_new(PurpleConversationType type,
 void purple_conversation_destroy(PurpleConversation *conv)
 {
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [conv](const AccountInfo &info) { return (info.account == conv->account); });
+                                 [conv](const AccountInfo &info) { return info.account == conv->account; });
     ASSERT_FALSE(pAccount == g_accounts.end()) << "Removing conversation with unknown account";
 
     auto it = std::find(pAccount->conversations.begin(), pAccount->conversations.end(), conv);
@@ -623,7 +624,7 @@ PurpleBuddy *purple_find_buddy(PurpleAccount *account, const char *name)
         return NULL;
 
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [account](const AccountInfo &info) { return (info.account == account); });
+                                 [account](const AccountInfo &info) { return info.account == account; });
     EXPECT_FALSE(pAccount == g_accounts.end()) << "Looking for buddy with unknown account";
 
     if (pAccount != g_accounts.end()) {
@@ -641,7 +642,7 @@ PurpleBuddy *purple_find_buddy(PurpleAccount *account, const char *name)
 PurpleConversation *purple_find_chat(const PurpleConnection *gc, int id)
 {
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [gc](const AccountInfo &info) { return (info.account == gc->account); });
+                                 [gc](const AccountInfo &info) { return info.account == gc->account; });
     EXPECT_FALSE(pAccount == g_accounts.end()) << "Looking for buddy with unknown account";
 
     if (pAccount != g_accounts.end()) {
@@ -662,7 +663,7 @@ PurpleConversation *purple_find_conversation_with_account(
 		const PurpleAccount *account)
 {
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
-                                 [account](const AccountInfo &info) { return (info.account == account); });
+                                 [account](const AccountInfo &info) { return info.account == account; });
     EXPECT_FALSE(pAccount == g_accounts.end()) << "Adding conversation with unknown account";
 
     if (pAccount != g_accounts.end()) {
@@ -1428,7 +1429,7 @@ const char *purple_account_get_string(const PurpleAccount *account,
 									const char *default_value)
 {
     auto it = std::find_if(g_accounts.begin(), g_accounts.end(),
-                           [account](const AccountInfo &info) { return (info.account == account); });
+                           [account](const AccountInfo &info) { return info.account == account; });
     EXPECT_FALSE(it == g_accounts.end()) << "Unknown account";
 
     if (it != g_accounts.end()) {
@@ -1444,7 +1445,7 @@ void purple_account_set_string(PurpleAccount *account, const char *name,
                                                          const char *value)
 {
     auto it = std::find_if(g_accounts.begin(), g_accounts.end(),
-                           [account](const AccountInfo &info) { return (info.account == account); });
+                           [account](const AccountInfo &info) { return info.account == account; });
     EXPECT_FALSE(it == g_accounts.end()) << "Unknown account";
 
     if (it != g_accounts.end()) {
@@ -1467,7 +1468,7 @@ void purple_account_set_bool(PurpleAccount *account, const char *name,
 void purple_account_remove_setting(PurpleAccount *account, const char *setting)
 {
     auto it = std::find_if(g_accounts.begin(), g_accounts.end(),
-                           [account](const AccountInfo &info) { return (info.account == account); });
+                           [account](const AccountInfo &info) { return info.account == account; });
     EXPECT_FALSE(it == g_accounts.end()) << "Unknown account";
 
     if (it != g_accounts.end()) {

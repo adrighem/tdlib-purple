@@ -27,7 +27,7 @@ public:
         verifyEvents(args...);
     }
 
-    void verifyEvents2(std::initializer_list<std::unique_ptr<PurpleEvent>> events);
+    void verifyEvents2(std::vector<std::shared_ptr<PurpleEvent>> events);
     void verifyNoEvents();
     void discardEvents();
 
