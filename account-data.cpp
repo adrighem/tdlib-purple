@@ -566,8 +566,10 @@ const td::td_api::user *TdAccountData::getUser(UserId userId) const
 
 const td::td_api::user *TdAccountData::getUserByPhone(const char *phoneNumber) const
 {
+    purple_debug_misc(config::pluginId, "Searching for user by phone: %s\n", phoneNumber);
     auto pUser = std::find_if(m_userInfo.begin(), m_userInfo.end(),
                               [phoneNumber](const UserMap::value_type &entry) {
+                                  purple_debug_misc(config::pluginId, "Checking user %" G_GINT64_FORMAT " phone: %s\n", entry.first.value(), entry.second.user->phone_number_.c_str());
                                   return isPhoneEqual(entry.second.user->phone_number_, phoneNumber);
                               });
     if (pUser == m_userInfo.end())

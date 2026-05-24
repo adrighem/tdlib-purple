@@ -157,9 +157,9 @@ void TdTransceiver::pollThreadLoop()
 
 int TdTransceiverImpl::rxCallback(gpointer user_data)
 {
-    std::shared_ptr<TdTransceiverImpl> *ppSelf =
-        static_cast<std::shared_ptr<TdTransceiverImpl> *>(user_data);
-    std::shared_ptr<TdTransceiverImpl> &self = *ppSelf;
+    auto ppSelf = static_cast<std::shared_ptr<TdTransceiverImpl> *>(user_data);
+    std::shared_ptr<TdTransceiverImpl> self = *ppSelf;
+    delete ppSelf;
 
     while (1) {
         td::Client::Response response;
@@ -195,15 +195,6 @@ int TdTransceiverImpl::rxCallback(gpointer user_data)
                 callback(response.id, std::move(response.object));
         }
     }
-
-    std::unique_lock<std::mutex> lock(self->m_rxMutex, std::defer_lock);
-    // owner=NULL means TdTransceiver has been destroyed, so the poll thread is no longer running
-    // and no mutex lock is needed - in fact, it must be avoided because otherwise unlocking the
-    // mutex after clearing the pointer will be use after free.
-    if (self->m_owner)
-        lock.lock();
-    self.reset();
-    delete ppSelf;
 
     return FALSE; // This idle handler will not be called again
 }

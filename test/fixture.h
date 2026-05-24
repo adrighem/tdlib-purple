@@ -8,6 +8,14 @@
 
 using namespace td::td_api;
 
+template<typename T, typename... Args>
+static std::vector<object_ptr<T>> to_vector(object_ptr<Args>&&... args) {
+    std::vector<object_ptr<T>> vec;
+    vec.reserve(sizeof...(args));
+    (vec.push_back(td::move_tl_object_as<T>(std::move(args))), ...);
+    return vec;
+}
+
 class CommTest: public testing::Test {
 public:
     CommTest();
@@ -35,18 +43,19 @@ protected:
 
     void SetUp() override;
     void TearDown() override;
-    void login(std::initializer_list<object_ptr<Object>> extraUpdates = {},
+    void login(std::vector<object_ptr<Object>> extraUpdates = {},
                object_ptr<users> getContactsReply = make_object<users>(),
                object_ptr<Object> getChatsReply = getChatsNoChatsResponse(),
-               std::initializer_list<std::unique_ptr<PurpleEvent>> postUpdateEvents = {},
-               std::initializer_list<object_ptr<td::TlObject>> postUpdateRequestsAndResponses = {},
-               std::initializer_list<std::unique_ptr<PurpleEvent>> postChatListEvents = {nullptr});
+               std::vector<std::shared_ptr<PurpleEvent>> postUpdateEvents = {},
+               std::vector<object_ptr<td::TlObject>> postUpdateRequestsAndResponses = {},
+               std::vector<std::shared_ptr<PurpleEvent>> postChatListEvents = {});
     void loginWithOneContact();
     void runTimeouts() { tgl.runTimeouts(); }
 
-    object_ptr<updateUser>     standardUpdateUser(unsigned index);
-    object_ptr<updateUser>     standardUpdateUserNoPhone(unsigned index);
-    object_ptr<updateNewChat>  standardPrivateChat(unsigned index, object_ptr<ChatList> chatList = nullptr);
+    object_ptr<Object>     standardUpdateUser(unsigned index);
+    object_ptr<Object>     standardUpdateUserNoPhone(unsigned index);
+    object_ptr<Object>  standardPrivateChat(unsigned index, object_ptr<ChatList> chatList = nullptr);
+    object_ptr<td::td_api::setTdlibParameters> makeDefaultParams();
     PurplePluginProtocolInfo  &pluginInfo();
 };
 

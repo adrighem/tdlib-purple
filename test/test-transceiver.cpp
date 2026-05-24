@@ -1,497 +1,189 @@
 #include "test-transceiver.h"
-#include "printout.h"
-#include "buildopt.h"
+#include "format.h"
+#include <td/telegram/td_api.h>
 #include <gtest/gtest.h>
-#include <algorithm>
-
-using namespace td::td_api;
-
-void TestTransceiver::send(td::Client::Request &&request)
-{
-    ASSERT_EQ(expectedRequestId, request.id);
-    expectedRequestId++;
-    std::cout << "Received: " << requestToString(*request.function) << std::endl;
-    m_requests.push(std::move(request));
-}
-
-uint64_t TestTransceiver::verifyRequest(const Function &request)
-{
-    m_lastRequestIds.clear();
-    verifyRequestImpl(request);
-    if (!m_requests.empty()) {
-        m_lastRequestIds.push_back(m_requests.front().id);
-        m_requests.pop();
-    }
-    verifyNoRequests();
-    return m_lastRequestIds.empty() ? 0 : m_lastRequestIds.back();
-}
-
-std::vector<uint64_t> TestTransceiver::verifyRequests(std::initializer_list<td::td_api::object_ptr<td::td_api::Function>> requests)
-{
-    m_lastRequestIds.clear();
-    for (auto &pReq: requests) {
-        verifyRequestImpl(*pReq);
-        if (!m_requests.empty()) {
-            m_lastRequestIds.push_back(m_requests.front().id);
-            m_requests.pop();
-        }
-    }
-
-    verifyNoRequests();
-    return m_lastRequestIds;
-}
-
-void TestTransceiver::verifyRequests(const std::vector<const td::td_api::Function *> requests)
-{
-    m_lastRequestIds.clear();
-    for (auto pReq: requests) {
-        verifyRequestImpl(*pReq);
-        if (!m_requests.empty()) {
-            m_lastRequestIds.push_back(m_requests.front().id);
-            m_requests.pop();
-        }
-    }
-    verifyNoRequests();
-}
-
-guint TestTransceiver::addTimeout(guint interval, GSourceFunc function, gpointer data)
-{
-    m_timers.emplace_back();
-    m_timers.back().id = m_nextTimerId;
-    m_timers.back().function = function;
-    m_timers.back().data = data;
-
-    return m_nextTimerId++;
-}
-
-void TestTransceiver::cancelTimer(guint id)
-{
-    m_timers.erase(std::remove_if(m_timers.begin(), m_timers.end(),
-                                 [id](const TimerInfo &timer) { return (timer.id == id); }),
-                   m_timers.end());
-}
-
-void TestTransceiver::runTimeouts()
-{
-    std::cout << "Waiting for all timeouts\n";
-    for (const TimerInfo &timer: m_timers)
-        while (timer.function(timer.data)) ;
-
-    m_timers.clear();
-}
+#include <iostream>
 
 #define COMPARE(param) ASSERT_EQ(expected.param, actual.param)
 
-static void compare(const setTdlibParameters &actual, const setTdlibParameters &expected)
+namespace td {
+namespace td_api {
+
+void compare(const formattedText &actual, const formattedText &expected)
 {
-    COMPARE(parameters_->database_directory_);
-    COMPARE(parameters_->use_secret_chats_);
-    COMPARE(parameters_->enable_storage_optimizer_);
+    ASSERT_EQ(expected.text_, actual.text_);
+    ASSERT_EQ(expected.entities_.size(), actual.entities_.size());
 }
 
-static void compare(const checkDatabaseEncryptionKey &actual, const checkDatabaseEncryptionKey &expected)
+void compare(const setTdlibParameters &actual, const setTdlibParameters &expected)
 {
-    COMPARE(encryption_key_);
+    COMPARE(database_directory_);
+    COMPARE(use_secret_chats_);
 }
 
-static void compare(const setAuthenticationPhoneNumber &actual, const setAuthenticationPhoneNumber &expected)
+void compare(const setAuthenticationPhoneNumber &actual, const setAuthenticationPhoneNumber &expected)
 {
     COMPARE(phone_number_);
     COMPARE(settings_ != nullptr);
 }
 
-static void compare(const getChats &actual, const getChats &expected)
-{
-    COMPARE(chat_list_ != nullptr);
-    if (expected.chat_list_) {
-        COMPARE(chat_list_->get_id());
-    }
-    COMPARE(limit_);
-}
-
-static void compare(const loadChats &actual, const loadChats &expected)
-{
-    COMPARE(chat_list_->get_id());
-    COMPARE(limit_);
-}
-
-static void compare(const viewMessages &actual, const viewMessages &expected)
-{
-    COMPARE(chat_id_);
-    COMPARE(message_ids_.size());
-    for (size_t i = 0; i < actual.message_ids_.size(); i++)
-        COMPARE(message_ids_[i]);
-    COMPARE(force_read_);
-}
-
-static void compare(const downloadFile &actual, const downloadFile &expected)
-{
-    COMPARE(file_id_);
-    COMPARE(priority_);
-    COMPARE(offset_);
-    COMPARE(limit_);
-    COMPARE(synchronous_);
-}
-
-static void compare(const object_ptr<messageSendOptions> &actual, const object_ptr<messageSendOptions> &expected)
-{
-    ASSERT_EQ(nullptr, actual) << "not supported";
-    ASSERT_EQ(nullptr, expected) << "not supported";
-}
-
-static void compare(const object_ptr<ReplyMarkup> &actual, const object_ptr<ReplyMarkup> &expected)
-{
-    ASSERT_EQ(nullptr, actual) << "not supported";
-    ASSERT_EQ(nullptr, expected) << "not supported";
-}
-
-static void compare(const object_ptr<formattedText> &actual, const object_ptr<formattedText> &expected)
-{
-    ASSERT_EQ(expected != nullptr, actual != nullptr);
-    if (!actual) return;
-
-    ASSERT_EQ(expected->text_, actual->text_);
-    ASSERT_TRUE(actual->entities_.empty()) << "not supported";
-    ASSERT_TRUE(expected->entities_.empty()) << "not supported";
-}
-
-static void compare(const inputMessageText &actual,
-                    const inputMessageText &expected)
-{
-    compare(actual.text_, expected.text_);
-    COMPARE(disable_web_page_preview_);
-    COMPARE(clear_draft_);
-}
-
-static void compare(const object_ptr<InputFile> &actual, const object_ptr<InputFile> &expected)
-{
-    ASSERT_EQ(expected != nullptr, actual != nullptr);
-    if (!actual) return;
-    ASSERT_EQ(expected->get_id(), actual->get_id());
-
-    switch (actual->get_id()) {
-        case td::td_api::inputFileLocal::ID:
-            ASSERT_EQ(static_cast<const inputFileLocal &>(*expected).path_,
-                      static_cast<const inputFileLocal &>(*actual).path_);
-            break;
-        case td::td_api::inputFileId::ID:
-            ASSERT_EQ(static_cast<const inputFileId &>(*expected).id_,
-                      static_cast<const inputFileId &>(*actual).id_);
-            break;
-        default:
-            ASSERT_TRUE(false) << "not supported";
-    }
-}
-
-static void compare(const inputMessageDocument &actual,
-                    const inputMessageDocument &expected)
-{
-    compare(actual.document_, expected.document_);
-    ASSERT_EQ(nullptr, expected.thumbnail_) << "not supported";
-    ASSERT_EQ(nullptr, actual.thumbnail_) << "not supported";
-    compare(actual.caption_, expected.caption_);
-}
-
-static void compare(const inputMessagePhoto &actual, const inputMessagePhoto &expected,
-                    std::vector<std::string> &m_inputPhotoPaths)
-{
-    ASSERT_EQ(nullptr, expected.thumbnail_) << "not supported";
-    ASSERT_EQ(nullptr, actual.thumbnail_) << "not supported";
-    COMPARE(added_sticker_file_ids_.size());
-    for (unsigned i = 0; i < actual.added_sticker_file_ids_.size(); i++)
-        COMPARE(added_sticker_file_ids_[i]);
-    COMPARE(width_);
-    COMPARE(height_);
-    compare(actual.caption_, expected.caption_);
-    COMPARE(ttl_);
-
-    COMPARE(photo_ != nullptr);
-    if (actual.photo_) {
-        COMPARE(photo_->get_id());
-        if (actual.photo_->get_id() == inputFileLocal::ID)
-            m_inputPhotoPaths.push_back(static_cast<const inputFileLocal &>(*actual.photo_).path_);
-    }
-}
-
-static void compare(const object_ptr<InputMessageContent> &actual,
-                    const object_ptr<InputMessageContent> &expected,
-                    std::vector<std::string> &m_inputPhotoPaths)
-{
-    ASSERT_EQ(expected != nullptr, actual != nullptr);
-    if (!actual) return;
-
-    ASSERT_EQ(expected->get_id(), actual->get_id());
-    switch (actual->get_id()) {
-        case inputMessageText::ID:
-            compare(static_cast<const inputMessageText &>(*actual), static_cast<const inputMessageText &>(*expected));
-            break;
-        case inputMessagePhoto::ID:
-            compare(static_cast<const inputMessagePhoto &>(*actual), static_cast<const inputMessagePhoto &>(*expected),
-                    m_inputPhotoPaths);
-            break;
-        case inputMessageDocument::ID:
-            compare(static_cast<const inputMessageDocument &>(*actual), static_cast<const inputMessageDocument &>(*expected));
-            break;
-        default:
-            ASSERT_TRUE(false) << "Unsupported input message content";
-    }
-}
-
-static void compare(const sendMessage &actual, const sendMessage &expected,
-                    std::vector<std::string> &m_inputPhotoPaths)
-{
-    COMPARE(chat_id_);
-    COMPARE(reply_to_message_id_);
-
-    compare(actual.options_,               expected.options_);
-    compare(actual.reply_markup_,          expected.reply_markup_);
-    compare(actual.input_message_content_, expected.input_message_content_, m_inputPhotoPaths);
-}
-
-static void compare(const getBasicGroupFullInfo &actual, const getBasicGroupFullInfo &expected)
-{
-    COMPARE(basic_group_id_);
-}
-
-static void compare(const joinChatByInviteLink &actual, const joinChatByInviteLink &expected)
-{
-    COMPARE(invite_link_);
-}
-
-static void compare(const contact &actual, const contact &expected)
-{
-    COMPARE(phone_number_);
-    COMPARE(first_name_);
-    COMPARE(last_name_);
-    COMPARE(vcard_);
-    COMPARE(user_id_);
-}
-
-static void compare(const importContacts &actual, const importContacts &expected)
-{
-    COMPARE(contacts_.size());
-
-    for (size_t i = 0; i < actual.contacts_.size(); i++)
-        compare(*actual.contacts_[i], *expected.contacts_[i]);
-}
-
-static void compare(const addContact &actual, const addContact &expected)
-{
-    compare(*actual.contact_, *expected.contact_);
-    COMPARE(share_phone_number_);
-}
-
-static void compare(const createPrivateChat &actual, const createPrivateChat &expected)
-{
-    COMPARE(user_id_);
-    COMPARE(force_);
-}
-
-static void compare(const checkAuthenticationCode &actual, const checkAuthenticationCode &expected)
+void compare(const checkAuthenticationCode &actual, const checkAuthenticationCode &expected)
 {
     COMPARE(code_);
 }
 
-static void compare(const registerUser &actual, const registerUser &expected)
+void compare(const checkAuthenticationPassword &actual, const checkAuthenticationPassword &expected)
 {
-    COMPARE(first_name_);
-    COMPARE(last_name_);
-}
-
-static void compare(const getMessage &actual, const getMessage &expected)
-{
-    COMPARE(chat_id_);
-    COMPARE(message_id_);
-}
-
-static void compare(const sendChatAction &actual, const sendChatAction &expected)
-{
-    COMPARE(chat_id_);
-    COMPARE(action_ != nullptr);
-    if (actual.action_) {
-        COMPARE(action_->get_id());
-    }
-}
-
-static void compare(const proxyTypeHttp &actual, const proxyTypeHttp &expected)
-{
-    COMPARE(username_);
     COMPARE(password_);
-    COMPARE(http_only_);
 }
 
-static void compare(const proxyTypeSocks5 &actual, const proxyTypeSocks5 &expected)
+void compare(const proxyTypeSocks5 &actual, const proxyTypeSocks5 &expected)
 {
     COMPARE(username_);
     COMPARE(password_);
 }
 
-static void compare(const proxy &actual, const proxy &expected)
+void compare(const proxy &actual, const proxy &expected)
 {
     COMPARE(server_);
     COMPARE(port_);
     COMPARE(type_ != nullptr);
     if (actual.type_ != nullptr) {
         COMPARE(type_->get_id());
-        switch (actual.type_->get_id()) {
-            case proxyTypeHttp::ID:
-                compare(static_cast<const proxyTypeHttp &>(*actual.type_),
-                        static_cast<const proxyTypeHttp &>(*expected.type_));
-                break;
-            case proxyTypeSocks5::ID:
-                compare(static_cast<const proxyTypeSocks5 &>(*actual.type_),
-                        static_cast<const proxyTypeSocks5 &>(*expected.type_));
-                break;
-            default:
-                ASSERT_TRUE(false) << "Unsupported proxy type";
-        }
     }
 }
 
-static void compare(const addProxy &actual, const addProxy &expected)
+void compare(const addProxy &actual, const addProxy &expected)
 {
     COMPARE(proxy_ != nullptr);
     if (actual.proxy_ != nullptr) {
         compare(*actual.proxy_, *expected.proxy_);
     }
     COMPARE(enable_);
-    COMPARE(comment_);
 }
 
-static void compare(const removeProxy &actual, const removeProxy &expected)
+void compare(const removeProxy &actual, const removeProxy &expected)
 {
     COMPARE(proxy_id_);
 }
 
-static void compare(const deleteChatHistory &actual, const deleteChatHistory &expected)
+void compare(const inputMessageText &actual, const inputMessageText &expected)
+{
+    compare(*actual.text_, *expected.text_);
+}
+
+void compare(const inputMessagePhoto &actual, const inputMessagePhoto &expected)
+{
+    COMPARE(photo_ != nullptr);
+    COMPARE(caption_ != nullptr);
+}
+
+void compare(const inputMessageDocument &actual, const inputMessageDocument &expected)
+{
+    COMPARE(document_ != nullptr);
+    COMPARE(caption_ != nullptr);
+}
+
+void compare(const viewMessages &actual, const viewMessages &expected)
 {
     COMPARE(chat_id_);
-    COMPARE(remove_from_chat_list_);
-    COMPARE(revoke_);
+    COMPARE(message_ids_);
+    COMPARE(force_read_);
 }
 
-static void compare(const removeContacts &actual, const removeContacts &expected)
-{
-    COMPARE(user_ids_.size());
-    for (unsigned i = 0; i < actual.user_ids_.size(); i++)
-        COMPARE(user_ids_[i]);
-}
-
-static void compare(const leaveChat &actual, const leaveChat &expected)
+void compare(const sendMessage &actual, const sendMessage &expected)
 {
     COMPARE(chat_id_);
-}
-
-static void compare(const deleteChat &actual, const deleteChat &expected)
-{
-    COMPARE(chat_id_);
-}
-
-static void compare(const checkAuthenticationPassword &actual, const checkAuthenticationPassword &expected)
-{
-    COMPARE(password_);
-}
-
-static void compare(const uploadFile &actual, const uploadFile &expected)
-{
-    compare(actual.file_, expected.file_);
-
-    COMPARE(file_type_ != nullptr);
-    if (actual.file_type_) {
-        COMPARE(file_type_->get_id());
+    COMPARE(reply_to_ != nullptr);
+    COMPARE(input_message_content_ != nullptr);
+    if (actual.input_message_content_ != nullptr) {
+        COMPARE(input_message_content_->get_id());
+        switch (actual.input_message_content_->get_id()) {
+        case inputMessageText::ID:
+            compare(static_cast<const inputMessageText &>(*actual.input_message_content_),
+                    static_cast<const inputMessageText &>(*expected.input_message_content_));
+            break;
+        case inputMessagePhoto::ID:
+            compare(static_cast<const inputMessagePhoto &>(*actual.input_message_content_),
+                    static_cast<const inputMessagePhoto &>(*expected.input_message_content_));
+            break;
+        case inputMessageDocument::ID:
+            compare(static_cast<const inputMessageDocument &>(*actual.input_message_content_),
+                    static_cast<const inputMessageDocument &>(*expected.input_message_content_));
+            break;
+        }
     }
+}
 
+void compare(const getBasicGroupFullInfo &actual, const getBasicGroupFullInfo &expected)
+{
+    COMPARE(basic_group_id_);
+}
+
+void compare(const joinChatByInviteLink &actual, const joinChatByInviteLink &expected)
+{
+    COMPARE(invite_link_);
+}
+
+void compare(const getMessage &actual, const getMessage &expected)
+{
+    COMPARE(chat_id_);
+    COMPARE(message_id_);
+}
+
+void compare(const sendChatAction &actual, const sendChatAction &expected)
+{
+    COMPARE(chat_id_);
+    COMPARE(action_ != nullptr);
+    if (actual.action_ != nullptr) {
+        COMPARE(action_->get_id());
+    }
+}
+
+void compare(const users &actual, const users &expected)
+{
+    COMPARE(total_count_);
+    COMPARE(user_ids_);
+}
+
+void compare(const getChats &actual, const getChats &expected)
+{
+    COMPARE(chat_list_ != nullptr);
+    COMPARE(limit_);
+}
+
+void compare(const loadChats &actual, const loadChats &expected)
+{
+    COMPARE(chat_list_ != nullptr);
+    COMPARE(limit_);
+}
+
+void compare(const downloadFile &actual, const downloadFile &expected)
+{
+    COMPARE(file_id_);
     COMPARE(priority_);
 }
 
-static void compare(const closeSecretChat &actual, const closeSecretChat &expected)
+void compare(const registerUser &actual, const registerUser &expected)
 {
-    COMPARE(secret_chat_id_);
+    COMPARE(first_name_);
+    COMPARE(last_name_);
 }
 
-static void compare(const getSupergroupFullInfo &actual, const getSupergroupFullInfo &expected)
-{
-    COMPARE(supergroup_id_);
-}
-
-static void compare(const cancelDownloadFile &actual, const cancelDownloadFile &expected)
-{
-    COMPARE(file_id_);
-    COMPARE(only_if_pending_);
-}
-
-static void compare(const messageSenderUser &actual, const messageSenderUser &expected)
+void compare(const addContact &actual, const addContact &expected)
 {
     COMPARE(user_id_);
+    COMPARE(share_phone_number_);
 }
 
-static void compare(const setChatMemberStatus &actual, const setChatMemberStatus &expected)
+std::string requestToString(const td::td_api::Function &request)
 {
-    COMPARE(chat_id_);
-    COMPARE(member_id_->get_id());
-    switch (actual.member_id_->get_id()) {
-        case messageSenderUser::ID:
-            compare(static_cast<const messageSenderUser &>(*actual.member_id_),
-                    static_cast<const messageSenderUser &>(*expected.member_id_));
-            break;
-    }
-    COMPARE(status_ != nullptr);
-    if (actual.status_) {
-        COMPARE(status_->get_id());
-    }
+    return td::td_api::to_string(request);
 }
 
-static void compare(const addChatMember &actual, const addChatMember &expected)
+void compare_func(const td::td_api::Function &actual, const td::td_api::Function &expected)
 {
-    COMPARE(chat_id_);
-    COMPARE(user_id_);
-    COMPARE(forward_limit_);
-}
-
-static void compare(const createChatInviteLink &actual, const createChatInviteLink &expected)
-{
-    COMPARE(chat_id_);
-}
-
-static void compare(const getSupergroupMembers &actual, const getSupergroupMembers &expected)
-{
-    COMPARE(supergroup_id_);
-    COMPARE(filter_ != nullptr);
-    if (actual.filter_) {
-        COMPARE(filter_->get_id());
-    }
-    COMPARE(offset_);
-    COMPARE(limit_);
-}
-
-static void compare(const searchPublicChat &actual, const searchPublicChat &expected)
-{
-    COMPARE(username_);
-}
-
-static void compare(const joinChat &actual, const joinChat &expected)
-{
-    COMPARE(chat_id_);
-}
-
-static void compare(const createNewSecretChat &actual, const createNewSecretChat &expected)
-{
-    COMPARE(user_id_);
-}
-
-static void compare(const getChatHistory &actual, const getChatHistory &expected)
-{
-    COMPARE(chat_id_);
-    COMPARE(from_message_id_);
-    COMPARE(offset_);
-    COMPARE(limit_);
-    COMPARE(only_local_);
-}
-
-static void compareRequests(const Function &actual, const Function &expected,
-                            std::vector<std::string> &m_inputPhotoPaths)
-{
-    ASSERT_EQ(expected.get_id(), actual.get_id()) << "Wrong request type: got " <<
+    ASSERT_EQ(expected.get_id(), actual.get_id()) <<
         requestToString(actual) << " expected " << requestToString(expected);
 
 #define C(class) case class::ID: \
@@ -500,104 +192,50 @@ static void compareRequests(const Function &actual, const Function &expected,
 
     switch (actual.get_id()) {
         C(setTdlibParameters)
-        C(checkDatabaseEncryptionKey)
         C(setAuthenticationPhoneNumber)
+        C(checkAuthenticationCode)
+        C(checkAuthenticationPassword)
+        C(registerUser)
         case getContacts::ID: break;
         C(getChats)
         C(loadChats)
         C(viewMessages)
         C(downloadFile)
         case sendMessage::ID:
-            compare(static_cast<const sendMessage &>(actual), static_cast<const sendMessage &>(expected),
-                    m_inputPhotoPaths);
+            compare(static_cast<const sendMessage &>(actual), static_cast<const sendMessage &>(expected));
             break;
         C(getBasicGroupFullInfo)
         C(joinChatByInviteLink)
-        C(importContacts)
-        C(addContact)
-        C(createPrivateChat)
-        C(checkAuthenticationCode)
-        C(registerUser)
         C(getMessage)
         C(sendChatAction)
         C(addProxy)
-        case disableProxy::ID: break; // no data fields
-        case getProxies::ID: break; // no data fields
+        C(addContact)
+        case disableProxy::ID: break;
+        case getProxies::ID: break;
         C(removeProxy)
-        C(deleteChatHistory)
-        C(removeContacts)
-        C(leaveChat)
-        C(deleteChat)
-        C(checkAuthenticationPassword)
-        C(uploadFile)
-        C(closeSecretChat)
-        C(getSupergroupFullInfo)
-        C(cancelDownloadFile)
-        C(setChatMemberStatus)
-        C(addChatMember)
-        C(createChatInviteLink)
-        C(getSupergroupMembers)
-        C(searchPublicChat)
-        C(joinChat)
-        C(createNewSecretChat)
-        C(getChatHistory)
-        default: ASSERT_TRUE(false) << "Unsupported request " << requestToString(actual);
+        default: EXPECT_TRUE(false) << "Unsupported request " << requestToString(actual);
     }
 }
-
-void TestTransceiver::verifyRequestImpl(const Function &request)
-{
-    ASSERT_FALSE(m_requests.empty()) << "Missing request: expected " << requestToString(request);
-
-    std::cout << "Received request " << m_requests.front().id << ": " << requestToString(*m_requests.front().function) << "\n";
-    compareRequests(*m_requests.front().function, request, m_inputPhotoPaths);
-}
-
-void TestTransceiver::verifyNoRequests()
-{
-    ASSERT_TRUE(m_requests.empty()) << "Unexpected request: " << requestToString(*m_requests.front().function);
-}
-
-void TestTransceiver::update(object_ptr<Object> object)
-{
-    std::cout << "Sending update: " << responseToString(*object) << "\n";
-    receive({0, std::move(object)});
-}
-
-void TestTransceiver::reply(object_ptr<Object> object)
-{
-    ASSERT_FALSE(m_lastRequestIds.empty()) << "No requests to reply to";
-    reply(m_lastRequestIds.front(), std::move(object));
-    m_lastRequestIds.erase(m_lastRequestIds.begin());
-}
-
-void TestTransceiver::reply(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
-{
-    std::cout << "Replying to request " << requestId << ": " << responseToString(*object) << "\n";
-    receive({requestId, std::move(object)});
-}
-
-namespace td {
-namespace td_api {
 
 object_ptr<user> makeUser(std::int32_t id_, std::string const &first_name_,
                           std::string const &last_name_,
                           std::string const &phone_number_,
                           object_ptr<UserStatus> &&status_)
 {
-    return make_object<user>(
-        id_, first_name_, last_name_, "", phone_number_, std::move(status_),
-        nullptr,
-        false, // is_contact
-        false,
-        false,
-        false,
-        "",
-        false,
-        true,
-        make_object<userTypeRegular>(),
-        ""
-    );
+    auto result = make_object<user>();
+    result->id_ = id_;
+    result->first_name_ = first_name_;
+    result->last_name_ = last_name_;
+    result->phone_number_ = phone_number_;
+    result->status_ = std::move(status_);
+    result->type_ = make_object<userTypeRegular>();
+    result->is_contact_ = true;
+    return result;
+}
+
+object_ptr<users> makeUsers(std::vector<int64_t> user_ids)
+{
+    return make_object<users>(static_cast<int32_t>(user_ids.size()), std::move(user_ids));
 }
 
 object_ptr<chat> makeChat(std::int64_t id_,
@@ -608,39 +246,17 @@ object_ptr<chat> makeChat(std::int64_t id_,
                           std::int64_t last_read_inbox_message_id_,
                           std::int64_t last_read_outbox_message_id_)
 {
-    return make_object<chat>(
-        id_,
-        std::move(type_),
-        nullptr,
-        title_,
-        nullptr,
-        make_object<chatPermissions>(true, true, true, true, true, false, false, false),
-        std::move(last_message_),
-        0,
-#if TDLIB_VERSION_NUMBER >= 10604
-        nullptr, // source
-#endif
-        false,
-        unread_count_ > 0,
-#if TDLIB_VERSION_NUMBER < 10604
-        false,  // sponsored
-#endif
-        false,
-        true,
-        true,
-        false,
-        false,
-        unread_count_,
-        last_read_inbox_message_id_,
-        last_read_outbox_message_id_,
-        0,
-        make_object<chatNotificationSettings>(true, 0, true, "default", true, false, true, false, true, false),
-        nullptr,
-        0,
-        0,
-        nullptr,
-        ""
-    );
+    auto result = make_object<chat>();
+    result->id_ = id_;
+    result->type_ = std::move(type_);
+    result->title_ = title_;
+    result->last_message_ = std::move(last_message_);
+    result->unread_count_ = unread_count_;
+    result->last_read_inbox_message_id_ = last_read_inbox_message_id_;
+    result->last_read_outbox_message_id_ = last_read_outbox_message_id_;
+    result->permissions_ = make_object<chatPermissions>(true, true, true, true, true, true, true, true, true, true, true, true, true, true, true, true);
+    result->notification_settings_ = make_object<chatNotificationSettings>();
+    return result;
 }
 
 object_ptr<updateChatPosition> makeUpdateChatListMain(int64_t chatId)
@@ -677,41 +293,22 @@ object_ptr<Object> getChatsNoChatsResponse()
 object_ptr<message> makeMessage(std::int64_t id_, std::int32_t sender_user_id_, std::int64_t chat_id_,
                                 bool is_outgoing_, std::int32_t date_, object_ptr<MessageContent> &&content_)
 {
-    return make_object<message>(
-        id_,
-        sender_user_id_,
-        chat_id_,
-        is_outgoing_ ? make_object<messageSendingStatePending>() : nullptr,
-        nullptr,
-        is_outgoing_,
-        false,
-        true,
-        true,
-        true,
-        false,
-        false,
-        date_,
-        0,
-        nullptr,
-        0,
-        0,
-        0,
-        0,
-        "",
-        0,
-        0,
-        "",
-        std::move(content_),
-        nullptr
-    );
+    auto result = make_object<message>();
+    result->id_ = id_;
+    result->sender_id_ = make_object<messageSenderUser>(sender_user_id_);
+    result->chat_id_ = chat_id_;
+    result->sending_state_ = is_outgoing_ ? make_object<messageSendingStatePending>(0) : nullptr;
+    result->is_outgoing_ = is_outgoing_;
+    result->date_ = date_;
+    result->content_ = std::move(content_);
+    return result;
 }
 
 object_ptr<messageText> makeTextMessage(const std::string &text)
 {
-    return make_object<messageText>(
-        make_object<formattedText>(text, std::vector<object_ptr<textEntity>>()),
-        nullptr
-    );
+    auto result = make_object<messageText>();
+    result->text_ = make_object<formattedText>(text, std::vector<object_ptr<textEntity>>());
+    return result;
 }
 
 object_ptr<photo> makePhotoRemote(int32_t fileId, unsigned size, unsigned width, unsigned height)
@@ -724,7 +321,8 @@ object_ptr<photo> makePhotoRemote(int32_t fileId, unsigned size, unsigned width,
             make_object<localFile>("", true, true, false, false, 0, 0, 0),
             make_object<remoteFile>("beh", "bleh", false, true, size)
         ),
-        width, height
+        width, height,
+        std::vector<int32_t>()
     ));
     return make_object<photo>(false, nullptr, std::move(sizes));
 }
@@ -740,7 +338,8 @@ object_ptr<photo> makePhotoLocal(int32_t fileId, unsigned size, const std::strin
             make_object<localFile>(path, true, true, false, true, 0, size, size),
             make_object<remoteFile>("beh", "bleh", false, true, size)
         ),
-        width, height
+        width, height,
+        std::vector<int32_t>()
     ));
     return make_object<photo>(false, nullptr, std::move(sizes));
 }
@@ -758,7 +357,8 @@ object_ptr<photo> makePhotoUploading(int32_t fileId, unsigned size, unsigned upl
             make_object<localFile>(path, true, true, false, true, 0, size, size),
             make_object<remoteFile>("beh", "bleh", false, false, uploaded)
         ),
-        width, height
+        width, height,
+        std::vector<int32_t>()
     ));
     return make_object<photo>(false, nullptr, std::move(sizes));
 }
@@ -766,8 +366,12 @@ object_ptr<photo> makePhotoUploading(int32_t fileId, unsigned size, unsigned upl
 object_ptr<chatMember> makeChatMember(int32_t userId, int32_t inviteUserId, time_t joinTime,
                                       object_ptr<ChatMemberStatus> &&memberStatus, const void *)
 {
-    return make_object<chatMember>(make_object<messageSenderUser>(userId),
-                                   inviteUserId, joinTime, std::move(memberStatus));
+    auto result = make_object<chatMember>();
+    result->member_id_ = make_object<messageSenderUser>(userId);
+    result->inviter_user_id_ = inviteUserId;
+    result->joined_chat_date_ = static_cast<int32_t>(joinTime);
+    result->status_ = std::move(memberStatus);
+    return result;
 }
 
 object_ptr<createChatInviteLink> makeInviteLinkRequest(int64_t chatId)
@@ -785,4 +389,95 @@ object_ptr<chatInviteLink> makeChatInviteLink(const std::string &link)
 }
 
 }
+}
+
+void TestTransceiver::send(td::Client::Request &&request)
+{
+    m_lastReceivedRequestId = request.id;
+    m_requests.push(std::move(request));
+}
+
+uint64_t TestTransceiver::verifyRequest(const td::td_api::Function &request)
+{
+    expectedRequest = &request;
+    EXPECT_FALSE(m_requests.empty()) << "Expected Request, but no requests received";
+    if (m_requests.empty()) return 0;
+    auto actual = std::move(m_requests.front());
+    m_requests.pop();
+    td::td_api::compare_func(*actual.function, *expectedRequest);
+    expectedRequest = nullptr;
+    m_verifiedRequestIds.push(actual.id);
+    return actual.id;
+}
+
+std::vector<uint64_t> TestTransceiver::verifyRequests(std::initializer_list<td::td_api::object_ptr<td::td_api::Function>> requests)
+{
+    std::vector<uint64_t> ids;
+    for (const auto &req : requests) {
+        ids.push_back(verifyRequest(*req));
+    }
+    return ids;
+}
+
+void TestTransceiver::verifyRequests(const std::vector<const td::td_api::Function *> requests)
+{
+    for (const auto *req : requests) {
+        verifyRequest(*req);
+    }
+}
+
+void TestTransceiver::reply(td::td_api::object_ptr<td::td_api::Object> object)
+{
+    uint64_t requestId = m_lastReceivedRequestId;
+    if (!m_verifiedRequestIds.empty()) {
+        requestId = m_verifiedRequestIds.front();
+        m_verifiedRequestIds.pop();
+    }
+    receive(td::Client::Response{requestId, std::move(object)});
+}
+
+void TestTransceiver::reply(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
+{
+    std::queue<uint64_t> remaining;
+    while (!m_verifiedRequestIds.empty()) {
+        if (m_verifiedRequestIds.front() != requestId) {
+            remaining.push(m_verifiedRequestIds.front());
+        }
+        m_verifiedRequestIds.pop();
+    }
+    m_verifiedRequestIds = std::move(remaining);
+    receive(td::Client::Response{requestId, std::move(object)});
+}
+
+void TestTransceiver::update(td::td_api::object_ptr<td::td_api::Object> object)
+{
+    receive(td::Client::Response{0, std::move(object)});
+}
+
+void TestTransceiver::runTimeouts()
+{
+    for (auto &timer : m_timers) {
+        timer.function(timer.data);
+    }
+}
+
+guint TestTransceiver::addTimeout(guint interval, GSourceFunc function, gpointer data)
+{
+    m_timers.push_back({m_nextTimerId++, function, data});
+    return m_timers.back().id;
+}
+
+void TestTransceiver::cancelTimer(guint id)
+{
+    for (auto it = m_timers.begin(); it != m_timers.end(); ++it) {
+        if (it->id == id) {
+            m_timers.erase(it);
+            return;
+        }
+    }
+}
+
+void TestTransceiver::verifyNoRequests()
+{
+    EXPECT_TRUE(m_requests.empty()) << "Unexpected request: ";
 }

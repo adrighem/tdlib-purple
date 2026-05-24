@@ -1,18 +1,20 @@
 #include "fixture.h"
+#include "format.h"
+#include "purple-info.h"
 #include "tdlib-purple.h"
-#include "libpurple-mock.h"
 #include "printout.h"
+#include <iostream>
 
 CommTest::CommTest()
 {
-    tgprpl_set_test_backend(&tgl);
-    tgprpl_set_single_thread();
+    purplePlugin.info = getPluginInfo();
     purple_init_plugin(&purplePlugin);
-    purplePlugin.info->load(&purplePlugin);
 }
 
 void CommTest::SetUp()
 {
+    tgprpl_set_test_backend(&tgl);
+    prpl.discardEvents();
     account = purple_account_new(("+" + selfPhoneNumber).c_str(), NULL);
     connection = new PurpleConnection;
     connection->state = PURPLE_DISCONNECTED;
@@ -48,11 +50,11 @@ static bool isObject(const td::TlObject &object)
     return responseToString(object).substr(0, 3) != "Id ";
 }
 
-void CommTest::login(std::initializer_list<object_ptr<Object>> extraUpdates, object_ptr<users> getContactsReply,
+void CommTest::login(std::vector<object_ptr<Object>> extraUpdates, object_ptr<users> getContactsReply,
                      object_ptr<Object> getChatsReply,
-                     std::initializer_list<std::unique_ptr<PurpleEvent>> postUpdateEvents,
-                     std::initializer_list<object_ptr<td::TlObject>> postUpdateRequestsAndResponses,
-                     std::initializer_list<std::unique_ptr<PurpleEvent>> postChatListEvents)
+                     std::vector<std::shared_ptr<PurpleEvent>> postUpdateEvents,
+                     std::vector<object_ptr<td::TlObject>> postUpdateRequestsAndResponses,
+                     std::vector<std::shared_ptr<PurpleEvent>> postChatListEvents)
 {
     pluginInfo().login(account);
     prpl.verifyEvents(
@@ -60,39 +62,18 @@ void CommTest::login(std::initializer_list<object_ptr<Object>> extraUpdates, obj
         ConnectionUpdateProgressEvent(connection, 1, 2)
     );
 
-    tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
     tgl.verifyRequests({
-        make_object<disableProxy>(),
-        make_object<getProxies>(),
-        make_object<setTdlibParameters>(make_object<tdlibParameters>(
-            false,
-            std::string(purple_user_dir()) + G_DIR_SEPARATOR_S +
-            "tdlib" + G_DIR_SEPARATOR_S + "+" + selfPhoneNumber,
-            "",
-            false,
-            false,
-            false,
-            true, // use secret chats
-            0,
-            "",
-            "",
-            "",
-            "",
-            "",
-            true,
-            false
-        ))
+        td::move_tl_object_as<Function>(make_object<disableProxy>()),
+        td::move_tl_object_as<Function>(make_object<getProxies>()),
+        td::move_tl_object_as<Function>(makeDefaultParams())
     });
-    tgl.reply(make_object<ok>());
-
-    // TODO: what if is_encrypted = false?
-    tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitEncryptionKey>(true)));
-    tgl.verifyRequest(checkDatabaseEncryptionKey(""));
-    tgl.reply(make_object<ok>());
+    tgl.reply(make_object<ok>()); // disableProxy (ignored)
+    tgl.reply(make_object<addedProxies>(std::vector<object_ptr<addedProxy>>())); // getProxies
+    tgl.reply(make_object<ok>()); // setTdlibParameters
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateReady>()));
     prpl.verifyEvents(ConnectionSetStateEvent(connection, PURPLE_CONNECTED));
-    uint64_t contactRequestId = tgl.verifyRequest(getContacts());
+    uint64_t contactRequestId = tgl.verifyRequest(*make_object<getContacts>());
 
     tgl.update(make_object<updateConnectionState>(make_object<connectionStateConnecting>()));
     tgl.update(make_object<updateConnectionState>(make_object<connectionStateUpdating>()));
@@ -106,99 +87,115 @@ void CommTest::login(std::initializer_list<object_ptr<Object>> extraUpdates, obj
         selfPhoneNumber, // Phone number here without + to make it more interesting
         make_object<userStatusOffline>()
     )));
-    for (const object_ptr<Object> &update: extraUpdates)
-        tgl.update(std::move(const_cast<object_ptr<Object> &>(update))); // Take that!
+    for (auto &update: extraUpdates) {
+        tgl.update(std::move(update));
+    }
     prpl.verifyEvents2(std::move(postUpdateEvents));
 
     std::vector<const Function *> postUpdateRequests;
-    for (const object_ptr<td::TlObject> &object: postUpdateRequestsAndResponses) {
+    std::vector<object_ptr<td::TlObject>> postUpdateResponses;
+    for (auto &object: postUpdateRequestsAndResponses) {
         if (isFunction(*object))
             postUpdateRequests.push_back(static_cast<const Function*>(object.get()));
-        if (isObject(*object)) {
-            if (!postUpdateRequests.empty())
-                tgl.verifyRequests(postUpdateRequests);
-            postUpdateRequests.clear();
-            tgl.reply(td::move_tl_object_as<Object>(const_cast<object_ptr<td::TlObject> &>(object)));
-        }
+        else
+            postUpdateResponses.push_back(std::move(object));
     }
-    tgl.verifyRequests(postUpdateRequests);
 
     tgl.update(make_object<updateConnectionState>(make_object<connectionStateReady>()));
 
     tgl.reply(contactRequestId, std::move(getContactsReply));
 
-    tgl.verifyRequest(getChatsRequest());
-    bool hasChats = getChatsReply->get_id() == td::td_api::ok::ID;
+    // Verify requests triggered by getContactsResponse (e.g. getBasicGroupFullInfo)
+    tgl.verifyRequests(postUpdateRequests);
+    for (auto &response : postUpdateResponses) {
+        tgl.reply(td::move_tl_object_as<Object>(std::move(response)));
+    }
+
+    tgl.verifyRequest(*getChatsRequest());
+    bool hasChats = (getChatsReply && getChatsReply->get_id() == td::td_api::ok::ID);
     tgl.reply(std::move(getChatsReply));
     if (hasChats) {
-        tgl.verifyRequest(getChatsRequest());
+        tgl.verifyRequest(*getChatsRequest());
         tgl.reply(getChatsNoChatsResponse());
     }
 
-    if ((postChatListEvents.size() == 1) && (*postChatListEvents.begin() == nullptr))
+    if (postChatListEvents.empty()) {
         prpl.verifyEvents(
             AccountSetAliasEvent(account, selfFirstName + " " + selfLastName),
             ShowAccountEvent(account)
         );
-    else
+    } else {
         prpl.verifyEvents2(std::move(postChatListEvents));
+    }
 }
 
 void CommTest::loginWithOneContact()
 {
-    login(
-        {standardUpdateUser(0), standardPrivateChat(0), makeUpdateChatListMain(chatIds[0])},
-        make_object<users>(1, std::vector<int32_t>(1, userIds[0])),
-        make_object<chats>(std::vector<int64_t>(1, chatIds[0])),
-        {
-            std::make_unique<AddBuddyEvent>(purpleUserName(0), userFirstNames[0] + " " + userLastNames[0],
-                                            account, nullptr, nullptr, nullptr),
-        }, {},
-        {
-            std::make_unique<UserStatusEvent>(account, purpleUserName(0), PURPLE_STATUS_AWAY),
-            std::make_unique<AccountSetAliasEvent>(account, selfFirstName + " " + selfLastName),
-            std::make_unique<ShowAccountEvent>(account)
-        }
-    );
+    std::vector<object_ptr<Object>> extraUpdates;
+    extraUpdates.push_back(standardUpdateUser(0u));
+    extraUpdates.push_back(standardPrivateChat(0u));
+    extraUpdates.push_back(makeUpdateChatListMain(chatIds[0]));
+
+    std::vector<std::shared_ptr<PurpleEvent>> updateEvents;
+    updateEvents.push_back(std::make_shared<AddBuddyEvent>(purpleUserName(0), userFirstNames[0] + " " + userLastNames[0], account, nullptr, nullptr, nullptr));
+
+    std::vector<std::shared_ptr<PurpleEvent>> chatListEvents;
+    chatListEvents.push_back(std::make_shared<UserStatusEvent>(account, purpleUserName(0), PURPLE_STATUS_AWAY));
+    chatListEvents.push_back(std::make_shared<AccountSetAliasEvent>(account, selfFirstName + " " + selfLastName));
+    chatListEvents.push_back(std::make_shared<ShowAccountEvent>(account));
+
+    login(std::move(extraUpdates), makeUsers({userIds[0]}), make_object<ok>(), std::move(updateEvents), {}, std::move(chatListEvents));
 }
 
-object_ptr<updateUser> CommTest::standardUpdateUser(unsigned index)
+object_ptr<Object> CommTest::standardUpdateUser(unsigned index)
 {
     return make_object<updateUser>(makeUser(
-        userIds[index],
-        userFirstNames[index],
-        userLastNames[index],
-        userPhones[index],
+        userIds[index], userFirstNames[index], userLastNames[index], userPhones[index],
         make_object<userStatusOffline>()
     ));
 }
 
-object_ptr<updateUser> CommTest::standardUpdateUserNoPhone(unsigned index)
+object_ptr<Object> CommTest::standardUpdateUserNoPhone(unsigned index)
 {
     return make_object<updateUser>(makeUser(
-        userIds[index],
-        userFirstNames[index],
-        userLastNames[index],
-        "",
+        userIds[index], userFirstNames[index], userLastNames[index], "",
         make_object<userStatusOffline>()
     ));
 }
 
-object_ptr<updateNewChat> CommTest::standardPrivateChat(unsigned index, object_ptr<ChatList> chatList)
+object_ptr<Object> CommTest::standardPrivateChat(unsigned index, object_ptr<ChatList> chatList)
 {
-    object_ptr<chat> chat = makeChat(
+    return make_object<updateNewChat>(makeChat(
         chatIds[index],
         make_object<chatTypePrivate>(userIds[index]),
         userFirstNames[index] + " " + userLastNames[index],
         nullptr, 0, 0, 0
-    );
-    chat->chat_list_ = std::move(chatList);
-    return make_object<updateNewChat>(std::move(chat));
+    ));
 }
 
 PurplePluginProtocolInfo &CommTest::pluginInfo()
 {
     return *(PurplePluginProtocolInfo *)purplePlugin.info->extra_info;
+}
+
+object_ptr<td::td_api::setTdlibParameters> CommTest::makeDefaultParams()
+{
+    return make_object<setTdlibParameters>(
+        false,
+        std::string(purple_user_dir()) + G_DIR_SEPARATOR_S + "tdlib" + G_DIR_SEPARATOR_S + "+" + selfPhoneNumber,
+        "",
+        "",
+        false,
+        false,
+        false,
+        true,
+        0,
+        "",
+        "",
+        "",
+        "",
+        ""
+    );
 }
 
 void checkFile(const char *filename, void *content, unsigned size)
@@ -208,5 +205,4 @@ void checkFile(const char *filename, void *content, unsigned size)
     ASSERT_TRUE(g_file_get_contents(filename, &actualContent, &actualSize, NULL)) << filename << " does not exist";
     ASSERT_EQ(actualSize, size) << "Wrong file size for " << filename;
     ASSERT_EQ(0, memcmp(content, actualContent, size)) << "Wrong content for " << filename;
-    g_free(actualContent);
 }

@@ -6,6 +6,7 @@
 
 extern "C" {
     gboolean purple_init_plugin(PurplePlugin *plugin);
+    PurplePluginInfo *getPluginInfo();
 };
 void tgprpl_set_test_backend(ITransceiverBackend *backend);
 void tgprpl_set_single_thread();
