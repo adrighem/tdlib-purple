@@ -798,7 +798,7 @@ static PurpleCmdRet hangupCommand(PurpleConversation *conv, const gchar *cmd, gc
 
 static char png[] = "png";
 
-static PurplePluginProtocolInfo prpl_info = {
+PurplePluginProtocolInfo prpl_info = {
     .options          = (PurpleProtocolOptions)(OPT_PROTO_NO_PASSWORD | OPT_PROTO_IM_IMAGE | OPT_PROTO_CHAT_TOPIC),
     .user_splits      = NULL, // was initialized in tgprpl_init()
     .protocol_options = NULL, // was initialized in tgprpl_init()
@@ -1174,7 +1174,14 @@ extern "C" {
     PURPLE_INIT_PLUGIN (telegram_tdlib, tgprpl_init, plugin_info)
 }
 
+PurplePluginProtocolInfo *tdlib_purple_prpl_info_ptr = &prpl_info;
+
 PurplePluginInfo *getPluginInfo()
 {
     return &plugin_info;
+}
+
+PurplePluginProtocolInfo *tdlib_purple_get_prpl_info()
+{
+    return &prpl_info;
 }

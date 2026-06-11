@@ -1,10 +1,13 @@
 #include "fixture.h"
+#include <td/telegram/td_api.h>
+
+using namespace td::td_api;
 
 class LoginTest: public CommTest {};
 
 TEST_F(LoginTest, Login)
 {
-    login();
+    login({}, nullptr, make_object<error>(404, "Not Found"));
 }
 
 TEST_F(LoginTest, ConnectionReadyBeforeAuthReady)
@@ -16,7 +19,7 @@ TEST_F(LoginTest, ConnectionReadyBeforeAuthReady)
     );
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<disableProxy>(),
         make_object<getProxies>(),
         make_object<setTdlibParameters>(
@@ -36,7 +39,7 @@ TEST_F(LoginTest, ConnectionReadyBeforeAuthReady)
             "",
             ""
         )
-    });
+    );
     tgl.reply(make_object<ok>()); // disableProxy (ignored)
     tgl.reply(make_object<addedProxies>(std::vector<object_ptr<addedProxy>>())); // getProxies
     tgl.reply(make_object<ok>()); // setTdlibParameters
@@ -84,7 +87,7 @@ TEST_F(LoginTest, RegisterNewAccount_WithAlias_ConnectionReadyBeforeAuthReady)
     );
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<disableProxy>(),
         make_object<getProxies>(),
         make_object<setTdlibParameters>(
@@ -104,7 +107,7 @@ TEST_F(LoginTest, RegisterNewAccount_WithAlias_ConnectionReadyBeforeAuthReady)
             "",
             ""
         )
-    });
+    );
     tgl.reply(make_object<ok>()); // disableProxy (ignored)
     tgl.reply(make_object<addedProxies>(std::vector<object_ptr<addedProxy>>())); // getProxies
     tgl.reply(make_object<ok>()); // setTdlibParameters
@@ -181,7 +184,7 @@ TEST_F(LoginTest, RegisterNewAccount_NoAlias)
     );
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<disableProxy>(),
         make_object<getProxies>(),
         make_object<setTdlibParameters>(
@@ -201,7 +204,7 @@ TEST_F(LoginTest, RegisterNewAccount_NoAlias)
             "",
             ""
         )
-    });
+    );
     tgl.reply(make_object<ok>()); // disableProxy (ignored)
     tgl.reply(make_object<addedProxies>(std::vector<object_ptr<addedProxy>>())); // getProxies
     tgl.reply(make_object<ok>()); // setTdlibParameters
@@ -274,7 +277,7 @@ TEST_F(LoginTest, TwoFactorAuthentication)
     );
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<disableProxy>(),
         make_object<getProxies>(),
         make_object<setTdlibParameters>(
@@ -294,7 +297,7 @@ TEST_F(LoginTest, TwoFactorAuthentication)
             "",
             ""
         )
-    });
+    );
     tgl.reply(make_object<ok>()); // disableProxy (ignored)
     tgl.reply(make_object<addedProxies>(std::vector<object_ptr<addedProxy>>())); // getProxies
     tgl.reply(make_object<ok>()); // setTdlibParameters
@@ -363,7 +366,7 @@ TEST_F(LoginTest, RenameBuddyAtConnect)
     login(
         std::move(extraUpdates),
         make_object<users>(1, std::vector<int64_t>{userIds[0]}),
-        make_object<chats>(1, std::vector<int64_t>(1, chatIds[0])),
+        make_object<error>(404, "Not Found"),
         {
             std::make_shared<AliasBuddyEvent>(purpleUserName(0), userFirstNames[0] + " " + userLastNames[0]),
         }, {},
@@ -428,7 +431,7 @@ TEST_F(LoginTest, AddedProxyCofiguration)
     );
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<disableProxy>(),
         make_object<addProxy>(make_object<proxy>(host, port, make_object<proxyTypeSocks5>(username, password)), true, ""),
         make_object<getProxies>(),
@@ -449,7 +452,7 @@ TEST_F(LoginTest, AddedProxyCofiguration)
             "",
             ""
         )
-    });
+    );
 
     tgl.reply(make_object<ok>()); // reply to disableProxy
     tgl.reply(make_object<addedProxy>(2, 0, false, "", nullptr));
@@ -480,7 +483,7 @@ TEST_F(LoginTest, ChangedProxyCofiguration)
     );
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<disableProxy>(),
         make_object<addProxy>(make_object<proxy>(host, port, make_object<proxyTypeSocks5>(username, password)), true, ""),
         make_object<getProxies>(),
@@ -501,7 +504,7 @@ TEST_F(LoginTest, ChangedProxyCofiguration)
             "",
             ""
         )
-    });
+    );
 
     tgl.reply(make_object<ok>()); // reply to disableProxy
     tgl.reply(make_object<addedProxy>(2, 0, false, "", nullptr));
@@ -524,7 +527,7 @@ TEST_F(LoginTest, RemovedProxyCofiguration)
     );
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<disableProxy>(),
         make_object<getProxies>(),
         make_object<setTdlibParameters>(
@@ -544,7 +547,7 @@ TEST_F(LoginTest, RemovedProxyCofiguration)
             "",
             ""
         )
-    });
+    );
 
     tgl.reply(make_object<ok>()); // reply to disableProxy
     std::vector<object_ptr<addedProxy>> proxyList;
@@ -565,7 +568,7 @@ TEST_F(LoginTest, getChatsSequence)
     );
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<disableProxy>(),
         make_object<getProxies>(),
         make_object<setTdlibParameters>(
@@ -585,7 +588,7 @@ TEST_F(LoginTest, getChatsSequence)
             "",
             ""
         )
-    });
+    );
     tgl.reply(make_object<ok>()); // disableProxy (ignored)
     tgl.reply(make_object<addedProxies>(std::vector<object_ptr<addedProxy>>())); // getProxies
     tgl.reply(make_object<ok>()); // setTdlibParameters
@@ -654,7 +657,7 @@ TEST_F(LoginTest, KeepInlineDownloads)
     );
 
     tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<disableProxy>(),
         make_object<getProxies>(),
         make_object<setTdlibParameters>(
@@ -674,12 +677,11 @@ TEST_F(LoginTest, KeepInlineDownloads)
             "",
             ""
         )
-    });
+    );
 }
 
 TEST_F(LoginTest, IncomingGroupChatMessageAtLoginWhileChatListStillNull)
 {
-    std::cout << "DEBUG: test start\n";
     const int32_t     groupId             = 700;
     const int64_t     groupChatId         = 7000;
     const std::string groupChatTitle      = "Title";
@@ -706,13 +708,13 @@ TEST_F(LoginTest, IncomingGroupChatMessageAtLoginWhileChatListStillNull)
     )));
     extraUpdates.push_back(makeUpdateChatListMain(groupChatId));
 
-    std::vector<object_ptr<td::TlObject>> postUpdateRequests;
-    postUpdateRequests.push_back(make_object<viewMessages>(groupChatId, std::vector<int64_t>(1, messageId), nullptr, true));
+    std::vector<object_ptr<BaseObject>> postUpdateRequests;
+    postUpdateRequests.push_back(Mock_ViewMessages(groupChatId, std::vector<int64_t>(1, messageId), true));
     postUpdateRequests.push_back(make_object<getBasicGroupFullInfo>(groupId));
 
     login(
         std::move(extraUpdates),
-        makeUsers({}), make_object<ok>(),
+        makeUsers({}), make_object<error>(404, "Not Found"),
         {
             // Removal is unnecessary but nothing too bad is happening
             std::make_shared<RemoveChatEvent>(groupChatPurpleName, ""),
@@ -725,4 +727,3 @@ TEST_F(LoginTest, IncomingGroupChatMessageAtLoginWhileChatListStillNull)
         std::move(postUpdateRequests)
     );
 }
-

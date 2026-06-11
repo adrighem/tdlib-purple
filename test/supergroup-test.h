@@ -10,9 +10,9 @@ protected:
     const std::string groupChatTitle      = "Title";
     const std::string groupChatPurpleName = "chat" + std::to_string(groupChatId);
 
-    void loginWithSupergroup(object_ptr<supergroupFullInfo> fullInfo = nullptr,
-                             object_ptr<chatMembers> recentMembers = nullptr,
-                             object_ptr<chatMembers> administrators = nullptr);
+    void loginWithSupergroup(::td::td_api::object_ptr<::td::td_api::supergroupFullInfo> fullInfo = nullptr,
+                             ::td::td_api::object_ptr<::td::td_api::chatMembers> recentMembers = nullptr,
+                             ::td::td_api::object_ptr<::td::td_api::chatMembers> administrators = nullptr);
 };
 
 #endif

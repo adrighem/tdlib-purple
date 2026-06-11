@@ -1,6 +1,8 @@
 #include "fixture.h"
 #include "libpurple-mock.h"
 #include "buildopt.h"
+#include <td/telegram/td_api.h>
+using namespace td::td_api;
 
 class FileTransferTest: public CommTest {};
 
@@ -29,9 +31,9 @@ TEST_F(FileTransferTest, Document_AlreadyDownloaded)
             make_object<formattedText>("caption", std::vector<object_ptr<textEntity>>())
         )
     )));
-    tgl.verifyRequests({
-        make_object<viewMessages>(chatIds[0], std::vector<int64_t>(1, messageId), true)
-    });
+    tgl.verifyRequestsV(
+        Mock_ViewMessages(chatIds[0], std::vector<int64_t>(1, messageId), true)
+    );
     prpl.verifyEvents(
         ServGotImEvent(
             connection,
@@ -52,7 +54,7 @@ TEST_F(FileTransferTest, BigPhoto_RequestDownload)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 600000, 600000,
@@ -67,14 +69,14 @@ TEST_F(FileTransferTest, BigPhoto_RequestDownload)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("caption", std::vector<object_ptr<textEntity>>()),
             false
         )
     )));
     tgl.verifyRequest(
-        viewMessages(chatIds[0], std::vector<int64_t>(1, 1), true)
+        *Mock_ViewMessages(chatIds[0], std::vector<int64_t>(1, 1), true)
     );
     prpl.verifyEvents(
         ServGotImEvent(connection, purpleUserName(0), "caption", PURPLE_MESSAGE_RECV, date),
@@ -113,7 +115,7 @@ TEST_F(FileTransferTest, BigPhoto_Ignore)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 655360, 655360,
@@ -128,14 +130,14 @@ TEST_F(FileTransferTest, BigPhoto_Ignore)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("caption", std::vector<object_ptr<textEntity>>()),
             false
         )
     )));
     tgl.verifyRequest(
-        viewMessages(chatIds[0], std::vector<int64_t>(1, 1), true)
+        *Mock_ViewMessages(chatIds[0], std::vector<int64_t>(1, 1), true)
     );
     prpl.verifyEvents(
         ServGotImEvent(connection, purpleUserName(0), "caption", PURPLE_MESSAGE_RECV, date),
@@ -154,7 +156,7 @@ TEST_F(FileTransferTest, SecretPhoto_AlreadyDownloaded)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 10000, 10000,
@@ -169,14 +171,14 @@ TEST_F(FileTransferTest, SecretPhoto_AlreadyDownloaded)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("caption", std::vector<object_ptr<textEntity>>()),
             true
         )
     )));
     tgl.verifyRequest(
-        viewMessages(chatIds[0], std::vector<int64_t>(1, 1), true)
+        *Mock_ViewMessages(chatIds[0], std::vector<int64_t>(1, 1), true)
     );
 
     // Secret photos are always ignored
@@ -197,7 +199,7 @@ TEST_F(FileTransferTest, PhotoWithoutCaption)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 10000, 10000,
@@ -212,7 +214,7 @@ TEST_F(FileTransferTest, PhotoWithoutCaption)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("", std::vector<object_ptr<textEntity>>()),
             false
@@ -234,7 +236,7 @@ TEST_F(FileTransferTest, PhotoWithoutCaption)
         (PurpleMessageFlags)(PURPLE_MESSAGE_RECV | PURPLE_MESSAGE_IMAGES),
         date
     ));
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 }
 
 TEST_F(FileTransferTest, SendFile_ErrorInUploadResponse)
@@ -303,12 +305,12 @@ TEST_F(FileTransferTest, SendFile_SendMessageResponseError)
         XferCompletedEvent(PATH, TRUE, 9000),
         XferEndEvent(PATH)
     );
-    tgl.verifyRequest(sendMessage(
+    tgl.verifyRequest(*Mock_SendMessage(
         chatIds[0],
         0,
         nullptr,
         nullptr,
-        make_object<inputMessageDocument>(
+        Mock_InputMessageDocument(
             make_object<inputFileId>(fileId),
             nullptr,
             make_object<formattedText>()
@@ -361,7 +363,7 @@ TEST_F(FileTransferTest, DISABLED_WebpStickerDecode)
         chatIds[0],
         false,
         date,
-        make_object<messageSticker>(make_object<sticker>(
+        makeMessageSticker(makeSticker(
             0, 320, 200, "", true, false, nullptr,
             nullptr,
             make_object<file>(
@@ -371,7 +373,7 @@ TEST_F(FileTransferTest, DISABLED_WebpStickerDecode)
             )
         ))
     )));
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
     prpl.verifyEvents(ServGotImEvent(
         connection,
         purpleUserName(0),
@@ -398,7 +400,7 @@ TEST_F(FileTransferTest, DISABLED_AnimatedStickerDecode)
         chatIds[0],
         false,
         date,
-        make_object<messageSticker>(make_object<sticker>(
+        makeMessageSticker(makeSticker(
             0, 320, 200, "", true, false, nullptr,
             nullptr,
             make_object<file>(
@@ -408,11 +410,11 @@ TEST_F(FileTransferTest, DISABLED_AnimatedStickerDecode)
             )
         ))
     )));
-    tgl.verifyRequests({
-        make_object<viewMessages>(chatIds[0], std::vector<int64_t>(1, 1), true),
-    });
+    tgl.verifyRequestsV(
+        Mock_ViewMessages(chatIds[0], std::vector<int64_t>(1, 1), true)
+    );
 
-    tgl.reply(make_object<ok>()); // reply to viewMessages
+    tgl.reply(make_object<error>(404, "Not Found")); // reply to viewMessages
 
     prpl.verifyEvents(
         ServGotImEvent(
@@ -440,7 +442,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_AlreadyDownloaded)
         chatIds[0],
         false,
         date,
-        make_object<messageSticker>(make_object<sticker>(
+        makeMessageSticker(makeSticker(
             0, 320, 200, "", true, false, nullptr,
             nullptr,
             make_object<file>(
@@ -466,7 +468,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_AlreadyDownloaded)
         PURPLE_MESSAGE_RECV,
         date
     ));
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 
     // Now with thumbnail and main file, both already downloaded
     tgl.update(make_object<updateNewMessage>(makeMessage(
@@ -475,7 +477,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_AlreadyDownloaded)
         chatIds[0],
         false,
         date,
-        make_object<messageSticker>(make_object<sticker>(
+        makeMessageSticker(makeSticker(
             0, 320, 200, "", true, false, nullptr,
             make_object<thumbnail>(
                 make_object<thumbnailFormatJpeg>(),
@@ -494,7 +496,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_AlreadyDownloaded)
         ))
     )));
 
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
     prpl.verifyEvents(ServGotImEvent(
         connection,
         purpleUserName(0),
@@ -520,7 +522,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_ThumbnailAboveLimit)
         chatIds[0],
         false,
         date,
-        make_object<messageSticker>(make_object<sticker>(
+        makeMessageSticker(makeSticker(
             0, 320, 200, "", true, false, nullptr,
             make_object<thumbnail>(
                 make_object<thumbnailFormatJpeg>(),
@@ -562,7 +564,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_ThumbnailAboveLimit)
             PURPLE_MESSAGE_RECV, date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 }
 
 TEST_F(FileTransferTest, Sticker_AnimatedDisabled_LongDownloads_ThumbnailAboveLimit)
@@ -581,7 +583,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_LongDownloads_ThumbnailAboveLi
         chatIds[0],
         false,
         date,
-        make_object<messageSticker>(make_object<sticker>(
+        makeMessageSticker(makeSticker(
             0, 320, 200, "", true, false, nullptr,
             make_object<thumbnail>(
                 make_object<thumbnailFormatJpeg>(),
@@ -628,7 +630,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_LongDownloads_ThumbnailAboveLi
         XferEndEvent(tempFileName)
     );
     ASSERT_FALSE(g_file_test(tempFileName.c_str(), G_FILE_TEST_EXISTS));
-    tgl.verifyRequests({make_object<downloadFile>(thumbId, 1, 0, 0, true)});
+    tgl.verifyRequestsV(make_object<downloadFile>(thumbId, 1, 0, 0, true));
 
     runTimeouts();
     prpl.verifyEvents(
@@ -659,7 +661,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_LongDownloads_ThumbnailAboveLi
             PURPLE_MESSAGE_RECV, date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 
     ASSERT_FALSE(g_file_test(tempFileName.c_str(), G_FILE_TEST_EXISTS));
 }
@@ -671,7 +673,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress_StuckAtStart)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 10000, 10000,
@@ -686,7 +688,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress_StuckAtStart)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("photo", std::vector<object_ptr<textEntity>>()),
             false
@@ -708,7 +710,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress_StuckAtStart)
             PURPLE_MESSAGE_SYSTEM, date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 
     tgl.update(make_object<updateFile>(make_object<file>(
         fileId, 10000, 10000,
@@ -763,7 +765,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 10000, 10000,
@@ -778,7 +780,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("photo", std::vector<object_ptr<textEntity>>()),
             false
@@ -807,12 +809,12 @@ TEST_F(FileTransferTest, Photo_DownloadProgress)
             PURPLE_MESSAGE_SYSTEM, date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 
     tgl.update(make_object<updateNewMessage>(makeMessage(
         messageId2, userIds[0], chatIds[0], false, date2, makeTextMessage("followUp")
     )));
-    tgl.verifyRequest(viewMessages(chatIds[0], {messageId2}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {messageId2}, true));
     prpl.verifyEvents(ServGotImEvent(connection, purpleUserName(0), "followUp", PURPLE_MESSAGE_RECV, date2));
 
     tgl.update(make_object<updateFile>(make_object<file>(
@@ -855,7 +857,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress_StuckAtStart_Cancel)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 10000, 10000,
@@ -870,7 +872,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress_StuckAtStart_Cancel)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("photo", std::vector<object_ptr<textEntity>>()),
             false
@@ -892,7 +894,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress_StuckAtStart_Cancel)
             PURPLE_MESSAGE_SYSTEM, date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 
     purple_xfer_cancel_local(prpl.getLastXfer());
     prpl.verifyEvents(XferLocalCancelEvent(tempFileName));
@@ -914,7 +916,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress_Cancel)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 10000, 10000,
@@ -929,7 +931,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress_Cancel)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("photo", std::vector<object_ptr<textEntity>>()),
             false
@@ -958,7 +960,7 @@ TEST_F(FileTransferTest, Photo_DownloadProgress_Cancel)
             PURPLE_MESSAGE_SYSTEM, date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 
     tgl.update(make_object<updateFile>(make_object<file>(
         fileId, 10000, 10000,
@@ -1024,6 +1026,7 @@ TEST_F(FileTransferTest, SendFileToNonContact)
         make_object<remoteFile>("", "", true, false, 0)
     ));
     prpl.verifyEvents(
+        AddBuddyEvent(purpleUserName(0), userFirstNames[0] + " " + userLastNames[0], account, nullptr, nullptr, nullptr),
         XferStartEvent(PATH),
         XferProgressEvent(PATH, 0)
     );
@@ -1036,12 +1039,12 @@ TEST_F(FileTransferTest, SendFileToNonContact)
         XferCompletedEvent(PATH, TRUE, 10000),
         XferEndEvent(PATH)
     );
-    tgl.verifyRequest(sendMessage(
+    tgl.verifyRequest(*Mock_SendMessage(
         chatIds[0],
         0,
         nullptr,
         nullptr,
-        make_object<inputMessageDocument>(
+        Mock_InputMessageDocument(
             make_object<inputFileId>(fileId),
             nullptr,
             make_object<formattedText>()
@@ -1053,14 +1056,13 @@ TEST_F(FileTransferTest, SendFileToNonContact)
         "message2",
         PURPLE_MESSAGE_SEND
     ));
-    tgl.verifyRequest(sendMessage(
+    tgl.verifyRequest(*Mock_SendMessage(
         chatIds[0],
         0,
         nullptr,
         nullptr,
-        make_object<inputMessageText>(
+        Mock_InputMessageText(
             make_object<formattedText>("message2", std::vector<object_ptr<textEntity>>()),
-            false,
             false
         )
     ));
@@ -1153,7 +1155,7 @@ TEST_F(FileTransferTest, ReceiveDocument_StandardTransfer_TinyFile)
     )));
 
     // TODO: Read receipt is not sent. It's a bug of sorts but it doesn't really matter.
-    // tgl.verifyRequest(viewMessages(chatIds[0], {messageId}, true));
+    // tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {messageId}, true));
 
     prpl.verifyEvents(
         XferRequestEvent(PURPLE_XFER_RECEIVE, purpleUserName(0).c_str(), "doc.file.name")
@@ -1224,7 +1226,7 @@ TEST_F(FileTransferTest, ReceiveDocument_StandardTransfer_Progress)
         )
     )));
     // TODO: Read receipt is not sent. It's a bug of sorts but it doesn't really matter.
-    // tgl.verifyRequest(viewMessages(chatIds[0], {messageId}, true));
+    // tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {messageId}, true));
     prpl.verifyEvents(
         XferRequestEvent(PURPLE_XFER_RECEIVE, purpleUserName(0).c_str(), "doc.file.name")
     );
@@ -1280,7 +1282,7 @@ TEST_F(FileTransferTest, Photo_LongDownload_StartandDownloadsConfigured)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 10000, 10000,
@@ -1295,7 +1297,7 @@ TEST_F(FileTransferTest, Photo_LongDownload_StartandDownloadsConfigured)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("photo", std::vector<object_ptr<textEntity>>()),
             false
@@ -1321,7 +1323,7 @@ TEST_F(FileTransferTest, Photo_LongDownload_StartandDownloadsConfigured)
             PURPLE_MESSAGE_SYSTEM, date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 
     tgl.update(make_object<updateFile>(make_object<file>(
         fileId, 10000, 10000,
@@ -1420,7 +1422,7 @@ TEST_F(FileTransferTest, ActiveDownloadAtLogout_StuckAtStart)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 10000, 10000,
@@ -1435,7 +1437,7 @@ TEST_F(FileTransferTest, ActiveDownloadAtLogout_StuckAtStart)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("photo", std::vector<object_ptr<textEntity>>()),
             false
@@ -1462,7 +1464,7 @@ TEST_F(FileTransferTest, ActiveDownloadAtLogout_StuckAtStart)
             PURPLE_MESSAGE_SYSTEM, date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 
     pluginInfo().close(connection);
     prpl.verifyEvents(XferLocalCancelEvent(tempFileName));

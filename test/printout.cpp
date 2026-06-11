@@ -1,4 +1,5 @@
 #include "printout.h"
+#include <td/telegram/td_api.h>
 
 using namespace td::td_api;
 
@@ -24,7 +25,7 @@ std::string requestToString(const td::TlObject &req)
         C(setAuthenticationPhoneNumber)
         C(registerUser)
         C(addContact)
-        C(importContacts)
+        C(changeImportedContacts)
         C(searchPublicChat)
         C(sendChatAction)
         C(deleteChatHistory)

@@ -212,7 +212,7 @@ void purple_blist_remove_buddy(PurpleBuddy *buddy)
 static gboolean
 purple_strings_are_different(const char *one, const char *two)
 {
-        return !((one && two && g_utf8_collate(one, two) == 0) ||
+        return !((one && two && strcmp(one, two) == 0) ||
                         ((one == NULL || *one == '\0') && (two == NULL || *two == '\0')));
 }
 
@@ -996,7 +996,7 @@ void purple_xfer_start(PurpleXfer *xfer, int fd, const char *ip,
 
 void purple_xfer_cancel_local(PurpleXfer *xfer)
 {
-    EVENT(XferLocalCancelEvent, xfer->local_filename);
+    EVENT(XferLocalCancelEvent, xfer->local_filename ? xfer->local_filename : "");
     xfer->status = PURPLE_XFER_STATUS_CANCEL_LOCAL;
     if ((xfer->type == PURPLE_XFER_SEND) && xfer->ops.cancel_send)
         xfer->ops.cancel_send(xfer);

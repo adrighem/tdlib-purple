@@ -1,13 +1,14 @@
 #include "purple-events.h"
 #include "libpurple-mock.h"
+#include <td/telegram/td_api.h>
 #include <algorithm>
 #include <gtest/gtest.h>
+using namespace td::td_api;
 
 PurpleEventReceiver g_purpleEvents;
 
 void PurpleEventReceiver::addEvent(std::unique_ptr<PurpleEvent> event)
 {
-    std::cout << "Libpurple event: " << event->toString() << "\n";
     if (event->type == PurpleEventType::RequestInput) {
         const RequestInputEvent &inputEvent = static_cast<const RequestInputEvent &>(*event);
         inputOkCb     = inputEvent.ok_cb;

@@ -1,6 +1,8 @@
 #include <purple.h>
 #include <stdio.h>
 #include <gtest/gtest.h>
+#include <td/telegram/td_api.h>
+using namespace td::td_api;
 
 class TestConfig : public ::testing::Environment
 {
