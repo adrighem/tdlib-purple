@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.2 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.5 FATAL_ERROR)
 # versions before 3.2 don't pass CMAKE_EXE_LINKER_FLAGS when using try_compile
 
 set(VERSION 0.8.1)

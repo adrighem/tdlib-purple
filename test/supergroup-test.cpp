@@ -1,5 +1,7 @@
 #include "supergroup-test.h"
 #include <glib/gstrfuncs.h>
+#include <td/telegram/td_api.h>
+using namespace td::td_api;
 
 static const char *NotificationWho = " ";
 
@@ -14,7 +16,7 @@ void SupergroupTest::loginWithSupergroup(object_ptr<supergroupFullInfo> fullInfo
     if (!administrators)
         administrators = make_object<chatMembers>();
     login(
-        {
+        make_vector<Object>(
             make_object<updateUser>(makeUser(
                 // Chat member
                 userIds[0],
@@ -31,24 +33,23 @@ void SupergroupTest::loginWithSupergroup(object_ptr<supergroupFullInfo> fullInfo
                 "",
                 make_object<userStatusOffline>()
             )),
-            make_object<updateSupergroup>(make_object<supergroup>(
-                groupId, "", 0, make_object<chatMemberStatusMember>(), 2,
-                false, false, false, false, false, false, "", false
+            make_object<updateSupergroup>(makeSupergroup(
+                groupId, make_object<chatMemberStatusMember>(), 2
             )),
             make_object<updateNewChat>(makeChat(
                 groupChatId, make_object<chatTypeSupergroup>(groupId, false), groupChatTitle,
                 nullptr, 0, 0, 0
             )),
             makeUpdateChatListMain(groupChatId)
-        },
+        ),
         make_object<users>(),
-        make_object<chats>(std::vector<int64_t>(1, groupChatId)),
+        make_object<ok>(),
         {
             std::make_unique<AddChatEvent>(
                 groupChatPurpleName, groupChatTitle, account, nullptr, nullptr
             ),
         },
-        {
+        make_vector<BaseObject>(
             make_object<getSupergroupFullInfo>(groupId),
             make_object<getSupergroupMembers>(
                 groupId,
@@ -64,7 +65,7 @@ void SupergroupTest::loginWithSupergroup(object_ptr<supergroupFullInfo> fullInfo
                 0, 200
             ),
             std::move(administrators)
-        }
+        )
     );
 }
 
@@ -158,27 +159,26 @@ TEST_F(SupergroupTest, ExistingSupergroupChatAtLogin)
         groupChatId, make_object<chatTypeSupergroup>(groupId, false), groupChatTitle,
         nullptr, 0, 0, 0
     );
-    chat->chat_list_ = make_object<chatListMain>();
+    addChatPosition(chat, make_object<chatListMain>());
     login(
-        {
-            make_object<updateSupergroup>(make_object<supergroup>(
-                groupId, "", 0, make_object<chatMemberStatusMember>(), 2,
-                false, false, false, false, false, false, "", false
+        make_vector<Object>(
+            make_object<updateSupergroup>(makeSupergroup(
+                groupId, make_object<chatMemberStatusMember>(), 2
             )),
-            make_object<updateNewChat>(std::move(chat)),
-        },
+            make_object<updateNewChat>(std::move(chat))
+        ),
         make_object<users>(),
-        make_object<chats>(std::vector<int64_t>(1, groupChatId)),
+        make_object<ok>(),
         {},
-        {
+        make_vector<BaseObject>(
             make_object<getSupergroupFullInfo>(groupId),
             make_object<getSupergroupMembers>(
                 groupId,
                 make_object<supergroupMembersFilterRecent>(),
                 0,
                 200
-            ),
-        }
+            )
+        )
     );
 }
 
@@ -197,7 +197,7 @@ TEST_F(SupergroupTest, ExistingSupergroupReceiveMessageAtLogin_WithMemberList_Op
         groupChatId, make_object<chatTypeSupergroup>(groupId, false), groupChatTitle,
         nullptr, 0, 0, 0
     );
-    chat->chat_list_ = make_object<chatListMain>();
+    addChatPosition(chat, make_object<chatListMain>());
 
     auto fullInfo = make_object<supergroupFullInfo>();
     fullInfo->description_ = "Description";
@@ -237,10 +237,9 @@ TEST_F(SupergroupTest, ExistingSupergroupReceiveMessageAtLogin_WithMemberList_Op
     admins->members_.push_back(nullptr);
 
     login(
-        {
-            make_object<updateSupergroup>(make_object<supergroup>(
-                groupId, "", 0, make_object<chatMemberStatusMember>(), 2,
-                false, false, false, false, false, false, "", false
+        make_vector<Object>(
+            make_object<updateSupergroup>(makeSupergroup(
+                groupId, make_object<chatMemberStatusMember>(), 2
             )),
             make_object<updateNewChat>(std::move(chat)),
             standardUpdateUser(0), // Incoming message will be from this guy
@@ -248,16 +247,16 @@ TEST_F(SupergroupTest, ExistingSupergroupReceiveMessageAtLogin_WithMemberList_Op
             make_object<updateNewMessage>(
                 makeMessage(messageId, userIds[0], groupChatId, false, date, makeTextMessage("Hello"))
             )
-        },
+        ),
         make_object<users>(),
-        make_object<chats>(std::vector<int64_t>(1, groupChatId)),
+        make_object<ok>(),
         {
             std::make_unique<ServGotJoinedChatEvent>(connection, purpleChatId, groupChatPurpleName,
                                                      groupChatTitle),
             std::make_unique<ServGotChatEvent>(connection, purpleChatId, userFirstNames[0] + " " + userLastNames[0],
                                                "Hello", PURPLE_MESSAGE_RECV, date)
         },
-        {
+        make_vector<BaseObject>(
             make_object<getSupergroupFullInfo>(groupId),
             make_object<getSupergroupMembers>(
                 groupId,
@@ -265,7 +264,7 @@ TEST_F(SupergroupTest, ExistingSupergroupReceiveMessageAtLogin_WithMemberList_Op
                 0,
                 200
             ),
-            make_object<viewMessages>(groupChatId, std::vector<int64_t>(1, messageId), true),
+            Mock_ViewMessages(groupChatId, std::vector<int64_t>(1, messageId), true),
             std::move(fullInfo),
             std::move(members),
             make_object<getSupergroupMembers>(
@@ -274,7 +273,7 @@ TEST_F(SupergroupTest, ExistingSupergroupReceiveMessageAtLogin_WithMemberList_Op
                 0, 200
             ),
             std::move(admins)
-        },
+        ),
         {
             std::make_unique<ChatSetTopicEvent>(groupChatPurpleName, "Description", ""),
             std::make_unique<ChatClearUsersEvent>(groupChatPurpleName),
@@ -344,20 +343,18 @@ TEST_F(SupergroupTest, LeaveSupergroup)
     nodeMenuAction(&chat->node, actions, "Leave group");
     prpl.verifyEvents(RequestActionEvent(connection, account, NULL, NULL, 2));
     prpl.requestedAction("_Yes");
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<leaveChat>(groupChatId),
         make_object<deleteChatHistory>(groupChatId, true, false)
-    });
+    );
 
     tgl.update(makeUpdateRemoveFromChatList(groupChatId, make_object<chatListMain>()));
     prpl.verifyEvents(RemoveChatEvent(groupChatPurpleName, ""));
-    tgl.update(make_object<updateSupergroup>(make_object<supergroup>(
-        groupId, "", 0, make_object<chatMemberStatusBanned>(0), 0,
-        false, false, false, false, false, false, "", false
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusBanned>(0), 0
     )));
-    tgl.update(make_object<updateSupergroup>(make_object<supergroup>(
-        groupId, "", 0, make_object<chatMemberStatusLeft>(), 0,
-        false, false, false, false, false, false, "", false
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusLeft>(), 0
     )));
 
     prpl.verifyNoEvents();
@@ -365,7 +362,7 @@ TEST_F(SupergroupTest, LeaveSupergroup)
         makeMessage(messageId, selfId, groupChatId, true, date,
                     make_object<messageChatDeleteMember>(selfId))
     ));
-    tgl.verifyRequest(viewMessages(groupChatId, {messageId}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(groupChatId, {messageId}, true));
     prpl.verifyEvents(
         ServGotJoinedChatEvent(connection, purpleChatId, groupChatPurpleName, groupChatPurpleName),
         ConvSetTitleEvent(groupChatPurpleName, groupChatTitle),
@@ -417,7 +414,7 @@ TEST_F(SupergroupTest, GetInviteLink)
     ));
     prpl.verifyNoEvents();
 
-    tgl.reply(make_object<chatInviteLink>("http://invite"));
+    tgl.reply(makeChatInviteLink("http://invite"));
     prpl.verifyEvents(
         ConversationWriteEvent(
             groupChatPurpleName, NotificationWho,
@@ -480,9 +477,8 @@ TEST_F(SupergroupTest, JoinByPublicLink1)
     pluginInfo().join_chat(connection, components);
 
     tgl.verifyRequest(searchPublicChat(NAME));
-    tgl.update(make_object<updateSupergroup>(make_object<supergroup>(
-        groupId, "", 0, make_object<chatMemberStatusLeft>(), 2,
-        false, false, false, false, false, false, "", false
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusLeft>(), 2
     )));
     tgl.update(make_object<updateNewChat>(makeChat(
         groupChatId, make_object<chatTypeSupergroup>(groupId, false), groupChatTitle,
@@ -496,23 +492,27 @@ TEST_F(SupergroupTest, JoinByPublicLink1)
     uint64_t joinRequestId = tgl.verifyRequest(joinChat(groupChatId));
     prpl.verifyNoEvents();
 
-    tgl.update(make_object<updateSupergroup>(make_object<supergroup>(
-        groupId, "", 0, make_object<chatMemberStatusMember>(), 2,
-        false, false, false, false, false, false, "", false
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2
     )));
-    tgl.update(makeUpdateChatList(groupChatId, make_object<chatListMain>()));
+    auto joinedChat = makeChat(
+        groupChatId, make_object<chatTypeSupergroup>(groupId, false), groupChatTitle,
+        nullptr, 0, 0, 0
+    );
+    addChatPosition(joinedChat, make_object<chatListMain>());
+    tgl.update(make_object<updateNewChat>(std::move(joinedChat)));
     prpl.verifyEvents(AddChatEvent(
         groupChatPurpleName, groupChatTitle, account, NULL, NULL
     ));
-    tgl.verifyRequests({
+    tgl.verifyRequestsV(
         make_object<getSupergroupFullInfo>(groupId),
         make_object<getSupergroupMembers>(
             groupId,
             make_object<supergroupMembersFilterRecent>(),
             0,
             200
-        ),
-    });
+        )
+    );
 
     tgl.reply(joinRequestId, make_object<ok>());
     prpl.verifyEvents(
@@ -573,7 +573,12 @@ TEST_F(SupergroupTest, JoinByPublicLink_NotGroupChat)
         make_object<userStatusOffline>()
     )));
     tgl.update(standardPrivateChat(0));
-    tgl.reply(std::move(standardPrivateChat(0)->chat_));
+    tgl.reply(makeChat(
+        chatIds[0],
+        make_object<chatTypePrivate>(userIds[0]),
+        userFirstNames[0] + " " + userLastNames[0],
+        nullptr, 0, 0, 0
+    ));
 
     tgl.verifyNoRequests();
     prpl.verifyNoEvents();
@@ -591,9 +596,8 @@ TEST_F(SupergroupTest, JoinByPublicLink_JoinFail)
     g_hash_table_destroy(components);
     tgl.verifyRequest(searchPublicChat("groupname"));
 
-    tgl.update(make_object<updateSupergroup>(make_object<supergroup>(
-        groupId, "", 0, make_object<chatMemberStatusLeft>(), 2,
-        false, false, false, false, false, false, "", false
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusLeft>(), 2
     )));
     tgl.update(make_object<updateNewChat>(makeChat(
         groupChatId, make_object<chatTypeSupergroup>(groupId, false), groupChatTitle,
@@ -620,7 +624,7 @@ TEST_F(SupergroupTest, ReceiveChannelPost)
     message->is_channel_post_ = true;
     tgl.update(make_object<updateNewMessage>(std::move(message)));
 
-    tgl.verifyRequest(viewMessages(
+    tgl.verifyRequest(*Mock_ViewMessages(
         groupChatId,
         {messageId},
         true
@@ -634,5 +638,3 @@ TEST_F(SupergroupTest, ReceiveChannelPost)
     );
 
 }
-
-Test non-user member

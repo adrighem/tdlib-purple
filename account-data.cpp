@@ -108,6 +108,8 @@ bool isGroupMember(const td::td_api::object_ptr<td::td_api::ChatMemberStatus> &s
         return static_cast<const td::td_api::chatMemberStatusRestricted &>(*status).is_member_;
     else if (status->get_id() == td::td_api::chatMemberStatusCreator::ID)
         return static_cast<const td::td_api::chatMemberStatusCreator &>(*status).is_member_;
+    else if (status->get_id() == td::td_api::chatMemberStatusAdministrator::ID)
+        return true;
     else if (status->get_id() == td::td_api::chatMemberStatusMember::ID)
         return true;
 

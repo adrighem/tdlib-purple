@@ -1,6 +1,8 @@
 #include "fixture.h"
 #include "libpurple-mock.h"
 #include <fmt/format.h>
+#include <td/telegram/td_api.h>
+using namespace td::td_api;
 
 class MessageOrderTest: public CommTest {};
 
@@ -15,7 +17,7 @@ TEST_F(MessageOrderTest, ReplyOrdering)
     object_ptr<message> message = makeMessage(
         msgIds[0], userIds[0], chatIds[0], false, dates[0], makeTextMessage("reply")
     );
-    message->reply_to_message_id_ = srcMsgId;
+    message->reply_to_ = makeMessageReplyTo(chatIds[0], srcMsgId);
 
     tgl.update(make_object<updateNewMessage>(std::move(message)));
     uint64_t getMessageReqId = tgl.verifyRequest(
@@ -37,7 +39,7 @@ TEST_F(MessageOrderTest, ReplyOrdering)
         ),
         ServGotImEvent(connection, purpleUserName(0), "followUp", PURPLE_MESSAGE_RECV, dates[1])
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {msgIds[0], msgIds[1]}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {msgIds[0], msgIds[1]}, true));
 }
 
 TEST_F(MessageOrderTest, Reply_FlushAtLogout)
@@ -50,7 +52,7 @@ TEST_F(MessageOrderTest, Reply_FlushAtLogout)
     object_ptr<message> message = makeMessage(
         msgIds[0], userIds[0], chatIds[0], false, dates[0], makeTextMessage("reply")
     );
-    message->reply_to_message_id_ = srcMsgId;
+    message->reply_to_ = makeMessageReplyTo(chatIds[0], srcMsgId);
 
     tgl.update(make_object<updateNewMessage>(std::move(message)));
     tgl.verifyRequest(getMessage(chatIds[0], srcMsgId));
@@ -70,7 +72,7 @@ TEST_F(MessageOrderTest, Reply_FlushAtLogout)
         ),
         ServGotImEvent(connection, purpleUserName(0), "followUp", PURPLE_MESSAGE_RECV, dates[1])
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {msgIds[0], msgIds[1]}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {msgIds[0], msgIds[1]}, true));
 }
 
 TEST_F(MessageOrderTest, Photo_Download_FlushAtLogout)
@@ -80,7 +82,7 @@ TEST_F(MessageOrderTest, Photo_Download_FlushAtLogout)
     loginWithOneContact();
 
     std::vector<object_ptr<photoSize>> sizes;
-    sizes.push_back(make_object<photoSize>(
+    sizes.push_back(makePhotoSize(
         "whatever",
         make_object<file>(
             fileId, 10000, 10000,
@@ -95,7 +97,7 @@ TEST_F(MessageOrderTest, Photo_Download_FlushAtLogout)
         chatIds[0],
         false,
         date,
-        make_object<messagePhoto>(
+        makeMessagePhoto(
             make_object<photo>(false, nullptr, std::move(sizes)),
             make_object<formattedText>("photo", std::vector<object_ptr<textEntity>>()),
             false
@@ -113,7 +115,7 @@ TEST_F(MessageOrderTest, Photo_Download_FlushAtLogout)
             PURPLE_MESSAGE_SYSTEM, date
         )
     );
-    tgl.verifyRequest(viewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
 }
 
 class MessageOrderTestLongDownloadInReply: public MessageOrderTest,
@@ -143,13 +145,13 @@ TEST_P(MessageOrderTestLongDownloadInReply, LongDownloadInReply)
             make_object<formattedText>(caption, std::vector<object_ptr<textEntity>>())
         )
     );
-    message->reply_to_message_id_ = srcMsgId;
+    message->reply_to_ = makeMessageReplyTo(chatIds[0], srcMsgId);
 
     tgl.update(make_object<updateNewMessage>(std::move(message)));
-    auto requestIds = tgl.verifyRequests({
+    auto requestIds = tgl.verifyRequestsV(
         make_object<getMessage>(chatIds[0], srcMsgId),
         make_object<downloadFile>(fileId, 1, 0, 0, true)
-    });
+    );
     uint64_t getMessageReqId = requestIds.at(0);
     uint64_t downloadReqId = requestIds.at(1);
     prpl.verifyNoEvents();
@@ -182,7 +184,7 @@ TEST_P(MessageOrderTestLongDownloadInReply, LongDownloadInReply)
                 PURPLE_MESSAGE_SYSTEM, date
             )
         );
-    tgl.verifyRequest(viewMessages(chatIds[0], {msgId}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {msgId}, true));
 
     tgl.update(make_object<updateFile>(make_object<file>(
         fileId, 10000, 10000,
@@ -278,7 +280,7 @@ TEST_F(MessageOrderTest, DownloadOrdering)
         ServGotImEvent(connection, purpleUserName(0), "followUp", PURPLE_MESSAGE_RECV, date[1])
     );
     // TODO: third read receipt is technically premature but who cares
-    tgl.verifyRequest(viewMessages(chatIds[0], {messageId[0], messageId[1], messageId[2]}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {messageId[0], messageId[1], messageId[2]}, true));
 
     tgl.reply(download2ReqId, make_object<file>(
         fileId[0], 10000, 10000,

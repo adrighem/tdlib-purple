@@ -774,11 +774,13 @@ void PurpleTdClient::loginCreatePrivateChatResponse(uint64_t requestId, td::td_a
 {
     if (object && (object->get_id() == td::td_api::chat::ID)) {
         td::td_api::object_ptr<td::td_api::chat> chat = td::move_tl_object_as<td::td_api::chat>(object);
+        ChatId chatId = getId(*chat);
         purple_debug_misc(config::pluginId, "Requested private chat received: id %" G_GINT64_FORMAT "\n",
                           chat->id_);
         // Here the "new" chat already exists in AccountData because there has just been
         // updateNewChat about this same chat. But do addChat anyway, just in case.
         m_data.addChat(std::move(chat));
+        updateChat(m_data.getChat(chatId));
     } else
         purple_debug_misc(config::pluginId, "Failed to get requested private chat\n");
     requestMissingPrivateChats();
@@ -1456,8 +1458,8 @@ void PurpleTdClient::addContact(const std::string &purpleName, const std::string
     else if (isPhoneNumber(purpleName.c_str())) {
         td::td_api::object_ptr<td::td_api::importedContact> contact =
             td::td_api::make_object<td::td_api::importedContact>(purpleName, "", "", nullptr);
-        td::td_api::object_ptr<td::td_api::importContacts> importReq =
-            td::td_api::make_object<td::td_api::importContacts>();
+        td::td_api::object_ptr<td::td_api::changeImportedContacts> importReq =
+            td::td_api::make_object<td::td_api::changeImportedContacts>();
         importReq->contacts_.push_back(std::move(contact));
         uint64_t requestId = m_transceiver.sendQuery(std::move(importReq),
                                                      &PurpleTdClient::importContactResponse);
