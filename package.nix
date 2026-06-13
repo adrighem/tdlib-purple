@@ -1,6 +1,6 @@
 /* Originally taken from Nixpkgs */
 
-{ lib, stdenv, cmake, libwebp, pidgin, tdlib, openssl_3 } :
+{ lib, stdenv, cmake, libwebp, pidgin, tdlib, openssl } :
 
 stdenv.mkDerivation {
   pname = "tdlib-purple";
@@ -14,7 +14,7 @@ stdenv.mkDerivation {
   '';
 
   nativeBuildInputs = [ cmake ];
-  buildInputs = [ libwebp pidgin tdlib openssl_3 ];
+  buildInputs = [ libwebp pidgin tdlib openssl ];
 
   cmakeFlags = [ "-DNoVoip=True" ]; # libtgvoip required
 
