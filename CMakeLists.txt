@@ -55,6 +55,7 @@ configure_file(config.cpp.in config.cpp)
 add_library(telegram-tdlib SHARED
     tdlib-purple.cpp
     td-client.cpp
+    td-client-auth.cpp
     transceiver.cpp
     account-data.cpp
     purple-info.cpp

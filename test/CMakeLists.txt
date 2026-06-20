@@ -24,6 +24,7 @@ add_executable(tests EXCLUDE_FROM_ALL
 
     ../tdlib-purple.cpp
     ../td-client.cpp
+    ../td-client-auth.cpp
     ../transceiver.cpp
     ../account-data.cpp
     ../purple-info.cpp
