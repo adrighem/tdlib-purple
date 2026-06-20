@@ -128,7 +128,7 @@ struct VImageLoader::Impl {
             VBitmap(width, height, VBitmap::Format::ARGB32_Premultiplied);
 
         // copy the data to bitmap buffer
-        memcpy(result.data(), data, width * height * 4);
+        memcpy(result.data(), data, static_cast<size_t>(width) * height * 4);
 
         // free the image data
         imageFree(data);
