@@ -37,6 +37,7 @@ Bug reports and fixes are welcome. When reporting an issue, please include:
 Debug logs can contain private data, including names, phone numbers, chat titles, and message text. Please remove sensitive data before sharing logs publicly.
 
 For contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
+For release details, see [RELEASING.md](RELEASING.md).
 
 Thanks for testing and helping move tdlib-purple forward.
 

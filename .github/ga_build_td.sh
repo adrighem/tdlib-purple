@@ -11,7 +11,7 @@ fi
 TD_TAG="$1"
 TD_MARK="$2"
 # Just in case we want to change it.
-CACHE_DIR=".ga_cache"
+CACHE_DIR="${TD_CACHE_DIR:-.ga_cache}"
 TARFILE="${CACHE_DIR}/td_destdir_${TD_TAG}_${TD_MARK}.tar.lzop"
 
 # == CHECK CACHE ==
