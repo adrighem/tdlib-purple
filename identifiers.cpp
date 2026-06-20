@@ -154,9 +154,8 @@ SecretChatId getSecretChatId(const td::td_api::chatTypeSecret &chatType)
 
 MessageId getReplyMessageId(const td::td_api::message &message)
 {
-    if (message.reply_to_) {
+    if (message.reply_to_ && message.reply_to_->get_id() == td::td_api::messageReplyToMessage::ID)
         return MessageId(static_cast<const td::td_api::messageReplyToMessage &>(*message.reply_to_).message_id_);
-    } else {
-        return MessageId(0);
-    }
+
+    return MessageId(0);
 }

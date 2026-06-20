@@ -859,7 +859,7 @@ std::string getDownloadXferPeerName(ChatId chatId,
 
 void notifySendFailed(const td::td_api::updateMessageSendFailed &sendFailed, TdAccountData &account)
 {
-    if (sendFailed.message_) {
+    if (sendFailed.message_ && sendFailed.error_) {
         const td::td_api::chat *chat = account.getChat(getChatId(*sendFailed.message_));
         if (chat) {
             std::string errorMessage = formatMessage(errorCodeMessage(), {std::to_string(sendFailed.error_->code_),
