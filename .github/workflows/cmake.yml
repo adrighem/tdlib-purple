@@ -24,8 +24,8 @@ jobs:
           - { CMAKE_FLAGS: "-DNoVoip=1 -DNoWebp=1", INSTALL_LOTTIE: "n", RUN_TESTS: "n" }
           - { CMAKE_FLAGS: "-DNoVoip=1 -DNoTranslations=1", INSTALL_LOTTIE: "n", RUN_TESTS: "n" }
           - { CMAKE_FLAGS: "-DNoVoip=1 -DNoLottie=1", INSTALL_LOTTIE: "n", RUN_TESTS: "n" }
-          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoBundledLottie=1", INSTALL_LOTTIE: "y", RUN_TESTS: "n" }
-          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoWebp=1 -DNoTranslations=1 -DNoBundledLottie=1", INSTALL_LOTTIE: "y", RUN_TESTS: "n" }
+          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoBundledFmt=1 -DNoBundledLottie=1", INSTALL_FMT: "y", INSTALL_LOTTIE: "y", RUN_TESTS: "n" }
+          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoWebp=1 -DNoTranslations=1 -DNoBundledFmt=1 -DNoBundledLottie=1", INSTALL_FMT: "y", INSTALL_LOTTIE: "y", RUN_TESTS: "n" }
 
     steps:
       - uses: actions/checkout@v7
@@ -59,6 +59,10 @@ jobs:
       - name: Install system rlottie
         if: matrix.INSTALL_LOTTIE == 'y'
         run: sudo apt-get install -y librlottie-dev
+
+      - name: Install system fmt
+        if: matrix.INSTALL_FMT == 'y'
+        run: sudo apt-get install -y libfmt-dev
 
       - name: Check tool versions
         run: |

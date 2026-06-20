@@ -32,7 +32,7 @@ target_include_directories(tests
         ${CMAKE_BINARY_DIR}
 )
 target_include_directories(tests SYSTEM PRIVATE ${Purple_INCLUDE_DIRS})
-target_link_libraries(tests PRIVATE gtest fmt::fmt Td::TdStatic ${GLIB_LIBRARIES})
+target_link_libraries(tests PRIVATE gtest ${TDLIB_PURPLE_FMT_TARGET} Td::TdStatic ${GLIB_LIBRARIES})
 
 if (DEFINED GTEST_PATH)
     target_include_directories(tests PRIVATE ${GTEST_PATH}/include)
@@ -47,10 +47,10 @@ if (NOT NoWebp)
 endif (NOT NoWebp)
 
 if (NOT NoLottie)
-    if (NOT NoBundledLottie)
+    if (TDLIB_PURPLE_USE_BUNDLED_RLOTTIE)
         target_include_directories(tests PRIVATE ${CMAKE_SOURCE_DIR}/rlottie/inc)
-    endif (NOT NoBundledLottie)
-    target_link_libraries(tests PRIVATE rlottie)
+    endif (TDLIB_PURPLE_USE_BUNDLED_RLOTTIE)
+    target_link_libraries(tests PRIVATE ${TDLIB_PURPLE_RLOTTIE_TARGET})
     target_compile_definitions(tests PRIVATE LOT_BUILD)
 endif (NOT NoLottie)
 
