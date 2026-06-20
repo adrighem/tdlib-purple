@@ -12,6 +12,16 @@ This fork is currently in upgrade mode. Please expect some rough edges while the
 - keep the plugin buildable and usable
 - keep changes small enough to review and maintain
 
+## Build
+
+For a default local build and install:
+
+```sh
+./build_and_install.sh
+```
+
+That script builds the pinned TDLib submodule, builds tdlib-purple without VoIP support, and installs the plugin system-wide.
+
 ## Help
 
 Bug reports and fixes are welcome. When reporting an issue, please include:
@@ -20,6 +30,10 @@ Bug reports and fixes are welcome. When reporting an issue, please include:
 - your OS or distro
 - the TDLib version or commit you built with
 - the relevant build or runtime log
+
+Debug logs can contain private data, including names, phone numbers, chat titles, and message text. Please remove sensitive data before sharing logs publicly.
+
+For contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Thanks for testing and helping move tdlib-purple forward.
 

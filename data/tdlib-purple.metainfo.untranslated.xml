@@ -4,7 +4,7 @@
     <extends>pidgin.desktop</extends>
     <name>Telegram plugin</name>
     <summary>Telegram protocol plugin for libpurple using tdlib</summary>
-    <url type="homepage">https://github.com/ars3niy/tdlib-purple</url>
+    <url type="homepage">https://github.com/adrighem/tdlib-purple</url>
     <metadata_license>FSFAP</metadata_license>
     <project_license>GPL-2.0+</project_license>
 </component>

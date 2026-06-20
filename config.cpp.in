@@ -7,8 +7,8 @@ char pluginName[]    = "Telegram (tdlib)";
 char versionString[] = PACKAGE_VERSION ", tdlib ${Td_VERSION}";
 char pluginSummary[] = "Telegram using tdlib";
 char pluginDesc[]    = "Telegram Protocol Plugin using tdlib";
-char pluginAuthor[]  = "Arseniy Lartsev";
-char projectUrl[]    = "https://github.com/ars3niy/tdlib-purple";
+char pluginAuthor[]  = "tdlib-purple contributors";
+char projectUrl[]    = "https://github.com/adrighem/tdlib-purple";
 
 const char *api_id   = "${API_ID}";
 const char *api_hash = "${API_HASH}";
