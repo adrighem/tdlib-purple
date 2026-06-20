@@ -60,10 +60,25 @@ This fork is focused on getting tdlib-purple building and working with newer TDL
 
 ## Implementation Order
 
-1. CI modernization and full tests in CI.
-2. TDLib pin consistency check.
-3. Project hygiene, including version `0.9.0`.
-4. Mechanical split of `td-client.cpp` with no behavior changes.
-5. CMake modernization.
-6. Dependency strategy for `fmt` and `rlottie`.
-7. Documentation and prerelease preparation.
+1. [x] CI modernization and full tests in CI.
+2. [x] TDLib pin consistency check.
+3. [x] Project hygiene, including version `0.9.0`.
+4. [x] First mechanical split of `td-client.cpp` with no behavior changes.
+5. [x] CMake modernization.
+6. [x] Dependency strategy for `fmt` and `rlottie`.
+7. [x] Documentation and prerelease preparation.
+
+## Implemented in This Pass
+
+- GitHub Actions now uses supported runners/actions, verifies the TDLib pin, builds tests, runs the primary test matrix, and keeps CodeQL enabled.
+- The fork version is `0.9.0`, with refreshed README, contribution guidance, project metadata, and ignore rules.
+- Authentication, proxy setup, and TDLib parameter handling were split from `td-client.cpp` into `td-client-auth.cpp`.
+- CMake now uses target-scoped include/link wiring, a shared plugin source list for the library and tests, and CMake 3.16 as the baseline.
+- `fmt` and `rlottie` now prefer system packages when present and keep bundled fallbacks for simple local builds.
+
+## Remaining Architecture Work
+
+- Continue splitting `td-client.cpp` by domain: contacts, chats, message send/update flow, history, and room lists.
+- Add a TDLib compatibility layer before the next large TDLib upgrade so API churn is isolated.
+- Thin `tdlib-purple.cpp` down to libpurple registration and callback glue.
+- Add focused tests around each extracted domain before changing behavior.
