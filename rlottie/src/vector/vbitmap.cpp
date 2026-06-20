@@ -34,7 +34,7 @@ void VBitmap::Impl::reset(size_t width, size_t height, VBitmap::Format format)
     mDepth = depth(format);
     mStride = ((mWidth * mDepth + 31) >> 5)
                   << 2;  // bytes per scanline (must be multiple of 4)
-    mOwnData = std::make_unique<uchar[]>(mStride * mHeight);
+    mOwnData = std::make_unique<uchar[]>(static_cast<size_t>(mStride) * mHeight);
 }
 
 void VBitmap::Impl::reset(uchar *data, size_t width, size_t height, size_t bytesPerLine,
