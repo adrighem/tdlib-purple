@@ -1,4 +1,4 @@
-name: "SerenityOS CodeQL Config"
+name: "tdlib-purple CodeQL config"
 
 queries:
  - uses: security-and-quality
