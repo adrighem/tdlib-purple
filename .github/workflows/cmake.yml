@@ -14,7 +14,7 @@ permissions:
 env:
   # Must be updated manually. Increment 'TD_MARK' to invalidate the cache.
   # Must not contain spaces, minuses, or any special characters.
-  TD_TAG: "8d08b34e22a08e58db8341839c4e18ee06c516c5"
+  TD_TAG: "49b3bcbb6bfebf2ed44dd9f25102d2e1a94a58c4"
   TD_MARK: "m2"
 
 jobs:
