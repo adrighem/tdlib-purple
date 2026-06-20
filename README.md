@@ -22,6 +22,8 @@ For a default local build and install:
 
 That script builds the pinned TDLib submodule, builds tdlib-purple without VoIP support, and installs the plugin system-wide.
 
+Manual CMake builds need CMake 3.16 or newer.
+
 ## Help
 
 Bug reports and fixes are welcome. When reporting an issue, please include:

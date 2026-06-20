@@ -1,5 +1,5 @@
 if (DEFINED GTEST_PATH)
-    link_directories(${GTEST_PATH}/lib)
+    set(GTEST_LIBRARY_DIR "${GTEST_PATH}/lib")
 endif (DEFINED GTEST_PATH)
 
 set(GLIB_LIBRARIES "glib-2.0" CACHE STRING "GLib libraries")
@@ -22,33 +22,27 @@ add_executable(tests EXCLUDE_FROM_ALL
     purple-events.cpp
     fixture.cpp
 
-    ../tdlib-purple.cpp
-    ../td-client.cpp
-    ../td-client-auth.cpp
-    ../transceiver.cpp
-    ../account-data.cpp
-    ../purple-info.cpp
-    ${CMAKE_BINARY_DIR}/config.cpp
-    ../client-utils.cpp
-    ../receiving.cpp
-    ../format.cpp
-    ../sticker.cpp
-    ../file-transfer.cpp
-    ../call.cpp
-    ../identifiers.cpp
-    ../secret-chat.cpp
+    ${TDLIB_PURPLE_PLUGIN_SOURCES}
 )
 
-set_property(TARGET tests PROPERTY CXX_STANDARD 17)
-target_include_directories(tests PRIVATE ${CMAKE_SOURCE_DIR})
+target_compile_features(tests PRIVATE cxx_std_17)
+target_include_directories(tests
+    PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${CMAKE_BINARY_DIR}
+)
+target_include_directories(tests SYSTEM PRIVATE ${Purple_INCLUDE_DIRS})
 target_link_libraries(tests PRIVATE gtest fmt::fmt Td::TdStatic ${GLIB_LIBRARIES})
 
 if (DEFINED GTEST_PATH)
     target_include_directories(tests PRIVATE ${GTEST_PATH}/include)
-    link_directories(${GTEST_PATH}/lib)
+    target_link_directories(tests PRIVATE ${GTEST_LIBRARY_DIR})
 endif (DEFINED GTEST_PATH)
 
 if (NOT NoWebp)
+    if (libwebp_LIBRARY_DIRS OR libpng_LIBRARY_DIRS)
+        target_link_directories(tests PRIVATE ${libwebp_LIBRARY_DIRS} ${libpng_LIBRARY_DIRS})
+    endif (libwebp_LIBRARY_DIRS OR libpng_LIBRARY_DIRS)
     target_link_libraries(tests PRIVATE ${libwebp_LIBRARIES} ${libpng_LIBRARIES})
 endif (NOT NoWebp)
 
