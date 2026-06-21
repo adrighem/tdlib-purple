@@ -1,18 +1,30 @@
 # tdlib-purple upgrade fork
 
-This is a new fork of tdlib-purple. Its purpose is simple: get tdlib-purple building and working with a newer TDLib.
+This repository is an updated fork of tdlib-purple, a Telegram plugin for libpurple clients such as Pidgin and BitlBee.
 
-The goal is to keep Telegram support available for libpurple clients such as Pidgin and BitlBee while the codebase catches up with TDLib API changes.
+The main goal is to keep tdlib-purple usable with newer TDLib versions while making it easier to install and test on current Linux systems.
 
-This fork is currently in upgrade mode. Please expect some rough edges while the work settles.
+## What This Fork Provides
 
-## Focus
+- an actively updated tdlib-purple fork
+- a pinned TDLib submodule for reproducible builds
+- CI builds and tests for common build options
+- release-please managed changelogs and version bumps
+- GitHub Releases with ready-to-install Linux packages
 
-- update tdlib-purple for newer TDLib releases
-- keep the plugin buildable and usable
-- keep changes small enough to review and maintain
+Release assets currently include:
 
-## Build
+- Linux x86-64 tarball
+- Debian stable `.deb`
+- Ubuntu 24.04 LTS `.deb`
+- Fedora 44 `.rpm`
+- Enterprise Linux 9 compatible `.rpm`
+
+Download packages from the latest GitHub Release:
+
+https://github.com/adrighem/tdlib-purple/releases/latest
+
+## Building Locally
 
 For a default local build and install:
 
@@ -22,16 +34,15 @@ For a default local build and install:
 
 That script builds the pinned TDLib submodule, builds tdlib-purple without VoIP support, and installs the plugin system-wide.
 
-Manual CMake builds need CMake 3.16 or newer.
-CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for simple local builds.
+Manual CMake builds need CMake 3.16 or newer. CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for local builds.
 
-## Help
+## Reporting Issues
 
-Bug reports and fixes are welcome. When reporting an issue, please include:
+Bug reports and fixes are welcome. Please include:
 
 - what you tried
 - your OS or distro
-- the TDLib version or commit you built with
+- which package or build method you used
 - the relevant build or runtime log
 
 Debug logs can contain private data, including names, phone numbers, chat titles, and message text. Please remove sensitive data before sharing logs publicly.
@@ -39,9 +50,9 @@ Debug logs can contain private data, including names, phone numbers, chat titles
 For contribution guidelines, see [CONTRIBUTING.md](CONTRIBUTING.md).
 For release details, see [RELEASING.md](RELEASING.md).
 
-Thanks for testing and helping move tdlib-purple forward.
+## Upstream History
 
-## Upstream history
+This fork builds on the earlier tdlib-purple work:
 
 - https://github.com/ars3niy/tdlib-purple
 - https://github.com/BenWiederhake/tdlib-purple
