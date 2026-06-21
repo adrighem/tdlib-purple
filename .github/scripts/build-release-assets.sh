@@ -30,6 +30,7 @@ rm -rf "$build_dir" "$staging_dir"
 
 cmake -S . -B "$build_dir" -GNinja \
     -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX=/usr \
     -DCMAKE_DISABLE_FIND_PACKAGE_fmt=TRUE \
     -DNoVoip=TRUE \
     -DTd_DIR="$repo_root/td_destdir/usr/local/lib/cmake/Td"
