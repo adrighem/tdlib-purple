@@ -3,7 +3,7 @@
 set -euo pipefail
 
 if [ "$#" -lt 2 ]; then
-    echo "Usage: $0 tarball|deb DISTRO_ID" >&2
+    echo "Usage: $0 tarball|deb|rpm DISTRO_ID" >&2
     exit 2
 fi
 
@@ -99,6 +99,61 @@ CONTROL
 
     asset="$asset_dir/tdlib-purple_${VERSION}-${package_revision}_${distro_id}_${arch}.deb"
     fakeroot dpkg-deb --build --root-owner-group "$staging_dir" "$asset"
+    echo "Created $asset"
+    ;;
+
+rpm)
+    arch="$(rpm --eval '%{_arch}')"
+    rpm_topdir="$(mktemp -d)"
+    trap 'rm -rf "$rpm_topdir"' EXIT
+    mkdir -p "$rpm_topdir"/{BUILD,BUILDROOT,RPMS,SOURCES,SPECS,SRPMS}
+
+    spec="$rpm_topdir/SPECS/tdlib-purple.spec"
+    cat > "$spec" <<SPEC
+%global debug_package %{nil}
+
+Name: tdlib-purple
+Version: ${VERSION}
+Release: ${package_revision}%{?dist}
+Summary: Telegram plugin for libpurple using TDLib
+License: GPL-2.0-or-later
+URL: https://github.com/adrighem/tdlib-purple
+Requires: libpurple
+
+%description
+Telegram protocol plugin for libpurple clients such as Pidgin.
+This package was built for ${distro_id}.
+
+%prep
+
+%build
+
+%install
+mkdir -p %{buildroot}
+cp -a ${staging_dir}/usr %{buildroot}/
+install -Dm0644 ${repo_root}/LICENSE %{buildroot}%{_licensedir}/%{name}/LICENSE
+
+%files
+%license %{_licensedir}/%{name}/LICENSE
+%{_libdir}/purple-2/libtelegram-tdlib.so
+%{_datadir}/pixmaps/pidgin/protocols/*/telegram.png
+/usr/local/share/metainfo/tdlib-purple.metainfo.xml
+/usr/local/share/locale/*/LC_MESSAGES/tdlib-purple.mo
+
+%changelog
+* $(LC_ALL=C date "+%a %b %d %Y") tdlib-purple contributors <noreply@example.invalid> - ${VERSION}-${package_revision}
+- Automated release build for ${distro_id}
+SPEC
+
+    rpmbuild -bb --define "_topdir $rpm_topdir" "$spec"
+    rpm_path="$(find "$rpm_topdir/RPMS" -name 'tdlib-purple-*.rpm' -print -quit)"
+    if [ -z "$rpm_path" ]; then
+        echo "Could not find built RPM in $rpm_topdir/RPMS" >&2
+        exit 1
+    fi
+
+    asset="$asset_dir/tdlib-purple-${VERSION}-${package_revision}_${distro_id}_${arch}.rpm"
+    cp "$rpm_path" "$asset"
     echo "Created $asset"
     ;;
 
