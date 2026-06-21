@@ -138,8 +138,8 @@ install -Dm0644 ${repo_root}/LICENSE %{buildroot}%{_licensedir}/%{name}/LICENSE
 %license %{_licensedir}/%{name}/LICENSE
 %{_libdir}/purple-2/libtelegram-tdlib.so
 %{_datadir}/pixmaps/pidgin/protocols/*/telegram.png
-/usr/local/share/metainfo/tdlib-purple.metainfo.xml
-/usr/local/share/locale/*/LC_MESSAGES/tdlib-purple.mo
+%{_datadir}/metainfo/tdlib-purple.metainfo.xml
+%{_datadir}/locale/*/LC_MESSAGES/tdlib-purple.mo
 
 %changelog
 * $(LC_ALL=C date "+%a %b %d %Y") tdlib-purple contributors <noreply@example.invalid> - ${VERSION}-${package_revision}
