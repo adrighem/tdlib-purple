@@ -23,7 +23,8 @@ void updateKnownSecretChat(SecretChatId secretChatId, TdTransceiver &transceiver
     if (buddy == NULL) {
         purple_debug_misc(config::pluginId, "Adding buddy '%s' for secret chat %d with %s\n",
                           alias.c_str(), secretChatId.value(), chat->title_.c_str());
-        buddy = purple_buddy_new(account.purpleAccount, purpleBuddyName.c_str(), alias.c_str());
+        buddy = purple_buddy_new(account.purpleAccount, purpleBuddyName.c_str(), NULL);
+        setBuddyServerAlias(buddy, alias.c_str());
         purple_blist_add_buddy(buddy, NULL, NULL, NULL);
 
         // Don't bother updating the photo - only set it when creating secret chat
@@ -55,7 +56,7 @@ void updateKnownSecretChat(SecretChatId secretChatId, TdTransceiver &transceiver
                 getImConversation(account.purpleAccount, purpleBuddyName.c_str());
         }
     } else
-        purple_blist_alias_buddy(buddy, alias.c_str());
+        gotBuddyServerAlias(account.purpleAccount, purpleBuddyName.c_str(), alias.c_str());
 
     if (state == td::td_api::secretChatStateReady::ID)
         purple_prpl_got_user_status(account.purpleAccount, purpleBuddyName.c_str(),

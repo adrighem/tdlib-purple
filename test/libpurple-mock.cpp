@@ -186,7 +186,7 @@ void purple_blist_add_buddy(PurpleBuddy *buddy, PurpleContact *contact, PurpleGr
     addNode(buddy->node);
     pAccount->buddies.push_back(buddy);
 
-    EVENT(AddBuddyEvent, buddy->name, buddy->alias, buddy->account, contact, group, node);
+    EVENT(AddBuddyEvent, buddy->name, purple_buddy_get_alias(buddy), buddy->account, contact, group, node);
 }
 
 void purple_blist_remove_account(PurpleAccount *account)
@@ -228,6 +228,16 @@ void purple_blist_alias_buddy(PurpleBuddy *buddy, const char *alias)
     }
 }
 
+void purple_blist_server_alias_buddy(PurpleBuddy *buddy, const char *alias)
+{
+    ASSERT_NE(nullptr, buddy);
+
+    if (purple_strings_are_different(buddy->server_alias, alias)) {
+        free(buddy->server_alias);
+        buddy->server_alias = alias ? strdup(alias) : NULL;
+    }
+}
+
 static char *getChatName(const PurpleChat *chat)
 {
     auto        pluginInfo  = (PurplePluginProtocolInfo *)g_plugin->info->extra_info;
@@ -264,9 +274,14 @@ const char *purple_buddy_get_alias_only(PurpleBuddy *buddy)
     return buddy->alias;
 }
 
+const char *purple_buddy_get_server_alias(PurpleBuddy *buddy)
+{
+    return buddy->server_alias;
+}
+
 const char *purple_buddy_get_alias(PurpleBuddy *buddy)
 {
-    return buddy->alias ? buddy->alias : buddy->name;
+    return buddy->alias ? buddy->alias : (buddy->server_alias ? buddy->server_alias : buddy->name);
 }
 
 PurpleGroup *purple_buddy_get_group(PurpleBuddy *buddy)
@@ -301,6 +316,7 @@ PurpleBuddy *purple_buddy_new(PurpleAccount *account, const char *name, const ch
     buddy->account = account;
     buddy->name = strdup(name);
     buddy->alias = alias ? strdup(alias) : NULL;
+    buddy->server_alias = NULL;
     buddy->node.parent = NULL;
     newNode(buddy->node, PURPLE_BLIST_BUDDY_NODE);
 
@@ -311,6 +327,7 @@ void purple_buddy_destroy(PurpleBuddy *buddy)
 {
     free(buddy->name);
     free(buddy->alias);
+    free(buddy->server_alias);
     g_hash_table_destroy(buddy->node.settings);
     delete buddy;
 }
@@ -1098,6 +1115,21 @@ void serv_got_im(PurpleConnection *gc, const char *who, const char *msg,
         purple_conversation_new_impl(PURPLE_CONV_TYPE_IM, gc->account, who);
     }
     EVENT(ServGotImEvent, gc, who, msg, flags, mtime);
+}
+
+void serv_got_alias(PurpleConnection *gc, const char *who, const char *alias)
+{
+    PurpleBuddy *buddy = purple_find_buddy(gc->account, who);
+    ASSERT_NE(nullptr, buddy);
+
+    if (purple_strings_are_different(buddy->server_alias, alias)) {
+        const char *oldDisplayAlias = purple_buddy_get_alias(buddy);
+        std::string oldDisplayAliasCopy = oldDisplayAlias ? oldDisplayAlias : "";
+        purple_blist_server_alias_buddy(buddy, alias);
+        const char *newDisplayAlias = purple_buddy_get_alias(buddy);
+        if (oldDisplayAliasCopy != (newDisplayAlias ? newDisplayAlias : ""))
+            EVENT(AliasBuddyEvent, who, newDisplayAlias);
+    }
 }
 
 PurpleConversation *serv_got_joined_chat(PurpleConnection *gc,

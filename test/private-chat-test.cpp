@@ -238,6 +238,51 @@ TEST_F(PrivateChatTest, AddContactByUsername_DoesntBecomeContact)
     prpl.verifyEvents(NewConversationEvent(PURPLE_CONV_TYPE_IM, account, "Local Alias"));
 }
 
+TEST_F(PrivateChatTest, ContactNameKeepsUtf8InServerAlias)
+{
+    const std::string firstName = "Ælün";
+    const std::string lastName  = "Várenth";
+    const std::string fullName  = firstName + " " + lastName;
+
+    object_ptr<user> userInfo = makeUser(
+        userIds[0],
+        firstName,
+        lastName,
+        userPhones[0],
+        make_object<userStatusOffline>()
+    );
+    userInfo->is_contact_ = true;
+
+    std::vector<object_ptr<Object>> updates;
+    updates.push_back(make_object<updateUser>(std::move(userInfo)));
+    updates.push_back(make_object<updateNewChat>(makeChat(
+        chatIds[0],
+        make_object<chatTypePrivate>(userIds[0]),
+        fullName,
+        nullptr, 0, 0, 0
+    )));
+
+    login(
+        std::move(updates),
+        make_object<users>(1, std::vector<int64_t>(1, userIds[0])),
+        make_object<error>(404, "Not Found"),
+        {
+            std::make_shared<AddBuddyEvent>(purpleUserName(0), fullName, account, nullptr, nullptr, nullptr)
+        }, {},
+        {
+            std::make_shared<UserStatusEvent>(account, purpleUserName(0), PURPLE_STATUS_AWAY),
+            std::make_shared<AccountSetAliasEvent>(account, selfFirstName + " " + selfLastName),
+            std::make_shared<ShowAccountEvent>(account)
+        }
+    );
+
+    PurpleBuddy *buddy = purple_find_buddy(account, purpleUserName(0).c_str());
+    ASSERT_NE(nullptr, buddy);
+    ASSERT_EQ(nullptr, purple_buddy_get_alias_only(buddy));
+    ASSERT_STREQ(fullName.c_str(), purple_buddy_get_server_alias(buddy));
+    ASSERT_STREQ(fullName.c_str(), purple_buddy_get_alias(buddy));
+}
+
 TEST_F(PrivateChatTest, ContactedByNew)
 {
     login();
