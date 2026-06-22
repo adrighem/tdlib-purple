@@ -352,7 +352,7 @@ TEST_F(LoginTest, TwoFactorAuthentication)
     );
 }
 
-TEST_F(LoginTest, RenameBuddyAtConnect)
+TEST_F(LoginTest, LocalBuddyAliasPreservedAtConnect)
 {
     purple_blist_add_buddy(purple_buddy_new(account, purpleUserName(0).c_str(), "whatever"), NULL,
                            &standardPurpleGroup, NULL);
@@ -367,15 +367,19 @@ TEST_F(LoginTest, RenameBuddyAtConnect)
         std::move(extraUpdates),
         make_object<users>(1, std::vector<int64_t>{userIds[0]}),
         make_object<error>(404, "Not Found"),
-        {
-            std::make_shared<AliasBuddyEvent>(purpleUserName(0), userFirstNames[0] + " " + userLastNames[0]),
-        }, {},
+        {}, {},
         {
             std::make_shared<UserStatusEvent>(account, purpleUserName(0), PURPLE_STATUS_AWAY),
             std::make_shared<AccountSetAliasEvent>(account, selfFirstName + " " + selfLastName),
             std::make_shared<ShowAccountEvent>(account)
         }
     );
+
+    PurpleBuddy *buddy = purple_find_buddy(account, purpleUserName(0).c_str());
+    ASSERT_NE(nullptr, buddy);
+    ASSERT_STREQ("whatever", purple_buddy_get_alias_only(buddy));
+    ASSERT_STREQ((userFirstNames[0] + " " + userLastNames[0]).c_str(), purple_buddy_get_server_alias(buddy));
+    ASSERT_STREQ("whatever", purple_buddy_get_alias(buddy));
 }
 
 TEST_F(LoginTest, RenameBuddy)
@@ -395,6 +399,20 @@ TEST_F(LoginTest, RenameBuddy)
     updateUser->user_->first_name_ = "New";
     updateUser->user_->last_name_ = "Name";
     tgl.update(std::move(updateUser));
+}
+
+TEST_F(LoginTest, RenameBuddyKeepsUtf8)
+{
+    loginWithOneContact();
+
+    const std::string alias = "Ælün Várenth";
+    purple_blist_alias_buddy(purple_find_buddy(account, purpleUserName(0).c_str()), alias.c_str());
+    prpl.discardEvents();
+    pluginInfo().alias_buddy(connection, purpleUserName(0).c_str(), alias.c_str());
+
+    tgl.verifyRequest(addContact(userIds[0], make_object<importedContact>(
+        "", "Ælün", "Várenth", nullptr
+    ), true));
 }
 
 TEST_F(LoginTest, BuddyRenamedByServer)

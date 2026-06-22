@@ -4,6 +4,7 @@
 #include "format.h"
 #include <purple.h>
 #include <algorithm>
+#include <ctype.h>
 
 static bool isCanonicalPhoneNumber(const char *s)
 {
@@ -11,7 +12,7 @@ static bool isCanonicalPhoneNumber(const char *s)
         return false;
 
     for (const char *c = s; *c; c++)
-        if (!isdigit(*c))
+        if (!isdigit(static_cast<unsigned char>(*c)))
             return false;
 
     return true;

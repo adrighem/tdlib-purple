@@ -343,7 +343,7 @@ static void GifMakePalette( const uint8_t* lastFrame, const uint8_t* nextFrame, 
 
     // SplitPalette is destructive (it sorts the pixels by color) so
     // we must create a copy of the image for it to destroy
-    size_t imageSize = (size_t)(width * height * 4 * sizeof(uint8_t));
+    size_t imageSize = (size_t)width * height * 4 * sizeof(uint8_t);
     uint8_t* destroyableImage = (uint8_t*)GIF_TEMP_MALLOC(imageSize);
     memcpy(destroyableImage, nextFrame, imageSize);
 

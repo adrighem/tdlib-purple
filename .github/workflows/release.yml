@@ -1,0 +1,244 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Existing release tag to upload rebuilt assets to
+        required: false
+        type: string
+      version:
+        description: Version for rebuilt assets, for example 0.9.1
+        required: false
+        type: string
+      asset_set:
+        description: Asset set to build when tag_name and version are set
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - rpm
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+env:
+  # Must match the td submodule commit. Increment TD_MARK to invalidate the TDLib build cache.
+  TD_TAG: "49b3bcbb6bfebf2ed44dd9f25102d2e1a94a58c4"
+  TD_MARK: "m2"
+
+jobs:
+  release-please:
+    runs-on: ubuntu-24.04
+    outputs:
+      release_created: ${{ steps.release.outputs.release_created }}
+      tag_name: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          target-branch: master
+
+  linux-tarball:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.asset_set == 'all' && github.event.inputs.tag_name != '' && github.event.inputs.version != '') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            ca-certificates \
+            cmake \
+            fakeroot \
+            g++ \
+            gettext \
+            git \
+            gperf \
+            libgtest-dev \
+            libopus-dev \
+            libpng-dev \
+            libpurple-dev \
+            libssl-dev \
+            libwebp-dev \
+            lzop \
+            ninja-build \
+            pkg-config \
+            xz-utils \
+            zlib1g-dev
+
+      - name: Cache TDLib build
+        uses: actions/cache@v5
+        with:
+          path: .ga_cache/linux-x86_64
+          key: ${{ runner.os }}-release-td-linux-x86_64-${{ env.TD_TAG }}-${{ env.TD_MARK }}
+
+      - name: Build tarball
+        env:
+          VERSION: ${{ needs.release-please.outputs.version || github.event.inputs.version }}
+          TD_CACHE_DIR: .ga_cache/linux-x86_64
+        run: ./.github/scripts/build-release-assets.sh tarball linux-x86_64
+
+      - name: Upload release asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name || github.event.inputs.tag_name }}" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  deb-packages:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.asset_set == 'all' && github.event.inputs.tag_name != '' && github.event.inputs.version != '') }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro_id: debian-stable
+            image: debian:stable
+          - distro_id: ubuntu-24.04-lts
+            image: ubuntu:24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache TDLib build
+        uses: actions/cache@v5
+        with:
+          path: .ga_cache/${{ matrix.distro_id }}
+          key: ${{ runner.os }}-release-td-${{ matrix.distro_id }}-${{ env.TD_TAG }}-${{ env.TD_MARK }}
+
+      - name: Build Debian package
+        env:
+          VERSION: ${{ needs.release-please.outputs.version || github.event.inputs.version }}
+          ASSET_DISTRO: ${{ matrix.distro_id }}
+          IMAGE: ${{ matrix.image }}
+          TD_TAG: ${{ env.TD_TAG }}
+          TD_MARK: ${{ env.TD_MARK }}
+          TD_CACHE_DIR: .ga_cache/${{ matrix.distro_id }}
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            -e VERSION \
+            -e ASSET_DISTRO \
+            -e TD_TAG \
+            -e TD_MARK \
+            -e TD_CACHE_DIR \
+            -e DEBIAN_FRONTEND=noninteractive \
+            "$IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                bash \
+                ca-certificates \
+                cmake \
+                dpkg-dev \
+                fakeroot \
+                g++ \
+                gettext \
+                git \
+                gperf \
+                libgtest-dev \
+                libopus-dev \
+                libpng-dev \
+                libpurple-dev \
+                libssl-dev \
+                libwebp-dev \
+                lzop \
+                ninja-build \
+                pkg-config \
+                tar \
+                xz-utils \
+                zlib1g-dev
+              ./.github/scripts/build-release-assets.sh deb "$ASSET_DISTRO"
+            '
+
+      - name: Upload release asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name || github.event.inputs.tag_name }}" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  rpm-packages:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.asset_set == 'all' || github.event.inputs.asset_set == 'rpm') && github.event.inputs.tag_name != '' && github.event.inputs.version != '') }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - distro_id: fedora-44
+            image: fedora:44
+          - distro_id: el9
+            image: almalinux:9
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Cache TDLib build
+        uses: actions/cache@v5
+        with:
+          path: .ga_cache/${{ matrix.distro_id }}
+          key: ${{ runner.os }}-release-td-${{ matrix.distro_id }}-${{ env.TD_TAG }}-${{ env.TD_MARK }}
+
+      - name: Build RPM package
+        env:
+          VERSION: ${{ needs.release-please.outputs.version || github.event.inputs.version }}
+          ASSET_DISTRO: ${{ matrix.distro_id }}
+          IMAGE: ${{ matrix.image }}
+          TD_TAG: ${{ env.TD_TAG }}
+          TD_MARK: ${{ env.TD_MARK }}
+          TD_CACHE_DIR: .ga_cache/${{ matrix.distro_id }}
+        run: |
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            -e VERSION \
+            -e ASSET_DISTRO \
+            -e TD_TAG \
+            -e TD_MARK \
+            -e TD_CACHE_DIR \
+            "$IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              if [ "$ASSET_DISTRO" = "el9" ]; then
+                dnf install -y dnf-plugins-core epel-release
+                dnf config-manager --set-enabled crb || true
+              fi
+              dnf install -y \
+                bash \
+                ca-certificates \
+                cmake \
+                gcc-c++ \
+                gettext \
+                git \
+                gperf \
+                libpng-devel \
+                libpurple-devel \
+                libwebp-devel \
+                lzop \
+                make \
+                ninja-build \
+                openssl-devel \
+                opus-devel \
+                pkgconf-pkg-config \
+                redhat-rpm-config \
+                rpm-build \
+                tar \
+                xz \
+                zlib-devel
+              ./.github/scripts/build-release-assets.sh rpm "$ASSET_DISTRO"
+            '
+
+      - name: Upload release asset
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ needs.release-please.outputs.tag_name || github.event.inputs.tag_name }}" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"

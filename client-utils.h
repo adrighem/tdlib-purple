@@ -21,6 +21,8 @@ PurpleConvChat *    getChatConversation(TdAccountData &account, const td::td_api
                                         int chatPurpleId);
 PurpleConvChat *    findChatConversation(PurpleAccount *account, const td::td_api::chat &chat);
 bool                conversationHasFocus(PurpleConversation *conv);
+void                setBuddyServerAlias(PurpleBuddy *buddy, const char *alias);
+void                gotBuddyServerAlias(PurpleAccount *account, const char *buddyName, const char *alias);
 
 void                updatePrivateChat(TdAccountData &account, const td::td_api::chat *chat, const td::td_api::user &user);
 void                updateBasicGroupChat(TdAccountData &account, BasicGroupId groupId);

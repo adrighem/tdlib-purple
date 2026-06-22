@@ -4,6 +4,8 @@
 #include "format.h"
 #include "receiving.h"
 #include "file-transfer.h"
+#include <server.h>
+#include <ctype.h>
 #include <string.h>
 #include <stdlib.h>
 #include <algorithm>
@@ -265,6 +267,23 @@ bool conversationHasFocus(PurpleConversation *conv)
         return purple_conversation_has_focus(conv);
 }
 
+void setBuddyServerAlias(PurpleBuddy *buddy, const char *alias)
+{
+    purple_blist_server_alias_buddy(buddy, alias);
+}
+
+void gotBuddyServerAlias(PurpleAccount *account, const char *buddyName, const char *alias)
+{
+    PurpleConnection *connection = purple_account_get_connection(account);
+    if (connection)
+        serv_got_alias(connection, buddyName, alias);
+    else {
+        PurpleBuddy *buddy = purple_find_buddy(account, buddyName);
+        if (buddy)
+            setBuddyServerAlias(buddy, alias);
+    }
+}
+
 void updatePrivateChat(TdAccountData &account, const td::td_api::chat *chat, const td::td_api::user &user)
 {
     std::string purpleUserName = getPurpleBuddyName(user);
@@ -281,7 +300,8 @@ void updatePrivateChat(TdAccountData &account, const td::td_api::chat *chat, con
         if (group)
             purple_debug_misc(config::pluginId, "Adding into group %s\n", purple_group_get_name(group));
 
-        buddy = purple_buddy_new(account.purpleAccount, purpleUserName.c_str(), alias.c_str());
+        buddy = purple_buddy_new(account.purpleAccount, purpleUserName.c_str(), NULL);
+        setBuddyServerAlias(buddy, alias.c_str());
         purple_blist_add_buddy(buddy, NULL, group, NULL);
         // If a new buddy has been added here, it means that there was updateNewChat with the private
         // chat. This means either we added them to contacts or started messaging them, or they
@@ -300,7 +320,7 @@ void updatePrivateChat(TdAccountData &account, const td::td_api::chat *chat, con
                                  PURPLE_MESSAGE_SYSTEM, time(NULL));
         }
     } else {
-        purple_blist_alias_buddy(buddy, alias.c_str());
+        gotBuddyServerAlias(account.purpleAccount, purpleUserName.c_str(), alias.c_str());
 
         const char *oldPhotoIdStr = purple_blist_node_get_string(PURPLE_BLIST_NODE(buddy), BuddyOptions::ProfilePhotoId);
         int64_t     oldPhotoId    = 0;
@@ -542,12 +562,12 @@ void getNamesFromAlias(const char *alias, std::string &firstName, std::string &l
     if (!alias) alias = "";
 
     const char *name1end = alias;
-    while (*name1end && isspace(*name1end)) name1end++;
-    while (*name1end && !isspace(*name1end)) name1end++;
+    while (*name1end && isspace(static_cast<unsigned char>(*name1end))) name1end++;
+    while (*name1end && !isspace(static_cast<unsigned char>(*name1end))) name1end++;
     firstName = std::string(alias, name1end-alias);
 
     const char *name2start = name1end;
-    while (*name2start && isspace(*name2start)) name2start++;
+    while (*name2start && isspace(static_cast<unsigned char>(*name2start))) name2start++;
     lastName = name2start;
 }
 
@@ -859,7 +879,7 @@ std::string getDownloadXferPeerName(ChatId chatId,
 
 void notifySendFailed(const td::td_api::updateMessageSendFailed &sendFailed, TdAccountData &account)
 {
-    if (sendFailed.message_) {
+    if (sendFailed.message_ && sendFailed.error_) {
         const td::td_api::chat *chat = account.getChat(getChatId(*sendFailed.message_));
         if (chat) {
             std::string errorMessage = formatMessage(errorCodeMessage(), {std::to_string(sendFailed.error_->code_),

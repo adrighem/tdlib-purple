@@ -1,5 +1,8 @@
 #include "format.h"
 #include <fmt/format.h>
+#if FMT_VERSION >= 80000
+#include <fmt/args.h>
+#endif
 
 std::string formatMessage(const char *fmt, std::initializer_list<std::string> args)
 {
