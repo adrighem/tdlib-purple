@@ -910,6 +910,14 @@ static std::string getTagAttribute(const std::string &tag, const char *name)
     return "";
 }
 
+static bool isSupportedTextUrl(const std::string &url)
+{
+    std::string lowerUrl = asciiLower(url);
+    return !lowerUrl.compare(0, 7, "http://") ||
+           !lowerUrl.compare(0, 8, "https://") ||
+           !lowerUrl.compare(0, 5, "tg://");
+}
+
 static bool tagToEntityKind(const std::string &name, const std::string &tag, bool closing,
                             MessagePart::EntityKind &kind, std::string &argument)
 {
@@ -930,7 +938,7 @@ static bool tagToEntityKind(const std::string &name, const std::string &tag, boo
         kind = MessagePart::EntityKind::BlockQuote;
     else if (name == "a") {
         argument = closing ? "" : getTagAttribute(tag, "href");
-        if (!closing && argument.empty())
+        if (!closing && (argument.empty() || !isSupportedTextUrl(argument)))
             return false;
         kind = MessagePart::EntityKind::TextUrl;
     } else

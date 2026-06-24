@@ -1078,6 +1078,39 @@ TEST_F(PrivateChatTest, SendMessage_RichTextEntities)
     ));
 }
 
+TEST_F(PrivateChatTest, SendMessage_DropsUnsupportedTextUrlSchemes)
+{
+    loginWithOneContact();
+
+    ASSERT_EQ(0, pluginInfo().send_im(
+        connection,
+        purpleUserName(0).c_str(),
+        "<a href=\"mailto:foo@example.com\">email</a> "
+        "<a href=\"file:///tmp/a\">file</a> "
+        "<a href=\"HTTPS://example.com/path\">web</a> "
+        "<a href=\"tg://user?id=123\">tg</a>",
+        PURPLE_MESSAGE_SEND
+    ));
+
+    std::vector<object_ptr<textEntity>> entities;
+    entities.push_back(make_object<textEntity>(
+        11, 3, make_object<textEntityTypeTextUrl>("HTTPS://example.com/path")
+    ));
+    entities.push_back(make_object<textEntity>(
+        15, 2, make_object<textEntityTypeTextUrl>("tg://user?id=123")
+    ));
+    tgl.verifyRequest(*Mock_SendMessage(
+        chatIds[0],
+        0,
+        nullptr,
+        nullptr,
+        Mock_InputMessageText(
+            make_object<formattedText>("email file web tg", std::move(entities)),
+            false
+        )
+    ));
+}
+
 TEST_F(PrivateChatTest, ReceiveMessage_SpecialCharacters)
 {
     constexpr int64_t messageId = 10000;
