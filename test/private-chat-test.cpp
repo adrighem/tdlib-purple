@@ -1042,6 +1042,42 @@ TEST_F(PrivateChatTest, SendMessage_SpecialCharactersAndHtml)
     ));
 }
 
+TEST_F(PrivateChatTest, SendMessage_RichTextEntities)
+{
+    loginWithOneContact();
+
+    ASSERT_EQ(0, pluginInfo().send_im(
+        connection,
+        purpleUserName(0).c_str(),
+        "<b>😃bo</b> <i>it</i> <u>un</u> <s>st</s> <code>co</code> "
+        "<pre>pre</pre> <blockquote>quote</blockquote> "
+        "<a href=\"https://example.com/path\">link</a>",
+        PURPLE_MESSAGE_SEND
+    ));
+
+    std::vector<object_ptr<textEntity>> entities;
+    entities.push_back(make_object<textEntity>(0, 4, make_object<textEntityTypeBold>()));
+    entities.push_back(make_object<textEntity>(5, 2, make_object<textEntityTypeItalic>()));
+    entities.push_back(make_object<textEntity>(8, 2, make_object<textEntityTypeUnderline>()));
+    entities.push_back(make_object<textEntity>(11, 2, make_object<textEntityTypeStrikethrough>()));
+    entities.push_back(make_object<textEntity>(14, 2, make_object<textEntityTypeCode>()));
+    entities.push_back(make_object<textEntity>(17, 3, make_object<textEntityTypePre>()));
+    entities.push_back(make_object<textEntity>(21, 5, make_object<textEntityTypeBlockQuote>()));
+    entities.push_back(make_object<textEntity>(
+        27, 4, make_object<textEntityTypeTextUrl>("https://example.com/path")
+    ));
+    tgl.verifyRequest(*Mock_SendMessage(
+        chatIds[0],
+        0,
+        nullptr,
+        nullptr,
+        Mock_InputMessageText(
+            make_object<formattedText>("😃bo it un st co pre quote link", std::move(entities)),
+            false
+        )
+    ));
+}
+
 TEST_F(PrivateChatTest, ReceiveMessage_SpecialCharacters)
 {
     constexpr int64_t messageId = 10000;
@@ -1060,6 +1096,43 @@ TEST_F(PrivateChatTest, ReceiveMessage_SpecialCharacters)
         connection,
         purpleUserName(0),
         "1&lt;2 3&gt;2", // mock purple_markup_escape_text handles these two
+        PURPLE_MESSAGE_RECV,
+        date
+    ));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {messageId}, true));
+}
+
+TEST_F(PrivateChatTest, ReceiveMessage_RichTextEntities)
+{
+    constexpr int64_t messageId = 10000;
+    constexpr int32_t date      = 123456;
+
+    loginWithOneContact();
+
+    std::vector<object_ptr<textEntity>> entities;
+    entities.push_back(make_object<textEntity>(0, 4, make_object<textEntityTypeBold>()));
+    entities.push_back(make_object<textEntity>(0, 4, make_object<textEntityTypeItalic>()));
+    entities.push_back(make_object<textEntity>(
+        5, 4, make_object<textEntityTypeTextUrl>("https://example.com/path")
+    ));
+
+    auto richMessageText = make_object<messageText>();
+    richMessageText->text_ = make_object<formattedText>("😃bo link", std::move(entities));
+    richMessageText->link_preview_options_ = nullptr;
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        messageId,
+        userIds[0],
+        chatIds[0],
+        false,
+        date,
+        std::move(richMessageText)
+    )));
+
+    prpl.verifyEvents(ServGotImEvent(
+        connection,
+        purpleUserName(0),
+        "<b><i>😃bo</i></b> <a href=\"https://example.com/path\">link</a>",
         PURPLE_MESSAGE_RECV,
         date
     ));

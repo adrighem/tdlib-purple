@@ -23,6 +23,8 @@ public:
     int  sendMessage(const char *buddyName, const char *message);
     void sendTyping(const char *buddyName, bool isTyping);
     void sendReadReceipts(PurpleConversation *conversation);
+    void setOnlineStatus(bool online);
+    void setBuddyIcon(PurpleStoredImage *img);
 
     void addContact(const std::string &purpleName, const std::string &alias, const std::string &groupName);
     void renameContact(const char *buddyName, const char *newAlias);
@@ -48,6 +50,8 @@ public:
     void sendFileToChat(PurpleXfer *xfer, const char *purpleName, PurpleConversationType type,
                         int purpleChatId);
     void cancelUpload(PurpleXfer *xfer);
+    bool canSendFileToUser(const char *purpleName);
+    bool canSendFileToChat(int purpleChatId);
 
     bool startVoiceCall(const char *buddyName);
     bool terminateCall(PurpleConversation *conv);
@@ -97,6 +101,8 @@ private:
 
     void       onIncomingMessage(td::td_api::object_ptr<td::td_api::message> message);
     void       updateChatLastMessage(td::td_api::updateChatLastMessage &lastMessage);
+    void       updateVisibleChatMemberList(const td::td_api::updateChatMember &update);
+    void       setProfilePhotoResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
 
     void       updateUserStatus(UserId userId, td::td_api::object_ptr<td::td_api::UserStatus> status);
     void       updateUser(td::td_api::object_ptr<td::td_api::user> user);

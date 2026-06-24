@@ -54,6 +54,15 @@ void updateChatConversation(PurpleConvChat *purpleChat, const td::td_api::superg
                     const TdAccountData &account);
 void updateSupergroupChatMembers(PurpleConvChat *purpleChat, const td::td_api::chatMembers &members,
                                  const TdAccountData &account);
+std::string getChatMemberPurpleName(UserId userId, const TdAccountData &account);
+PurpleConvChatBuddyFlags getChatMemberFlags(const td::td_api::object_ptr<td::td_api::ChatMemberStatus> &status);
+void addChatMember(PurpleConvChat *purpleChat, UserId userId,
+                   const td::td_api::object_ptr<td::td_api::ChatMemberStatus> &status,
+                   const TdAccountData &account, bool newArrival);
+void removeChatMember(PurpleConvChat *purpleChat, UserId userId, const TdAccountData &account,
+                      const char *reason = NULL);
+void updateChatMember(PurpleConvChat *purpleChat, const td::td_api::chatMember *oldMember,
+                      const td::td_api::chatMember *newMember, const TdAccountData &account);
 
 int  transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiver,
                      TdAccountData &account, TdTransceiver::ResponseCb response);

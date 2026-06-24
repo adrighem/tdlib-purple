@@ -23,10 +23,278 @@ std::string makeNoticeWithSender(const td::td_api::chat &chat, const TgMessageIn
 
 std::string getMessageText(const td::td_api::formattedText &text)
 {
-    char *newText = purple_markup_escape_text(text.text_.c_str(), text.text_.size());
-    std::string result(newText);
-    g_free(newText);
+    struct EntityEvent {
+        size_t      byteOffset;
+        bool        closing;
+        int32_t     length;
+        int32_t     start;
+        std::string tag;
+    };
+
+    auto escapeText = [](const std::string &s) {
+        char *escaped = purple_markup_escape_text(s.c_str(), s.size());
+        std::string result = escaped ? escaped : "";
+        g_free(escaped);
+        return result;
+    };
+    auto escapeAttribute = [&escapeText](const std::string &s) {
+        std::string result = escapeText(s);
+        size_t pos = 0;
+        while ((pos = result.find('"', pos)) != std::string::npos) {
+            result.replace(pos, 1, "&quot;");
+            pos += 6;
+        }
+        return result;
+    };
+    auto utf16OffsetToByteIndex = [](const std::string &s, int32_t offset) {
+        const char *p      = s.c_str();
+        const char *end    = p + s.size();
+        int32_t     count  = 0;
+        while ((p < end) && (count < offset)) {
+            gunichar ch = g_utf8_get_char_validated(p, end - p);
+            if ((ch == (gunichar)-1) || (ch == (gunichar)-2)) {
+                p++;
+                count++;
+            } else {
+                int32_t charLen = (ch > 0xffff) ? 2 : 1;
+                if (count + charLen > offset)
+                    break;
+                count += charLen;
+                p = g_utf8_next_char(p);
+            }
+        }
+        return static_cast<size_t>(p - s.c_str());
+    };
+
+    std::vector<EntityEvent> events;
+    for (const auto &entity: text.entities_) {
+        if (!entity || !entity->type_ || (entity->length_ <= 0))
+            continue;
+
+        size_t start = utf16OffsetToByteIndex(text.text_, entity->offset_);
+        size_t end   = utf16OffsetToByteIndex(text.text_, entity->offset_ + entity->length_);
+        if (end <= start)
+            continue;
+
+        std::string openTag;
+        std::string closeTag;
+        switch (entity->type_->get_id()) {
+            case td::td_api::textEntityTypeBold::ID:
+                openTag = "<b>"; closeTag = "</b>";
+                break;
+            case td::td_api::textEntityTypeItalic::ID:
+                openTag = "<i>"; closeTag = "</i>";
+                break;
+            case td::td_api::textEntityTypeUnderline::ID:
+                openTag = "<u>"; closeTag = "</u>";
+                break;
+            case td::td_api::textEntityTypeStrikethrough::ID:
+                openTag = "<s>"; closeTag = "</s>";
+                break;
+            case td::td_api::textEntityTypeSpoiler::ID:
+                openTag = "<span style=\"background-color:#000000;color:#000000\">";
+                closeTag = "</span>";
+                break;
+            case td::td_api::textEntityTypeCode::ID:
+                openTag = "<code>"; closeTag = "</code>";
+                break;
+            case td::td_api::textEntityTypePre::ID:
+                openTag = "<pre>"; closeTag = "</pre>";
+                break;
+            case td::td_api::textEntityTypePreCode::ID:
+                openTag = "<pre><code>"; closeTag = "</code></pre>";
+                break;
+            case td::td_api::textEntityTypeBlockQuote::ID:
+            case td::td_api::textEntityTypeExpandableBlockQuote::ID:
+                openTag = "<blockquote>"; closeTag = "</blockquote>";
+                break;
+            case td::td_api::textEntityTypeUrl::ID: {
+                std::string url = text.text_.substr(start, end - start);
+                openTag = "<a href=\"" + escapeAttribute(url) + "\">";
+                closeTag = "</a>";
+                break;
+            }
+            case td::td_api::textEntityTypeTextUrl::ID: {
+                const auto &url = static_cast<const td::td_api::textEntityTypeTextUrl &>(*entity->type_);
+                openTag = "<a href=\"" + escapeAttribute(url.url_) + "\">";
+                closeTag = "</a>";
+                break;
+            }
+            case td::td_api::textEntityTypeMentionName::ID: {
+                const auto &mention = static_cast<const td::td_api::textEntityTypeMentionName &>(*entity->type_);
+                openTag = "<a href=\"tg://user?id=" + std::to_string(mention.user_id_) + "\">";
+                closeTag = "</a>";
+                break;
+            }
+            case td::td_api::textEntityTypeEmailAddress::ID: {
+                std::string email = text.text_.substr(start, end - start);
+                openTag = "<a href=\"mailto:" + escapeAttribute(email) + "\">";
+                closeTag = "</a>";
+                break;
+            }
+            default:
+                break;
+        }
+
+        if (!openTag.empty() && !closeTag.empty()) {
+            events.push_back({start, false, entity->length_, entity->offset_, openTag});
+            events.push_back({end, true, entity->length_, entity->offset_, closeTag});
+        }
+    }
+
+    std::sort(events.begin(), events.end(), [](const EntityEvent &a, const EntityEvent &b) {
+        if (a.byteOffset != b.byteOffset)
+            return a.byteOffset < b.byteOffset;
+        if (a.closing != b.closing)
+            return a.closing;
+        if (a.closing) {
+            if (a.start != b.start)
+                return a.start > b.start;
+            if (a.length != b.length)
+                return a.length < b.length;
+            return a.tag > b.tag;
+        }
+        if (a.length != b.length)
+            return a.length > b.length;
+        return a.tag < b.tag;
+    });
+
+    std::string result;
+    size_t pos = 0;
+    for (const EntityEvent &event: events) {
+        if (event.byteOffset > pos)
+            result += escapeText(text.text_.substr(pos, event.byteOffset - pos));
+        result += event.tag;
+        pos = event.byteOffset;
+    }
+    if (pos < text.text_.size())
+        result += escapeText(text.text_.substr(pos));
+
     return result;
+}
+
+static std::string escapePlainText(const std::string &text)
+{
+    char *escaped = purple_markup_escape_text(text.c_str(), text.size());
+    std::string result = escaped ? escaped : "";
+    g_free(escaped);
+    return result;
+}
+
+static void appendCaption(std::string &description, const td::td_api::formattedText *caption)
+{
+    if (caption && !caption->text_.empty()) {
+        description += " ";
+        description += getMessageText(*caption);
+    }
+}
+
+std::string describeMessageContent(const td::td_api::MessageContent &content, const TdAccountData &account)
+{
+    (void)account;
+
+    switch (content.get_id()) {
+        case td::td_api::messageText::ID: {
+            const auto &message = static_cast<const td::td_api::messageText &>(content);
+            return message.text_ ? getMessageText(*message.text_) : "";
+        }
+        case td::td_api::messagePhoto::ID: {
+            const auto &message = static_cast<const td::td_api::messagePhoto &>(content);
+            // TRANSLATOR: In-line placeholder for a photo message.
+            std::string result = _("[photo]");
+            appendCaption(result, message.caption_.get());
+            return result;
+        }
+        case td::td_api::messageDocument::ID: {
+            const auto &message = static_cast<const td::td_api::messageDocument &>(content);
+            std::string result = message.document_ ?
+                // TRANSLATOR: In-line placeholder for a file message. Argument is the file name.
+                formatMessage(_("[file: {}]"), escapePlainText(message.document_->file_name_)) :
+                _("[file]");
+            appendCaption(result, message.caption_.get());
+            return result;
+        }
+        case td::td_api::messageVideo::ID: {
+            const auto &message = static_cast<const td::td_api::messageVideo &>(content);
+            std::string result = message.video_ ?
+                // TRANSLATOR: In-line placeholder for a video message. Argument is the file name.
+                formatMessage(_("[video: {}]"), escapePlainText(message.video_->file_name_)) :
+                _("[video]");
+            appendCaption(result, message.caption_.get());
+            return result;
+        }
+        case td::td_api::messageAnimation::ID: {
+            const auto &message = static_cast<const td::td_api::messageAnimation &>(content);
+            std::string result = message.animation_ ?
+                // TRANSLATOR: In-line placeholder for an animation message. Argument is the file name.
+                formatMessage(_("[animation: {}]"), escapePlainText(message.animation_->file_name_)) :
+                _("[animation]");
+            appendCaption(result, message.caption_.get());
+            return result;
+        }
+        case td::td_api::messageAudio::ID: {
+            const auto &message = static_cast<const td::td_api::messageAudio &>(content);
+            std::string result = message.audio_ ?
+                // TRANSLATOR: In-line placeholder for an audio message. Argument is the file name.
+                formatMessage(_("[audio: {}]"), escapePlainText(message.audio_->file_name_)) :
+                _("[audio]");
+            appendCaption(result, message.caption_.get());
+            return result;
+        }
+        case td::td_api::messageVoiceNote::ID: {
+            const auto &message = static_cast<const td::td_api::messageVoiceNote &>(content);
+            // TRANSLATOR: In-line placeholder for a voice note.
+            std::string result = _("[voice note]");
+            appendCaption(result, message.caption_.get());
+            return result;
+        }
+        case td::td_api::messageVideoNote::ID:
+            // TRANSLATOR: In-line placeholder for a video note.
+            return _("[video note]");
+        case td::td_api::messageSticker::ID:
+            // TRANSLATOR: In-line placeholder for a sticker.
+            return _("[sticker]");
+        case td::td_api::messageAnimatedEmoji::ID:
+            return escapePlainText(static_cast<const td::td_api::messageAnimatedEmoji &>(content).emoji_);
+        case td::td_api::messageDice::ID: {
+            const auto &message = static_cast<const td::td_api::messageDice &>(content);
+            return escapePlainText(formatMessage("{} {}", {message.emoji_, std::to_string(message.value_)}));
+        }
+        default:
+            return getUnsupportedMessageDescription(content);
+    }
+}
+
+static UserId userIdFromTdInt(td::td_api::int53 id)
+{
+    std::string idString = std::to_string(id);
+    return UserId::fromString(idString.c_str());
+}
+
+static std::string getMemberDisplayName(UserId userId, const TdAccountData &account)
+{
+    return escapePlainText(account.getDisplayName(userId));
+}
+
+static std::string joinMemberNames(const std::vector<UserId> &userIds, const TdAccountData &account)
+{
+    std::string result;
+    for (UserId userId: userIds) {
+        if (!result.empty())
+            result += ", ";
+        result += getMemberDisplayName(userId, account);
+    }
+    return result;
+}
+
+static PurpleConvChat *getVisibleChatConversation(TdAccountData &account, const td::td_api::chat &chat)
+{
+    return findChatConversation(account.purpleAccount, chat);
+}
+
+static td::td_api::object_ptr<td::td_api::ChatMemberStatus> makeDefaultMemberStatus()
+{
+    return td::td_api::make_object<td::td_api::chatMemberStatusMember>();
 }
 
 std::string makeInlineImageText(int imgstoreId)
@@ -186,7 +454,7 @@ static std::string quoteMessage(const td::td_api::message *message, TdAccountDat
             // TRANSLATOR: In-line placeholder when a photo is being replied to.
             text = _("[photo]");
             if (photo.caption_)
-                text += " " + photo.caption_->text_;
+                text += " " + getMessageText(*photo.caption_);
             break;
         }
         case td::td_api::messageDocument::ID: {
@@ -200,7 +468,7 @@ static std::string quoteMessage(const td::td_api::message *message, TdAccountDat
                 text = "[file]";
             }
             if (document.caption_)
-                text += " " + document.caption_->text_;
+                text += " " + getMessageText(*document.caption_);
             break;
         }
         case td::td_api::messageVideo::ID: {
@@ -213,7 +481,7 @@ static std::string quoteMessage(const td::td_api::message *message, TdAccountDat
                 text = "[video]";
             }
             if (video.caption_)
-                text += " " + video.caption_->text_;
+                text += " " + getMessageText(*video.caption_);
             break;
         }
         case td::td_api::messageSticker::ID:
@@ -693,7 +961,120 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
             // TRANSLATOR: In-chat status update, arguments are chat names.
             std::string notice = formatMessage(_("{0} changed group name to {1}"),
                                                {getSenderDisplayName(chat, messageInfo, account.purpleAccount),
-                                                titleChange.title_});
+                                                escapePlainText(titleChange.title_)});
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messageChatChangePhoto::ID: {
+            // TRANSLATOR: In-chat status update.
+            std::string notice = makeNoticeWithSender(chat, messageInfo, _("Changed the group photo"),
+                                                      account.purpleAccount);
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messageChatDeletePhoto::ID: {
+            // TRANSLATOR: In-chat status update.
+            std::string notice = makeNoticeWithSender(chat, messageInfo, _("Deleted the group photo"),
+                                                      account.purpleAccount);
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messageBasicGroupChatCreate::ID: {
+            const auto &create = static_cast<const td::td_api::messageBasicGroupChatCreate &>(*message.content_);
+            std::vector<UserId> members;
+            PurpleConvChat *conv = getVisibleChatConversation(account, chat);
+            for (td::td_api::int53 rawUserId: create.member_user_ids_) {
+                UserId userId = userIdFromTdInt(rawUserId);
+                members.push_back(userId);
+                auto status = makeDefaultMemberStatus();
+                addChatMember(conv, userId, status, account, false);
+            }
+            // TRANSLATOR: In-chat status update, first argument is a group name, second is a comma-separated member list.
+            std::string notice = formatMessage(_("Created group {0} with {1}"),
+                                               {escapePlainText(create.title_), joinMemberNames(members, account)});
+            notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messageSupergroupChatCreate::ID: {
+            const auto &create = static_cast<const td::td_api::messageSupergroupChatCreate &>(*message.content_);
+            // TRANSLATOR: In-chat status update, argument is a group name.
+            std::string notice = formatMessage(_("Created group {}"), escapePlainText(create.title_));
+            notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messageChatAddMembers::ID: {
+            const auto &add = static_cast<const td::td_api::messageChatAddMembers &>(*message.content_);
+            std::vector<UserId> members;
+            PurpleConvChat *conv = getVisibleChatConversation(account, chat);
+            for (td::td_api::int53 rawUserId: add.member_user_ids_) {
+                UserId userId = userIdFromTdInt(rawUserId);
+                members.push_back(userId);
+                auto status = makeDefaultMemberStatus();
+                addChatMember(conv, userId, status, account, true);
+            }
+            // TRANSLATOR: In-chat status update, argument is a comma-separated member list.
+            std::string notice = formatMessage(_("Added {}"), joinMemberNames(members, account));
+            notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messageChatJoinByLink::ID:
+        case td::td_api::messageChatJoinByRequest::ID: {
+            UserId userId = getSenderUserId(message);
+            PurpleConvChat *conv = getVisibleChatConversation(account, chat);
+            if (userId.valid()) {
+                auto status = makeDefaultMemberStatus();
+                addChatMember(conv, userId, status, account, true);
+            }
+            const char *messageText = (message.content_->get_id() == td::td_api::messageChatJoinByLink::ID) ?
+                                      // TRANSLATOR: In-chat status update.
+                                      _("Joined via invite link") :
+                                      // TRANSLATOR: In-chat status update.
+                                      _("Joined after approval");
+            std::string notice = makeNoticeWithSender(chat, messageInfo, messageText, account.purpleAccount);
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messageChatDeleteMember::ID: {
+            const auto &del = static_cast<const td::td_api::messageChatDeleteMember &>(*message.content_);
+            UserId userId = userIdFromTdInt(del.user_id_);
+            PurpleConvChat *conv = getVisibleChatConversation(account, chat);
+            removeChatMember(conv, userId, account);
+
+            std::string notice;
+            if (userId == getSenderUserId(message))
+                // TRANSLATOR: In-chat status update.
+                notice = _("Left the group");
+            else
+                // TRANSLATOR: In-chat status update, argument is a member name.
+                notice = formatMessage(_("Removed {}"), getMemberDisplayName(userId, account));
+            notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messageChatUpgradeTo::ID: {
+            const auto &upgrade = static_cast<const td::td_api::messageChatUpgradeTo &>(*message.content_);
+            // TRANSLATOR: In-chat status update, argument is a Telegram supergroup identifier.
+            std::string notice = formatMessage(_("Group upgraded to supergroup {}"),
+                                               std::to_string(upgrade.supergroup_id_));
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messageChatUpgradeFrom::ID: {
+            const auto &upgrade = static_cast<const td::td_api::messageChatUpgradeFrom &>(*message.content_);
+            // TRANSLATOR: In-chat status update, argument is a group name.
+            std::string notice = formatMessage(_("Supergroup created from {}"),
+                                               escapePlainText(upgrade.title_));
+            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            break;
+        }
+        case td::td_api::messagePinMessage::ID: {
+            const auto &pin = static_cast<const td::td_api::messagePinMessage &>(*message.content_);
+            // TRANSLATOR: In-chat status update, argument is a Telegram message identifier.
+            std::string notice = formatMessage(_("Pinned message {}"), std::to_string(pin.message_id_));
+            notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
             showMessageText(account, chat, messageInfo, NULL, notice.c_str());
             break;
         }
@@ -883,7 +1264,7 @@ void getFileFromMessage(const IncomingMessage &fullMessage, FileInfo &result)
             const td::td_api::messagePhoto &photo = static_cast<const td::td_api::messagePhoto &>(*message.content_);
             result.file = getSelectedPhotoSize(fullMessage, photo);
             result.name = ""; // will not be needed - inline download only
-            if (photo.caption_) result.caption = photo.caption_->text_;
+            if (photo.caption_) result.caption = getMessageText(*photo.caption_);
             // TRANSLATOR: File-type, used to describe what is being downloaded, in sentences like "Downloading photo" or "Ignoring photo download".
             result.description = _("photo");
             result.secret = photo.is_secret_;
@@ -892,7 +1273,7 @@ void getFileFromMessage(const IncomingMessage &fullMessage, FileInfo &result)
         case td::td_api::messageDocument::ID: {
             const td::td_api::messageDocument &document = static_cast<const td::td_api::messageDocument &>(*message.content_);
             result.file = document.document_ ? document.document_->document_.get() : nullptr;
-            if (document.caption_) result.caption = document.caption_->text_;
+            if (document.caption_) result.caption = getMessageText(*document.caption_);
             result.name = getFileName(document.document_.get());
             result.description = makeDocumentDescription(document.document_.get());
             break;
@@ -900,7 +1281,7 @@ void getFileFromMessage(const IncomingMessage &fullMessage, FileInfo &result)
         case td::td_api::messageVideo::ID: {
             const td::td_api::messageVideo &video = static_cast<const td::td_api::messageVideo &>(*message.content_);
             result.file = video.video_ ? video.video_->video_.get() : nullptr;
-            if (video.caption_) result.caption = video.caption_->text_;
+            if (video.caption_) result.caption = getMessageText(*video.caption_);
             result.name = getFileName(video.video_.get());
             result.description = makeDocumentDescription(video.video_.get());
             result.secret = video.is_secret_;
@@ -909,7 +1290,7 @@ void getFileFromMessage(const IncomingMessage &fullMessage, FileInfo &result)
         case td::td_api::messageAnimation::ID: {
             const td::td_api::messageAnimation &animation = static_cast<const td::td_api::messageAnimation &>(*message.content_);
             result.file = animation.animation_ ? animation.animation_->animation_.get() : nullptr;
-            if (animation.caption_) result.caption = animation.caption_->text_;
+            if (animation.caption_) result.caption = getMessageText(*animation.caption_);
             result.name = getFileName(animation.animation_.get());
             result.description = makeDocumentDescription(animation.animation_.get());
             result.secret = animation.is_secret_;
@@ -918,7 +1299,7 @@ void getFileFromMessage(const IncomingMessage &fullMessage, FileInfo &result)
         case td::td_api::messageAudio::ID: {
             const td::td_api::messageAudio &audio = static_cast<const td::td_api::messageAudio &>(*message.content_);
             result.file = audio.audio_ ? audio.audio_->audio_.get() : nullptr;
-            if (audio.caption_) result.caption = audio.caption_->text_;
+            if (audio.caption_) result.caption = getMessageText(*audio.caption_);
             result.name = getFileName(audio.audio_.get());
             result.description = makeDocumentDescription(audio.audio_.get());
             break;
@@ -926,7 +1307,7 @@ void getFileFromMessage(const IncomingMessage &fullMessage, FileInfo &result)
         case td::td_api::messageVoiceNote::ID: {
             const td::td_api::messageVoiceNote &audio = static_cast<const td::td_api::messageVoiceNote &>(*message.content_);
             result.file = audio.voice_note_ ? audio.voice_note_->voice_.get() : nullptr;
-            if (audio.caption_) result.caption = audio.caption_->text_;
+            if (audio.caption_) result.caption = getMessageText(*audio.caption_);
             result.name = getFileName(audio.voice_note_.get());
             result.description = makeDocumentDescription(audio.voice_note_.get());
             break;

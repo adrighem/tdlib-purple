@@ -34,6 +34,14 @@ For a default local build and install:
 
 That script builds the pinned TDLib submodule, builds tdlib-purple without VoIP support, and installs the plugin system-wide.
 
+To uninstall a local build installed this way:
+
+```sh
+./build_and_install.sh uninstall
+```
+
+For manual CMake builds, use `sudo cmake --build build --target uninstall` from the repository root, or `sudo make uninstall` inside a Makefile-generated build directory.
+
 Manual CMake builds need CMake 3.16 or newer. CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for local builds.
 
 ## Reporting Issues

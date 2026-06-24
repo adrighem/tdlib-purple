@@ -196,6 +196,14 @@ public:
     : PendingRequest(requestId), userId(UserId::invalid), chatId(getId(*chat)) {}
 };
 
+class ProfilePhotoRequest: public PendingRequest {
+public:
+    std::string tempFile;
+
+    ProfilePhotoRequest(uint64_t requestId, const char *tempFile)
+    : PendingRequest(requestId), tempFile(tempFile ? tempFile : "") {}
+};
+
 class NewPrivateChatForMessage: public PendingRequest {
 public:
     std::string  username;
