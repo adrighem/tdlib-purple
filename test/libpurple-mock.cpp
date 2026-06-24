@@ -494,6 +494,7 @@ static PurpleConversation *purple_conversation_new_impl(PurpleConversationType t
         conv->u.chat->conv = conv;
         conv->u.chat->left = FALSE;
         conv->u.chat->id = 0;
+        conv->u.chat->users = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     }
 
     if (pAccount != g_accounts.end())
@@ -525,7 +526,10 @@ void purple_conversation_destroy(PurpleConversation *conv)
     if (conv->type == PURPLE_CONV_TYPE_IM)
         delete conv->u.im;
     if (conv->type == PURPLE_CONV_TYPE_CHAT)
+    {
+        g_hash_table_destroy(conv->u.chat->users);
         delete conv->u.chat;
+    }
     delete conv;
 }
 
@@ -890,6 +894,18 @@ PurpleStatusType *purple_status_type_new_full(PurpleStatusPrimitive primitive,
     return NULL;
 }
 
+gboolean purple_status_is_available(const PurpleStatus *status)
+{
+    (void)status;
+    return TRUE;
+}
+
+gboolean purple_status_is_online(const PurpleStatus *status)
+{
+    (void)status;
+    return TRUE;
+}
+
 const char *purple_user_dir(void)
 {
     return "purple_user_dir";
@@ -1166,6 +1182,7 @@ void purple_conv_chat_add_user(PurpleConvChat *chat, const char *user,
 							 const char *extra_msg, PurpleConvChatBuddyFlags flags,
 							 gboolean new_arrival)
 {
+    g_hash_table_replace(chat->users, g_strdup(user), GINT_TO_POINTER(flags));
     EVENT(ChatAddUserEvent, chat->conv->name, user, extra_msg ? extra_msg : "", flags, new_arrival);
 }
 
@@ -1180,7 +1197,26 @@ void purple_conv_chat_add_users(PurpleConvChat *chat, GList *users, GList *extra
 
 void purple_conv_chat_clear_users(PurpleConvChat *chat)
 {
+    g_hash_table_remove_all(chat->users);
     EVENT(ChatClearUsersEvent, chat->conv->name);
+}
+
+void purple_conv_chat_remove_user(PurpleConvChat *chat, const char *user, const char *reason)
+{
+    (void)reason;
+    g_hash_table_remove(chat->users, user);
+}
+
+gboolean purple_conv_chat_find_user(PurpleConvChat *chat, const char *user)
+{
+    return g_hash_table_contains(chat->users, user);
+}
+
+void purple_conv_chat_user_set_flags(PurpleConvChat *chat, const char *user,
+								   PurpleConvChatBuddyFlags flags)
+{
+    if (purple_conv_chat_find_user(chat, user))
+        g_hash_table_replace(chat->users, g_strdup(user), GINT_TO_POINTER(flags));
 }
 
 PurpleBlistNode *purple_blist_get_root(void)

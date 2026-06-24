@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <algorithm>
 #include <functional>
+#include <iterator>
 #include <ctime>
 
 enum {
@@ -631,6 +632,79 @@ std::vector<PurpleChat *> findChatsByNewGroup(const char *name, int type)
     return result;
 }
 
+std::string getChatMemberPurpleName(UserId userId, const TdAccountData &account)
+{
+    const td::td_api::user *user = account.getUser(userId);
+    if (!user || (user->type_ && (user->type_->get_id() == td::td_api::userTypeDeleted::ID)))
+        return "";
+
+    std::string userName    = getPurpleBuddyName(*user);
+    const char *phoneNumber = getCanonicalPhoneNumber(user->phone_number_.c_str());
+    if (purple_find_buddy(account.purpleAccount, userName.c_str()))
+        // libpurple will be able to map user name to alias because there is a buddy
+        return userName;
+    else if (!strcmp(getCanonicalPhoneNumber(purple_account_get_username(account.purpleAccount)), phoneNumber))
+        // This is us, so again libpurple will map phone number to alias
+        return purple_account_get_username(account.purpleAccount);
+    else
+        // Use first and last name instead
+        return account.getDisplayName(*user);
+}
+
+PurpleConvChatBuddyFlags getChatMemberFlags(const td::td_api::object_ptr<td::td_api::ChatMemberStatus> &status)
+{
+    if (!status)
+        return PURPLE_CBFLAGS_NONE;
+    if (status->get_id() == td::td_api::chatMemberStatusCreator::ID)
+        return PURPLE_CBFLAGS_FOUNDER;
+    if (status->get_id() == td::td_api::chatMemberStatusAdministrator::ID)
+        return PURPLE_CBFLAGS_OP;
+    return PURPLE_CBFLAGS_NONE;
+}
+
+void addChatMember(PurpleConvChat *purpleChat, UserId userId,
+                   const td::td_api::object_ptr<td::td_api::ChatMemberStatus> &status,
+                   const TdAccountData &account, bool newArrival)
+{
+    if (!purpleChat || !isGroupMember(status))
+        return;
+
+    std::string memberName = getChatMemberPurpleName(userId, account);
+    if (memberName.empty())
+        return;
+
+    PurpleConvChatBuddyFlags flags = getChatMemberFlags(status);
+    if (purple_conv_chat_find_user(purpleChat, memberName.c_str()))
+        purple_conv_chat_user_set_flags(purpleChat, memberName.c_str(), flags);
+    else
+        purple_conv_chat_add_user(purpleChat, memberName.c_str(), NULL, flags, newArrival);
+}
+
+void removeChatMember(PurpleConvChat *purpleChat, UserId userId, const TdAccountData &account,
+                      const char *reason)
+{
+    if (!purpleChat)
+        return;
+
+    std::string memberName = getChatMemberPurpleName(userId, account);
+    if (!memberName.empty() && purple_conv_chat_find_user(purpleChat, memberName.c_str()))
+        purple_conv_chat_remove_user(purpleChat, memberName.c_str(), reason);
+}
+
+void updateChatMember(PurpleConvChat *purpleChat, const td::td_api::chatMember *oldMember,
+                      const td::td_api::chatMember *newMember, const TdAccountData &account)
+{
+    UserId oldUserId = oldMember ? getUserId(*oldMember) : UserId::invalid;
+    UserId newUserId = newMember ? getUserId(*newMember) : UserId::invalid;
+    bool   oldMemberActive = oldMember && isGroupMember(oldMember->status_);
+    bool   newMemberActive = newMember && isGroupMember(newMember->status_);
+
+    if (oldMemberActive && (!newMemberActive || (oldUserId != newUserId)))
+        removeChatMember(purpleChat, oldUserId, account);
+    if (newMemberActive)
+        addChatMember(purpleChat, newUserId, newMember->status_, account, !oldMemberActive);
+}
+
 static void setChatMembers(PurpleConvChat *purpleChat,
                            const std::vector<td::td_api::object_ptr<td::td_api::chatMember>> &members,
                            const TdAccountData &account)
@@ -642,32 +716,12 @@ static void setChatMembers(PurpleConvChat *purpleChat,
         if (!member || !isGroupMember(member->status_))
             continue;
 
-        const td::td_api::user *user = account.getUser(getUserId(*member));
-        if (!user || (user->type_ && (user->type_->get_id() == td::td_api::userTypeDeleted::ID)))
+        std::string memberName = getChatMemberPurpleName(getUserId(*member), account);
+        if (memberName.empty())
             continue;
 
-        std::string userName    = getPurpleBuddyName(*user);
-        const char *phoneNumber = getCanonicalPhoneNumber(user->phone_number_.c_str());
-        if (purple_find_buddy(account.purpleAccount, userName.c_str()))
-            // libpurple will be able to map user name to alias because there is a buddy
-            nameData.emplace_back(userName);
-        else if (!strcmp(getCanonicalPhoneNumber(purple_account_get_username(account.purpleAccount)), phoneNumber))
-            // This is us, so again libpurple will map phone number to alias
-            nameData.emplace_back(purple_account_get_username(account.purpleAccount));
-        else {
-            // Use first and last name instead
-            std::string displayName = account.getDisplayName(*user);
-            nameData.emplace_back(displayName);
-        }
-
-        PurpleConvChatBuddyFlags flag;
-        if (member->status_->get_id() == td::td_api::chatMemberStatusCreator::ID)
-            flag = PURPLE_CBFLAGS_FOUNDER;
-        else if (member->status_->get_id() == td::td_api::chatMemberStatusAdministrator::ID)
-            flag = PURPLE_CBFLAGS_OP;
-        else
-            flag = PURPLE_CBFLAGS_NONE;
-        flags = g_list_append(flags, GINT_TO_POINTER(flag));
+        nameData.emplace_back(memberName);
+        flags = g_list_append(flags, GINT_TO_POINTER(getChatMemberFlags(member->status_)));
     }
 
     GList *names = NULL;
@@ -703,6 +757,25 @@ struct MessagePart {
     bool        isImage = false;
     int         imageId = 0;
     std::string text;
+
+    enum class EntityKind: uint8_t {
+        Bold,
+        Italic,
+        Underline,
+        Strikethrough,
+        Code,
+        Pre,
+        BlockQuote,
+        TextUrl,
+    };
+
+    struct Entity {
+        int32_t     offset = 0;
+        int32_t     length = 0;
+        EntityKind  kind;
+        std::string argument;
+    };
+    std::vector<Entity> entities;
 };
 
 static size_t splitTextChunk(MessagePart &part, const char *text, size_t length, TdAccountData &account)
@@ -742,28 +815,291 @@ static size_t splitTextChunk(MessagePart &part, const char *text, size_t length,
     return chunkLen;
 }
 
+static int32_t utf16Length(const char *text, size_t length)
+{
+    int32_t     result = 0;
+    const char *p      = text;
+    const char *end    = text + length;
+    while (p < end) {
+        gunichar ch = g_utf8_get_char_validated(p, end - p);
+        if ((ch == (gunichar)-1) || (ch == (gunichar)-2)) {
+            p++;
+            result++;
+        } else {
+            result += (ch > 0xffff) ? 2 : 1;
+            p = g_utf8_next_char(p);
+        }
+    }
+    return result;
+}
+
+static std::string asciiLower(std::string s)
+{
+    for (char &c: s)
+        c = tolower(static_cast<unsigned char>(c));
+    return s;
+}
+
+static std::string unescapeHtml(const char *text, size_t len)
+{
+    std::string source(text, len);
+    char *unescaped = purple_unescape_html(source.c_str());
+    std::string result = unescaped ? unescaped : "";
+    g_free(unescaped);
+    return result;
+}
+
+static std::string getTagName(const std::string &tag)
+{
+    size_t pos = 0;
+    while ((pos < tag.size()) && isspace(static_cast<unsigned char>(tag[pos])))
+        pos++;
+    if ((pos < tag.size()) && (tag[pos] == '/'))
+        pos++;
+    while ((pos < tag.size()) && isspace(static_cast<unsigned char>(tag[pos])))
+        pos++;
+
+    size_t nameStart = pos;
+    while ((pos < tag.size()) &&
+           (isalnum(static_cast<unsigned char>(tag[pos])) || (tag[pos] == '-')))
+        pos++;
+    return asciiLower(tag.substr(nameStart, pos - nameStart));
+}
+
+static bool isClosingTag(const std::string &tag)
+{
+    size_t pos = 0;
+    while ((pos < tag.size()) && isspace(static_cast<unsigned char>(tag[pos])))
+        pos++;
+    return (pos < tag.size()) && (tag[pos] == '/');
+}
+
+static std::string getTagAttribute(const std::string &tag, const char *name)
+{
+    std::string lowerTag  = asciiLower(tag);
+    std::string lowerName = asciiLower(name);
+    size_t pos = 0;
+    while ((pos = lowerTag.find(lowerName, pos)) != std::string::npos) {
+        bool validStart = (pos == 0) ||
+                          !isalnum(static_cast<unsigned char>(lowerTag[pos - 1]));
+        size_t valuePos = pos + lowerName.size();
+        while ((valuePos < lowerTag.size()) && isspace(static_cast<unsigned char>(lowerTag[valuePos])))
+            valuePos++;
+        if (validStart && (valuePos < lowerTag.size()) && (lowerTag[valuePos] == '=')) {
+            valuePos++;
+            while ((valuePos < tag.size()) && isspace(static_cast<unsigned char>(tag[valuePos])))
+                valuePos++;
+
+            size_t valueEnd = valuePos;
+            if ((valuePos < tag.size()) && ((tag[valuePos] == '"') || (tag[valuePos] == '\''))) {
+                char quote = tag[valuePos++];
+                valueEnd = tag.find(quote, valuePos);
+                if (valueEnd == std::string::npos)
+                    valueEnd = tag.size();
+            } else {
+                while ((valueEnd < tag.size()) &&
+                       !isspace(static_cast<unsigned char>(tag[valueEnd])) &&
+                       (tag[valueEnd] != '>'))
+                    valueEnd++;
+            }
+            std::string value = tag.substr(valuePos, valueEnd - valuePos);
+            return unescapeHtml(value.c_str(), value.size());
+        }
+        pos += lowerName.size();
+    }
+    return "";
+}
+
+static bool tagToEntityKind(const std::string &name, const std::string &tag, bool closing,
+                            MessagePart::EntityKind &kind, std::string &argument)
+{
+    argument.clear();
+    if ((name == "b") || (name == "strong"))
+        kind = MessagePart::EntityKind::Bold;
+    else if ((name == "i") || (name == "em"))
+        kind = MessagePart::EntityKind::Italic;
+    else if (name == "u")
+        kind = MessagePart::EntityKind::Underline;
+    else if ((name == "s") || (name == "strike") || (name == "del"))
+        kind = MessagePart::EntityKind::Strikethrough;
+    else if (name == "code")
+        kind = MessagePart::EntityKind::Code;
+    else if (name == "pre")
+        kind = MessagePart::EntityKind::Pre;
+    else if (name == "blockquote")
+        kind = MessagePart::EntityKind::BlockQuote;
+    else if (name == "a") {
+        argument = closing ? "" : getTagAttribute(tag, "href");
+        if (!closing && argument.empty())
+            return false;
+        kind = MessagePart::EntityKind::TextUrl;
+    } else
+        return false;
+
+    return true;
+}
+
+static td::td_api::object_ptr<td::td_api::TextEntityType>
+makeTextEntityType(MessagePart::EntityKind kind, const std::string &argument)
+{
+    switch (kind) {
+        case MessagePart::EntityKind::Bold:
+            return td::td_api::make_object<td::td_api::textEntityTypeBold>();
+        case MessagePart::EntityKind::Italic:
+            return td::td_api::make_object<td::td_api::textEntityTypeItalic>();
+        case MessagePart::EntityKind::Underline:
+            return td::td_api::make_object<td::td_api::textEntityTypeUnderline>();
+        case MessagePart::EntityKind::Strikethrough:
+            return td::td_api::make_object<td::td_api::textEntityTypeStrikethrough>();
+        case MessagePart::EntityKind::Code:
+            return td::td_api::make_object<td::td_api::textEntityTypeCode>();
+        case MessagePart::EntityKind::Pre:
+            return td::td_api::make_object<td::td_api::textEntityTypePre>();
+        case MessagePart::EntityKind::BlockQuote:
+            return td::td_api::make_object<td::td_api::textEntityTypeBlockQuote>();
+        case MessagePart::EntityKind::TextUrl:
+            return td::td_api::make_object<td::td_api::textEntityTypeTextUrl>(argument);
+    }
+
+    return nullptr;
+}
+
+struct ParsedText {
+    struct OpenEntity {
+        MessagePart::EntityKind kind;
+        std::string             argument;
+        int32_t                 startOffset;
+    };
+
+    std::string text;
+    int32_t     utf16Length = 0;
+    std::vector<MessagePart::Entity> entities;
+    std::vector<OpenEntity>          openEntities;
+};
+
+static void appendParsedText(ParsedText &parsed, const char *text, size_t len)
+{
+    if (len == 0)
+        return;
+
+    std::string decoded = unescapeHtml(text, len);
+    parsed.text += decoded;
+    parsed.utf16Length += utf16Length(decoded.c_str(), decoded.size());
+}
+
+static void addParsedEntity(ParsedText &parsed, MessagePart::EntityKind kind,
+                            const std::string &argument, int32_t startOffset)
+{
+    int32_t length = parsed.utf16Length - startOffset;
+    if (length <= 0)
+        return;
+
+    MessagePart::Entity entity;
+    entity.offset   = startOffset;
+    entity.length   = length;
+    entity.kind     = kind;
+    entity.argument = argument;
+    parsed.entities.push_back(entity);
+}
+
+static ParsedText parseRichText(const char *text, size_t len)
+{
+    ParsedText  parsed;
+    const char *s         = text;
+    const char *end       = text + len;
+    const char *textStart = text;
+
+    while (s < end) {
+        if (*s != '<') {
+            s++;
+            continue;
+        }
+
+        const char *tagEnd = static_cast<const char *>(memchr(s, '>', end - s));
+        if (!tagEnd)
+            break;
+
+        appendParsedText(parsed, textStart, s - textStart);
+
+        std::string tag(s + 1, tagEnd - s - 1);
+        std::string name = getTagName(tag);
+        if ((name == "br") || (name == "br/")) {
+            parsed.text += '\n';
+            parsed.utf16Length++;
+        } else {
+            MessagePart::EntityKind kind;
+            std::string argument;
+            bool closing = isClosingTag(tag);
+            if (tagToEntityKind(name, tag, closing, kind, argument)) {
+                if (closing) {
+                    auto it = std::find_if(parsed.openEntities.rbegin(), parsed.openEntities.rend(),
+                        [kind](const ParsedText::OpenEntity &entity) { return entity.kind == kind; });
+                    if (it != parsed.openEntities.rend()) {
+                        addParsedEntity(parsed, it->kind, it->argument, it->startOffset);
+                        parsed.openEntities.erase(std::next(it).base());
+                    }
+                } else {
+                    ParsedText::OpenEntity entity;
+                    entity.kind        = kind;
+                    entity.argument    = argument;
+                    entity.startOffset = parsed.utf16Length;
+                    parsed.openEntities.push_back(entity);
+                }
+            }
+        }
+
+        s = tagEnd + 1;
+        textStart = s;
+    }
+
+    appendParsedText(parsed, textStart, end - textStart);
+    for (auto it = parsed.openEntities.rbegin(); it != parsed.openEntities.rend(); ++it)
+        addParsedEntity(parsed, it->kind, it->argument, it->startOffset);
+    return parsed;
+}
+
+static void setChunkEntities(MessagePart &part, const std::vector<MessagePart::Entity> &entities,
+                             int32_t chunkOffset, int32_t chunkLength)
+{
+    int32_t chunkEnd = chunkOffset + chunkLength;
+    part.entities.clear();
+    for (const MessagePart::Entity &entity: entities) {
+        int32_t entityEnd = entity.offset + entity.length;
+        int32_t start     = std::max(entity.offset, chunkOffset);
+        int32_t end       = std::min(entityEnd, chunkEnd);
+        if (end <= start)
+            continue;
+
+        MessagePart::Entity newEntity = entity;
+        newEntity.offset = start - chunkOffset;
+        newEntity.length = end - start;
+        part.entities.push_back(newEntity);
+    }
+}
+
 static void appendText(std::vector<MessagePart> &parts, const char *s, size_t len, TdAccountData &account)
 {
     if (len != 0) {
+        ParsedText parsed = parseRichText(s, len);
+        if (parsed.text.empty())
+            return;
+
         if (parts.empty())
             parts.emplace_back();
 
-        std::string sourceText(s, len);
-        char *halfNewText = purple_markup_strip_html(sourceText.c_str());
-        char *newText = purple_unescape_html(halfNewText);
-        g_free(halfNewText);
-
-        const char *remaining    = newText;
-        size_t      lenRemaining = strlen(newText);
+        const char *remaining    = parsed.text.c_str();
+        size_t      lenRemaining = parsed.text.size();
+        int32_t     chunkOffset  = 0;
         while (lenRemaining) {
             size_t chunkLength = splitTextChunk(parts.back(), remaining, lenRemaining, account);
+            int32_t chunkUtf16Length = utf16Length(remaining, chunkLength);
+            setChunkEntities(parts.back(), parsed.entities, chunkOffset, chunkUtf16Length);
             lenRemaining -= chunkLength;
             remaining += chunkLength;
+            chunkOffset += chunkUtf16Length;
             if (lenRemaining)
                 parts.emplace_back();
         }
-
-        g_free(newText);
     }
 }
 
@@ -809,6 +1145,19 @@ static void parseMessage(const char *message, std::vector<MessagePart> &parts, T
     appendText(parts, textStart, s-textStart, account);
 }
 
+static td::td_api::object_ptr<td::td_api::formattedText> makeFormattedText(const MessagePart &input)
+{
+    auto result = td::td_api::make_object<td::td_api::formattedText>();
+    result->text_ = input.text;
+    for (const MessagePart::Entity &entity: input.entities) {
+        auto type = makeTextEntityType(entity.kind, entity.argument);
+        if (type && (entity.length > 0))
+            result->entities_.push_back(td::td_api::make_object<td::td_api::textEntity>(
+                entity.offset, entity.length, std::move(type)));
+    }
+    return result;
+}
+
 int transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiver,
                     TdAccountData &account, TdTransceiver::ResponseCb response)
 {
@@ -829,15 +1178,13 @@ int transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiv
         if (hasImage) {
             td::td_api::object_ptr<td::td_api::inputMessagePhoto> content = td::td_api::make_object<td::td_api::inputMessagePhoto>();
             content->photo_ = td::td_api::make_object<td::td_api::inputFileLocal>(tempFileName);
-            content->caption_ = td::td_api::make_object<td::td_api::formattedText>();
-            content->caption_->text_ = input.text;
+            content->caption_ = makeFormattedText(input);
 
             sendMessageRequest->input_message_content_ = std::move(content);
             purple_debug_misc(config::pluginId, "Sending photo %s\n", tempFileName);
         } else {
             td::td_api::object_ptr<td::td_api::inputMessageText> content = td::td_api::make_object<td::td_api::inputMessageText>();
-            content->text_ = td::td_api::make_object<td::td_api::formattedText>();
-            content->text_->text_ = input.text;
+            content->text_ = makeFormattedText(input);
             sendMessageRequest->input_message_content_ = std::move(content);
         }
 

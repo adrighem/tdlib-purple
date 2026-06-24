@@ -17,6 +17,98 @@ enum {
     SUPERGROUP_MEMBER_LIMIT      = 200,
 };
 
+static ChatId chatIdFromTdInt(td::td_api::int53 id)
+{
+    std::string idString = std::to_string(id);
+    return ChatId::fromString(idString.c_str());
+}
+
+static std::string escapeForNotice(const std::string &text)
+{
+    char *escaped = purple_markup_escape_text(text.c_str(), text.size());
+    std::string result = escaped ? escaped : "";
+    g_free(escaped);
+    return result;
+}
+
+static std::string messageIdsToString(const std::vector<td::td_api::int53> &ids)
+{
+    std::string result;
+    size_t limit = std::min<size_t>(ids.size(), 5);
+    for (size_t i = 0; i < limit; i++) {
+        if (!result.empty())
+            result += ", ";
+        result += std::to_string(ids[i]);
+    }
+    if (ids.size() > limit)
+        result += ", ...";
+    return result;
+}
+
+static std::string reactionTypeToString(const td::td_api::ReactionType *reaction)
+{
+    if (!reaction)
+        return "";
+
+    switch (reaction->get_id()) {
+        case td::td_api::reactionTypeEmoji::ID:
+            return escapeForNotice(static_cast<const td::td_api::reactionTypeEmoji *>(reaction)->emoji_);
+        case td::td_api::reactionTypeCustomEmoji::ID:
+            return formatMessage("[custom emoji: {}]",
+                                 std::to_string(static_cast<const td::td_api::reactionTypeCustomEmoji *>(reaction)->custom_emoji_id_));
+        case td::td_api::reactionTypePaid::ID:
+            return "[paid]";
+    }
+    return "[reaction]";
+}
+
+static std::string reactionTypesToString(const std::vector<td::td_api::object_ptr<td::td_api::ReactionType>> &reactions)
+{
+    std::string result;
+    for (const auto &reaction: reactions) {
+        if (!result.empty())
+            result += ", ";
+        result += reactionTypeToString(reaction.get());
+    }
+    return result.empty() ? _("none") : result;
+}
+
+static std::string messageReactionsToString(const std::vector<td::td_api::object_ptr<td::td_api::messageReaction>> &reactions)
+{
+    std::string result;
+    for (const auto &reaction: reactions) {
+        if (!reaction)
+            continue;
+        if (!result.empty())
+            result += ", ";
+        result += formatMessage("{0} x{1}",
+                                {reactionTypeToString(reaction->type_.get()),
+                                 std::to_string(reaction->total_count_)});
+    }
+    return result.empty() ? _("none") : result;
+}
+
+static std::string unreadReactionsToString(const std::vector<td::td_api::object_ptr<td::td_api::unreadReaction>> &reactions)
+{
+    std::string result;
+    for (const auto &reaction: reactions) {
+        if (!reaction)
+            continue;
+        if (!result.empty())
+            result += ", ";
+        result += reactionTypeToString(reaction->type_.get());
+    }
+    return result.empty() ? _("none") : result;
+}
+
+static void showChatUpdate(TdAccountData &account, ChatId chatId, const std::string &message,
+                           PurpleMessageFlags extraFlags = (PurpleMessageFlags)0)
+{
+    const td::td_api::chat *chat = account.getChat(chatId);
+    if (chat)
+        showChatNotification(account, *chat, message.c_str(), extraFlags);
+}
+
 PurpleTdClient::PurpleTdClient(PurpleAccount *acct, ITransceiverBackend *testBackend)
 :   m_transceiver(this, acct, &PurpleTdClient::processUpdate, testBackend),
     m_data(acct, m_transceiver)
@@ -113,6 +205,109 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         break;
     }
 
+    case td::td_api::updateMessageContent::ID: {
+        const auto &messageUpdate = static_cast<const td::td_api::updateMessageContent &>(update);
+        purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " content update\n",
+                          messageUpdate.message_id_);
+        if (messageUpdate.new_content_) {
+            std::string description = describeMessageContent(*messageUpdate.new_content_, m_data);
+            // TRANSLATOR: In-chat status update. First argument is a Telegram message id, second is message content.
+            showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
+                           formatMessage(_("Message {0} updated: {1}"),
+                                         {std::to_string(messageUpdate.message_id_), description}));
+        }
+        break;
+    }
+
+    case td::td_api::updateMessageEdited::ID: {
+        const auto &messageUpdate = static_cast<const td::td_api::updateMessageEdited &>(update);
+        purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " edited\n",
+                          messageUpdate.message_id_);
+        // TRANSLATOR: In-chat status update, argument is a Telegram message id.
+        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
+                       formatMessage(_("Message {} was edited"), std::to_string(messageUpdate.message_id_)),
+                       PURPLE_MESSAGE_NO_LOG);
+        break;
+    }
+
+    case td::td_api::updateDeleteMessages::ID: {
+        const auto &messageUpdate = static_cast<const td::td_api::updateDeleteMessages &>(update);
+        purple_debug_misc(config::pluginId, "Incoming update: %zu deleted messages\n",
+                          messageUpdate.message_ids_.size());
+        if (!messageUpdate.from_cache_) {
+            // TRANSLATOR: In-chat status update, argument is one or more Telegram message ids.
+            showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
+                           formatMessage(_("Deleted message(s): {}"),
+                                         messageIdsToString(messageUpdate.message_ids_)));
+        }
+        break;
+    }
+
+    case td::td_api::updateMessageIsPinned::ID: {
+        const auto &messageUpdate = static_cast<const td::td_api::updateMessageIsPinned &>(update);
+        const char *format = messageUpdate.is_pinned_ ?
+            // TRANSLATOR: In-chat status update, argument is a Telegram message id.
+            _("Message {} was pinned") :
+            // TRANSLATOR: In-chat status update, argument is a Telegram message id.
+            _("Message {} was unpinned");
+        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
+                       formatMessage(format, std::to_string(messageUpdate.message_id_)));
+        break;
+    }
+
+    case td::td_api::updateMessageInteractionInfo::ID: {
+        const auto &messageUpdate = static_cast<const td::td_api::updateMessageInteractionInfo &>(update);
+        purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " interaction info\n",
+                          messageUpdate.message_id_);
+        break;
+    }
+
+    case td::td_api::updateMessageReaction::ID: {
+        const auto &messageUpdate = static_cast<const td::td_api::updateMessageReaction &>(update);
+        UserId actorId = getUserId(messageUpdate.actor_id_);
+        std::string actor = actorId.valid() ? escapeForNotice(m_data.getDisplayName(actorId)) :
+                                              // TRANSLATOR: Placeholder for an unknown message reaction sender.
+                                              _("Someone");
+        // TRANSLATOR: In-chat status update. Arguments are user name, message id, old reactions, new reactions.
+        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
+                       formatMessage(_("{0} changed reactions on message {1}: {2} -> {3}"),
+                                     {actor, std::to_string(messageUpdate.message_id_),
+                                      reactionTypesToString(messageUpdate.old_reaction_types_),
+                                      reactionTypesToString(messageUpdate.new_reaction_types_)}),
+                       PURPLE_MESSAGE_NO_LOG);
+        break;
+    }
+
+    case td::td_api::updateMessageReactions::ID: {
+        const auto &messageUpdate = static_cast<const td::td_api::updateMessageReactions &>(update);
+        // TRANSLATOR: In-chat status update. First argument is a message id, second is a reaction summary.
+        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
+                       formatMessage(_("Reactions on message {0}: {1}"),
+                                     {std::to_string(messageUpdate.message_id_),
+                                      messageReactionsToString(messageUpdate.reactions_)}),
+                       PURPLE_MESSAGE_NO_LOG);
+        break;
+    }
+
+    case td::td_api::updateMessageUnreadReactions::ID: {
+        const auto &messageUpdate = static_cast<const td::td_api::updateMessageUnreadReactions &>(update);
+        // TRANSLATOR: In-chat status update. First argument is a message id, second is a reaction summary.
+        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
+                       formatMessage(_("Unread reactions on message {0}: {1}"),
+                                     {std::to_string(messageUpdate.message_id_),
+                                      unreadReactionsToString(messageUpdate.unread_reactions_)}),
+                       PURPLE_MESSAGE_NO_LOG);
+        break;
+    }
+
+    case td::td_api::updateMessageContainsUnreadPollVotes::ID: {
+        const auto &messageUpdate = static_cast<const td::td_api::updateMessageContainsUnreadPollVotes &>(update);
+        purple_debug_misc(config::pluginId,
+                          "Incoming update: message %" G_GINT64_FORMAT " unread poll votes=%d\n",
+                          messageUpdate.message_id_, (int)messageUpdate.contains_unread_poll_votes_);
+        break;
+    }
+
     case td::td_api::updateUserStatus::ID: {
         auto &updateStatus = static_cast<td::td_api::updateUserStatus &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: user status\n");
@@ -138,6 +333,14 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
     case td::td_api::updateSupergroup::ID: {
         auto &groupUpdate = static_cast<td::td_api::updateSupergroup &>(update);
         updateSupergroup(std::move(groupUpdate.supergroup_));
+        break;
+    }
+
+    case td::td_api::updateChatMember::ID: {
+        const auto &memberUpdate = static_cast<const td::td_api::updateChatMember &>(update);
+        purple_debug_misc(config::pluginId, "Incoming update: chat member for chat %" G_GINT64_FORMAT "\n",
+                          memberUpdate.chat_id_);
+        updateVisibleChatMemberList(memberUpdate);
         break;
     }
 
@@ -346,8 +549,6 @@ void PurpleTdClient::requestSupergroupFullInfo(SupergroupId groupId)
     }
 }
 
-// TODO process messageChatAddMembers and messageChatDeleteMember
-// TODO process messageChatUpgradeTo and messageChatUpgradeFrom
 void PurpleTdClient::groupInfoResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
 {
     std::unique_ptr<GroupInfoRequest> request = m_data.getPendingRequest<GroupInfoRequest>(requestId);
@@ -545,6 +746,82 @@ void PurpleTdClient::sendReadReceipts(PurpleConversation *conversation)
     }
 }
 
+void PurpleTdClient::setOnlineStatus(bool online)
+{
+    m_transceiver.sendQuery(td::td_api::make_object<td::td_api::setOption>(
+        "online", td::td_api::make_object<td::td_api::optionValueBoolean>(online)), nullptr);
+}
+
+void PurpleTdClient::setBuddyIcon(PurpleStoredImage *img)
+{
+    if (!img) {
+        const td::td_api::user *selfInfo = m_data.getUserByPhone(purple_account_get_username(m_account));
+        if (selfInfo && selfInfo->profile_photo_) {
+            uint64_t requestId = m_transceiver.sendQuery(
+                td::td_api::make_object<td::td_api::deleteProfilePhoto>(selfInfo->profile_photo_->id_),
+                &PurpleTdClient::setProfilePhotoResponse);
+            m_data.addPendingRequest<ProfilePhotoRequest>(requestId, nullptr);
+        }
+        return;
+    }
+
+    char *tempFileName = NULL;
+    int fd = g_file_open_tmp("tdlib_profile_photo_XXXXXX", &tempFileName, NULL);
+    if (fd < 0) {
+        purple_notify_error(m_account,
+                            // TRANSLATOR: Failure notification title.
+                            _("Failed to set profile photo"),
+                            // TRANSLATOR: Failure notification content.
+                            _("Could not create temporary file"), NULL);
+        return;
+    }
+
+    size_t imageSize = purple_imgstore_get_size(img);
+    const char *imageData = static_cast<const char *>(purple_imgstore_get_data(img));
+    size_t remaining = imageSize;
+    while (remaining > 0) {
+        ssize_t written = write(fd, imageData, remaining);
+        if (written <= 0)
+            break;
+        imageData += written;
+        remaining -= written;
+    }
+    close(fd);
+    if (remaining != 0) {
+        remove(tempFileName);
+        g_free(tempFileName);
+        purple_notify_error(m_account,
+                            // TRANSLATOR: Failure notification title.
+                            _("Failed to set profile photo"),
+                            // TRANSLATOR: Failure notification content.
+                            _("Could not write temporary file"), NULL);
+        return;
+    }
+
+    auto request = td::td_api::make_object<td::td_api::setProfilePhoto>(
+        td::td_api::make_object<td::td_api::inputChatPhotoStatic>(
+            td::td_api::make_object<td::td_api::inputFileLocal>(tempFileName)),
+        false);
+    uint64_t requestId = m_transceiver.sendQuery(std::move(request), &PurpleTdClient::setProfilePhotoResponse);
+    m_data.addPendingRequest<ProfilePhotoRequest>(requestId, tempFileName);
+    g_free(tempFileName);
+}
+
+void PurpleTdClient::setProfilePhotoResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
+{
+    std::unique_ptr<ProfilePhotoRequest> request = m_data.getPendingRequest<ProfilePhotoRequest>(requestId);
+    if (request && !request->tempFile.empty())
+        remove(request->tempFile.c_str());
+
+    if (!object || (object->get_id() != td::td_api::ok::ID)) {
+        std::string message = getDisplayedError(object);
+        purple_notify_error(m_account,
+                            // TRANSLATOR: Failure notification title.
+                            _("Failed to set profile photo"),
+                            message.c_str(), NULL);
+    }
+}
+
 void PurpleTdClient::onIncomingMessage(td::td_api::object_ptr<td::td_api::message> message)
 {
     if (!message)
@@ -597,6 +874,15 @@ void PurpleTdClient::updateChatLastMessage(td::td_api::updateChatLastMessage &la
             }
         }
     }
+}
+
+void PurpleTdClient::updateVisibleChatMemberList(const td::td_api::updateChatMember &memberUpdate)
+{
+    const td::td_api::chat *chat = m_data.getChat(chatIdFromTdInt(memberUpdate.chat_id_));
+    PurpleConvChat *purpleChat = chat ? findChatConversation(m_account, *chat) : nullptr;
+    if (purpleChat)
+        ::updateChatMember(purpleChat, memberUpdate.old_chat_member_.get(),
+                           memberUpdate.new_chat_member_.get(), m_data);
 }
 
 int PurpleTdClient::sendMessage(const char *buddyName, const char *message)
@@ -1726,6 +2012,25 @@ void PurpleTdClient::verifyRecoveryEmailResponse(uint64_t requestId, td::td_api:
         purple_notify_error(m_account, "Two-factor authentication",
                             "Failed to verify recovery e-mail", errorMessage.c_str());
     }
+}
+
+bool PurpleTdClient::canSendFileToUser(const char *purpleName)
+{
+    if (!purpleName)
+        return false;
+
+    SecretChatId secretChatId = purpleBuddyNameToSecretChatId(purpleName);
+    if (secretChatId.valid())
+        return m_data.getChatBySecretChat(secretChatId) != nullptr;
+
+    std::vector<const td::td_api::user *> users = getUsersByPurpleName(purpleName, m_data, NULL);
+    return users.size() == 1;
+}
+
+bool PurpleTdClient::canSendFileToChat(int purpleChatId)
+{
+    const td::td_api::chat *chat = m_data.getChatByPurpleId(purpleChatId);
+    return chat && m_data.isGroupChatWithMembership(*chat);
 }
 
 void PurpleTdClient::sendFileToChat(PurpleXfer *xfer, const char *purpleName,

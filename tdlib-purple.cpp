@@ -327,8 +327,7 @@ static void tgprpl_login (PurpleAccount *acct)
     PurpleTdClient   *tdClient = new PurpleTdClient(acct, g_testBackend);
 
     purple_connection_set_protocol_data (gc, tdClient);
-    // this would enable formatting buttons in pidgin
-    // gc->flags = static_cast<PurpleConnectionFlags>(gc->flags | PURPLE_CONNECTION_HTML);
+    gc->flags = static_cast<PurpleConnectionFlags>(gc->flags | PURPLE_CONNECTION_HTML);
 
     purple_signal_connect(purple_conversations_get_handle(), "conversation-updated",
                           acct, PURPLE_CALLBACK(conversation_updated_cb), NULL);
@@ -404,6 +403,18 @@ static void tgprpl_info_show (PurpleConnection *gc, const char *who)
 
 static void tgprpl_set_status (PurpleAccount *acct, PurpleStatus *status)
 {
+    PurpleTdClient *tdClient = getTdClient(acct);
+    if (!tdClient || !status)
+        return;
+
+    tdClient->setOnlineStatus(purple_status_is_online(status) && purple_status_is_available(status));
+}
+
+static void tgprpl_set_buddy_icon(PurpleConnection *gc, PurpleStoredImage *img)
+{
+    PurpleTdClient *tdClient = static_cast<PurpleTdClient *>(purple_connection_get_protocol_data(gc));
+    if (tdClient)
+        tdClient->setBuddyIcon(img);
 }
 
 static void tgprpl_add_buddy (PurpleConnection *gc, PurpleBuddy *buddy, PurpleGroup *group)
@@ -641,6 +652,21 @@ static char *getRoomlistChatName(PurpleRoomlistRoom *room)
 
 static gboolean tgprpl_can_receive_file (PurpleConnection *gc, const char *who)
 {
+    PurpleTdClient *tdClient = static_cast<PurpleTdClient *>(purple_connection_get_protocol_data(gc));
+    return tdClient && tdClient->canSendFileToUser(who);
+}
+
+#if PURPLE_VERSION_CHECK(2,14,0)
+static gboolean tgprpl_chat_can_receive_file(PurpleConnection *gc, int id)
+{
+    PurpleTdClient *tdClient = static_cast<PurpleTdClient *>(purple_connection_get_protocol_data(gc));
+    return tdClient && tdClient->canSendFileToChat(id);
+}
+#endif
+
+static gboolean tgprpl_offline_message(const PurpleBuddy *buddy)
+{
+    (void)buddy;
     return TRUE;
 }
 
@@ -796,7 +822,7 @@ static PurpleCmdRet hangupCommand(PurpleConversation *conv, const gchar *cmd, gc
         return PURPLE_CMD_RET_FAILED;
 }
 
-static char png[] = "png";
+static char jpeg[] = "jpeg,jpg";
 
 PurplePluginProtocolInfo prpl_info = {
     .options          = (PurpleProtocolOptions)(OPT_PROTO_NO_PASSWORD | OPT_PROTO_IM_IMAGE | OPT_PROTO_CHAT_TOPIC),
@@ -804,7 +830,7 @@ PurplePluginProtocolInfo prpl_info = {
     .protocol_options = NULL, // was initialized in tgprpl_init()
 
     .icon_spec = {
-        .format       = png,
+        .format       = jpeg,
         .min_width    = 1,
         .min_height   = 1,
         .max_width    = 512,
@@ -856,7 +882,7 @@ PurplePluginProtocolInfo prpl_info = {
     .buddy_free               = NULL,
     .convo_closed             = NULL,
     .normalize                = NULL,
-    .set_buddy_icon           = NULL,
+    .set_buddy_icon           = tgprpl_set_buddy_icon,
     .remove_group             = NULL,
     .get_cb_real_name         = NULL,
     .set_chat_topic           = tgprpl_set_chat_topic,
@@ -867,7 +893,7 @@ PurplePluginProtocolInfo prpl_info = {
     .can_receive_file         = tgprpl_can_receive_file,
     .send_file                = tgprpl_send_file,
     .new_xfer                 = newUploadTransfer,
-    .offline_message          = NULL,
+    .offline_message          = tgprpl_offline_message,
     .whiteboard_prpl_ops      = NULL,
     .send_raw                 = NULL,
     .roomlist_room_serialize  = getRoomlistChatName,
@@ -885,7 +911,7 @@ PurplePluginProtocolInfo prpl_info = {
     .add_buddies_with_invite  = NULL,
 #if PURPLE_VERSION_CHECK(2,14,0)
     .get_cb_alias             = NULL,
-    .chat_can_receive_file    = NULL,
+    .chat_can_receive_file    = tgprpl_chat_can_receive_file,
     .chat_send_file           = sendFileToChat,
 #endif
 };

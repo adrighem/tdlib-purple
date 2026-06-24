@@ -10,10 +10,48 @@ using namespace td::td_api;
 namespace td {
 namespace td_api {
 
+static void compare(const TextEntityType &actual, const TextEntityType &expected)
+{
+    ASSERT_EQ(expected.get_id(), actual.get_id());
+    switch (expected.get_id()) {
+        case textEntityTypePreCode::ID:
+            ASSERT_EQ(static_cast<const textEntityTypePreCode &>(expected).language_,
+                      static_cast<const textEntityTypePreCode &>(actual).language_);
+            break;
+        case textEntityTypeTextUrl::ID:
+            ASSERT_EQ(static_cast<const textEntityTypeTextUrl &>(expected).url_,
+                      static_cast<const textEntityTypeTextUrl &>(actual).url_);
+            break;
+        case textEntityTypeMentionName::ID:
+            ASSERT_EQ(static_cast<const textEntityTypeMentionName &>(expected).user_id_,
+                      static_cast<const textEntityTypeMentionName &>(actual).user_id_);
+            break;
+        case textEntityTypeCustomEmoji::ID:
+            ASSERT_EQ(static_cast<const textEntityTypeCustomEmoji &>(expected).custom_emoji_id_,
+                      static_cast<const textEntityTypeCustomEmoji &>(actual).custom_emoji_id_);
+            break;
+        case textEntityTypeMediaTimestamp::ID:
+            ASSERT_EQ(static_cast<const textEntityTypeMediaTimestamp &>(expected).media_timestamp_,
+                      static_cast<const textEntityTypeMediaTimestamp &>(actual).media_timestamp_);
+            break;
+    }
+}
+
+static void compare(const textEntity &actual, const textEntity &expected)
+{
+    ASSERT_EQ(expected.offset_, actual.offset_);
+    ASSERT_EQ(expected.length_, actual.length_);
+    ASSERT_EQ(expected.type_ != nullptr, actual.type_ != nullptr);
+    if (expected.type_)
+        compare(*actual.type_, *expected.type_);
+}
+
 void compare(const formattedText &actual, const formattedText &expected)
 {
     ASSERT_EQ(expected.text_, actual.text_);
     ASSERT_EQ(expected.entities_.size(), actual.entities_.size());
+    for (size_t i = 0; i < expected.entities_.size(); i++)
+        compare(*actual.entities_[i], *expected.entities_[i]);
 }
 
 void compare(const setTdlibParameters &actual, const setTdlibParameters &expected)

@@ -472,7 +472,7 @@ TEST_F(GroupChatTest, JoinBasicGroupByInviteLink)
         ServGotJoinedChatEvent(connection, purpleChatId, groupChatPurpleName, groupChatTitle),
         ConversationWriteEvent(groupChatPurpleName, NotificationWho,
                                selfFirstName + " " + selfLastName + ": " +
-                               "Unsupported message type messageChatJoinByLink",
+                               "Joined via invite link",
                                PURPLE_MESSAGE_SYSTEM, 12345)
     );
 
@@ -627,7 +627,9 @@ TEST_F(GroupChatTest, CreateRemoveBasicGroupInAnotherClient)
         ConvSetTitleEvent(groupChatPurpleName, groupChatTitle),
         ConversationWriteEvent(groupChatPurpleName, NotificationWho,
                                selfFirstName + " " + selfLastName +
-                               ": Unsupported message type messageBasicGroupChatCreate",
+                               ": Created group " + groupChatTitle + " with " +
+                               selfFirstName + " " + selfLastName + ", " +
+                               userFirstNames[0] + " " + userLastNames[0],
                                PURPLE_MESSAGE_SYSTEM, date[0])
     );
 
@@ -657,7 +659,7 @@ TEST_F(GroupChatTest, CreateRemoveBasicGroupInAnotherClient)
         ChatClearUsersEvent(groupChatPurpleName),
         ConversationWriteEvent(groupChatPurpleName, NotificationWho,
                                selfFirstName + " " + selfLastName +
-                               ": Unsupported message type messageChatDeleteMember",
+                               ": Left the group",
                                PURPLE_MESSAGE_SYSTEM, date[1])
     );
 
