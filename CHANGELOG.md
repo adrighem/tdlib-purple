@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v0.9.2...tdlib-purple-v0.10.0) (2026-06-24)
+
+
+### Features
+
+* bridge tdlib features into libpurple ([e7ab6e6](https://github.com/adrighem/tdlib-purple/commit/e7ab6e6338a4098f6cd7f590fdd394c71ae5ccee))
+
+
+### Bug Fixes
+
+* limit outgoing text URL entities ([29b9102](https://github.com/adrighem/tdlib-purple/commit/29b9102cb6ec6148540b24b4484c613ea6414466))
+
 ## [0.9.2](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v0.9.1...tdlib-purple-v0.9.2) (2026-06-21)
 
 
