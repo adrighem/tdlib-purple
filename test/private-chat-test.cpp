@@ -339,6 +339,55 @@ TEST_F(PrivateChatTest, ContactedByNew)
     )));
 }
 
+TEST_F(PrivateChatTest, EditedMessageAddsUpdatedLine)
+{
+    loginWithOneContact();
+    constexpr int64_t messageId = 10000;
+    constexpr int32_t date      = 123456;
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        messageId,
+        userIds[0],
+        chatIds[0],
+        false,
+        date,
+        makeTextMessage("original")
+    )));
+    prpl.verifyEvents(ServGotImEvent(
+        connection,
+        purpleUserName(0),
+        "original",
+        PURPLE_MESSAGE_RECV,
+        date
+    ));
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[0],
+        {messageId},
+        true
+    ));
+
+    tgl.update(make_object<updateMessageContent>(
+        chatIds[0],
+        messageId,
+        makeTextMessage("edited")
+    ));
+    prpl.verifyEvents(ConversationWriteEvent(
+        purpleUserName(0),
+        "Updated " + userFirstNames[0] + " " + userLastNames[0],
+        "edited",
+        PURPLE_MESSAGE_RECV,
+        date
+    ));
+
+    tgl.update(make_object<updateMessageEdited>(
+        chatIds[0],
+        messageId,
+        date + 1,
+        nullptr
+    ));
+    prpl.verifyNoEvents();
+}
+
 TEST_F(PrivateChatTest, ContactedByNew_ImmediatePhoneNumber)
 {
     login();

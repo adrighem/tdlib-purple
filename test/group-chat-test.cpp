@@ -128,6 +128,46 @@ TEST_F(GroupChatTest, BasicGroupReceiveTextAndReply)
     tgl.verifyRequest(*Mock_ViewMessages(groupChatId, {messageId[1]}, true));
 }
 
+TEST_F(GroupChatTest, EditedMessageAddsUpdatedLine)
+{
+    constexpr int32_t date         = 12345;
+    constexpr int64_t messageId    = 10000;
+    constexpr int     purpleChatId = 1;
+    loginWithBasicGroup();
+
+    tgl.update(standardUpdateUserNoPhone(0));
+    tgl.update(make_object<updateNewMessage>(
+        makeMessage(messageId, userIds[0], groupChatId, false, date, makeTextMessage("Hello"))
+    ));
+    tgl.verifyRequest(*Mock_ViewMessages(groupChatId, {messageId}, true));
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(connection, purpleChatId, groupChatPurpleName, groupChatTitle),
+        ServGotChatEvent(connection, purpleChatId, userFirstNames[0] + " " + userLastNames[0],
+                         "Hello", PURPLE_MESSAGE_RECV, date)
+    );
+
+    tgl.update(make_object<updateMessageContent>(
+        groupChatId,
+        messageId,
+        makeTextMessage("Edited")
+    ));
+    prpl.verifyEvents(ConversationWriteEvent(
+        groupChatPurpleName,
+        "Updated " + userFirstNames[0] + " " + userLastNames[0],
+        "Edited",
+        PURPLE_MESSAGE_RECV,
+        date
+    ));
+
+    tgl.update(make_object<updateMessageEdited>(
+        groupChatId,
+        messageId,
+        date + 1,
+        nullptr
+    ));
+    prpl.verifyNoEvents();
+}
+
 TEST_F(GroupChatTest, BasicGroupReceivePhoto)
 {
     const int32_t date         = 12345;

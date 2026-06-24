@@ -350,8 +350,9 @@ void sendConversationReadReceipts(TdAccountData &account, PurpleConversation *co
     }
 }
 
-void showMessageTextIm(TdAccountData &account, const char *purpleUserName, const char *text,
-                       const char *notification, time_t timestamp, PurpleMessageFlags flags)
+PurpleConversation *showMessageTextIm(TdAccountData &account, const char *purpleUserName,
+                                      const char *text, const char *notification,
+                                      time_t timestamp, PurpleMessageFlags flags)
 {
     PurpleConversation *conv = NULL;
 
@@ -382,6 +383,8 @@ void showMessageTextIm(TdAccountData &account, const char *purpleUserName, const
     // response before they can be displayed. But who cares.
     if (conv != NULL)
         sendConversationReadReceipts(account, conv);
+
+    return conv;
 }
 
 static void showMessageTextChat(TdAccountData &account, const td::td_api::chat &chat,
@@ -539,17 +542,35 @@ void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
         // to alias, so use display name instead of idXXXXXXXXX
         if (!purple_find_buddy(account.purpleAccount, userName.c_str()))
             userName = account.getDisplayName(*privateUser);
-        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
+        PurpleConversation *conv =
+            showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
+        if (text)
+            account.rememberDisplayedMessage(getId(chat), message.id, conv,
+                                             getSenderDisplayName(chat, message, account.purpleAccount),
+                                             message.timestamp, flags);
     }
 
     SecretChatId secretChatId = getSecretChatId(chat);
     if (secretChatId.valid()) {
         std::string userName = getSecretChatBuddyName(secretChatId);
-        showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
+        PurpleConversation *conv =
+            showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
+        if (text)
+            account.rememberDisplayedMessage(getId(chat), message.id, conv,
+                                             getSenderDisplayName(chat, message, account.purpleAccount),
+                                             message.timestamp, flags);
     }
 
-    if (getBasicGroupId(chat).valid() || getSupergroupId(chat).valid())
+    if (getBasicGroupId(chat).valid() || getSupergroupId(chat).valid()) {
         showMessageTextChat(account, chat, message, text, notification, flags);
+        if (text) {
+            PurpleConversation *conv = purple_find_conversation_with_account(
+                PURPLE_CONV_TYPE_CHAT, getPurpleChatName(chat).c_str(), account.purpleAccount);
+            account.rememberDisplayedMessage(getId(chat), message.id, conv,
+                                             getSenderDisplayName(chat, message, account.purpleAccount),
+                                             message.timestamp, flags);
+        }
+    }
 }
 
 void showChatNotification(TdAccountData &account, const td::td_api::chat &chat,

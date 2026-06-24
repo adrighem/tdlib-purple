@@ -990,3 +990,52 @@ void TdAccountData::extractPendingReadReceipts(ChatId chatId, std::vector<ReadRe
     } else
         receipts.clear();
 }
+
+void TdAccountData::rememberDisplayedMessage(ChatId chatId, MessageId messageId,
+                                             PurpleConversation *conv,
+                                             const std::string &sender,
+                                             time_t timestamp,
+                                             PurpleMessageFlags flags)
+{
+    if (!chatId.valid() || !messageId.valid() || !conv)
+        return;
+
+    auto it = std::find_if(m_displayedMessages.begin(), m_displayedMessages.end(),
+                           [chatId, messageId](const DisplayedMessageInfo &item) {
+                               return (item.chatId == chatId) && (item.messageId == messageId);
+                           });
+    if (it == m_displayedMessages.end()) {
+        m_displayedMessages.emplace_back();
+        it = m_displayedMessages.end() - 1;
+        it->chatId = chatId;
+        it->messageId = messageId;
+    }
+
+    it->conversationType = purple_conversation_get_type(conv);
+    it->conversationName = purple_conversation_get_name(conv) ?: "";
+    it->sender = sender;
+    it->timestamp = timestamp;
+    it->flags = flags;
+}
+
+bool TdAccountData::showUpdatedMessage(ChatId chatId, MessageId messageId,
+                                       const std::string &newText)
+{
+    auto record = std::find_if(m_displayedMessages.begin(), m_displayedMessages.end(),
+                               [chatId, messageId](const DisplayedMessageInfo &item) {
+                                   return (item.chatId == chatId) && (item.messageId == messageId);
+                               });
+    if (record == m_displayedMessages.end())
+        return false;
+
+    PurpleConversation *conv = purple_find_conversation_with_account(
+        record->conversationType, record->conversationName.c_str(), purpleAccount);
+    if (!conv)
+        return false;
+
+    std::string sender = record->sender.empty() ?
+        _("Updated") : formatMessage(_("Updated {}"), record->sender);
+    purple_conversation_write(conv, sender.c_str(), newText.c_str(),
+                              record->flags, record->timestamp);
+    return true;
+}
