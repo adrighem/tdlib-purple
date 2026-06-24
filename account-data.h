@@ -10,6 +10,7 @@
 #include <mutex>
 #include <set>
 #include <list>
+#include <vector>
 #include <purple.h>
 
 #ifndef NoVoip
@@ -414,6 +415,13 @@ public:
 
     void                       addPendingReadReceipt(ChatId chatId, MessageId messageId);
     void                       extractPendingReadReceipts(ChatId chatId, std::vector<ReadReceipt> &receipts);
+    void                       rememberDisplayedMessage(ChatId chatId, MessageId messageId,
+                                                        PurpleConversation *conv,
+                                                        const std::string &sender,
+                                                        time_t timestamp,
+                                                        PurpleMessageFlags flags);
+    bool                       showUpdatedMessage(ChatId chatId, MessageId messageId,
+                                                  const std::string &newText);
 private:
     TdAccountData(const TdAccountData &other) = delete;
     TdAccountData &operator=(const TdAccountData &other) = delete;
@@ -454,6 +462,16 @@ private:
         PurpleXfer *xfer;
     };
 
+    struct DisplayedMessageInfo {
+        ChatId                 chatId;
+        MessageId              messageId;
+        PurpleConversationType conversationType;
+        std::string            conversationName;
+        std::string            sender;
+        time_t                 timestamp;
+        PurpleMessageFlags     flags;
+    };
+
     using ChatMap = std::map<ChatId, ChatInfo>;
     using UserMap = std::map<UserId, UserInfo>;
     UserMap                            m_userInfo;
@@ -490,6 +508,8 @@ private:
 
     // Read receipts not sent immediately due to away status (grouped per chat)
     std::vector<std::vector<ReadReceipt>> m_pendingReadReceipts;
+
+    std::vector<DisplayedMessageInfo> m_displayedMessages;
 };
 
 #endif

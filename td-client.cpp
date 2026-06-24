@@ -211,10 +211,14 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
                           messageUpdate.message_id_);
         if (messageUpdate.new_content_) {
             std::string description = describeMessageContent(*messageUpdate.new_content_, m_data);
-            // TRANSLATOR: In-chat status update. First argument is a Telegram message id, second is message content.
-            showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
-                           formatMessage(_("Message {0} updated: {1}"),
-                                         {std::to_string(messageUpdate.message_id_), description}));
+            if (!m_data.showUpdatedMessage(chatIdFromTdInt(messageUpdate.chat_id_),
+                                           MessageId::fromString(std::to_string(messageUpdate.message_id_).c_str()),
+                                           description)) {
+                // TRANSLATOR: In-chat status update. First argument is a Telegram message id, second is message content.
+                showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
+                               formatMessage(_("Message {0} updated: {1}"),
+                                             {std::to_string(messageUpdate.message_id_), description}));
+            }
         }
         break;
     }
@@ -223,10 +227,6 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         const auto &messageUpdate = static_cast<const td::td_api::updateMessageEdited &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " edited\n",
                           messageUpdate.message_id_);
-        // TRANSLATOR: In-chat status update, argument is a Telegram message id.
-        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
-                       formatMessage(_("Message {} was edited"), std::to_string(messageUpdate.message_id_)),
-                       PURPLE_MESSAGE_NO_LOG);
         break;
     }
 
