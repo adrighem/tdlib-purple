@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.10.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v0.9.2...tdlib-purple-v0.10.0) (2026-06-24)
+## [1.0.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v0.9.2...tdlib-purple-v0.10.0) (2026-06-24)
 
 
 ### Features
