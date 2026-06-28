@@ -163,6 +163,24 @@ jobs:
               ./.github/scripts/build-release-assets.sh deb "$ASSET_DISTRO"
             '
 
+      - name: Verify Debian package runtime dependencies
+        env:
+          ASSET_DISTRO: ${{ matrix.distro_id }}
+          IMAGE: ${{ matrix.image }}
+        run: |
+          deb="$(find release-assets -maxdepth 1 -name "*_${ASSET_DISTRO}_*.deb" -print -quit)"
+          if [ -z "$deb" ]; then
+            echo "Could not find generated Debian package for ${ASSET_DISTRO} in release-assets" >&2
+            exit 1
+          fi
+
+          docker run --rm \
+            -v "$PWD:/work" \
+            -w /work \
+            -e DEBIAN_FRONTEND=noninteractive \
+            "$IMAGE" \
+            bash -lc './.github/scripts/check-deb-runtime-dependencies.sh "$1"' bash "$deb"
+
       - name: Upload release asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
