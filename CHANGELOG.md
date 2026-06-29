@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v1.0.0...tdlib-purple-v1.1.0) (2026-06-29)
+
+
+### Features
+
+* upgrade TDLib and align rich text handling ([35a8776](https://github.com/adrighem/tdlib-purple/commit/35a8776f440aa23f97a0a977a6012a0e1af64001))
+
 ## [1.0.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v0.9.2...tdlib-purple-v0.10.0) (2026-06-24)
 
 
