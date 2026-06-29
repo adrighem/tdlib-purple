@@ -28,15 +28,21 @@ inline object_ptr<inputMessagePhoto> Mock_InputMessagePhoto(object_ptr<InputFile
                                                             std::int32_t height,
                                                             object_ptr<formattedText> &&caption) {
     return make_object<inputMessagePhoto>(
-        std::move(photo), std::move(thumbnail), nullptr, std::move(added_sticker_file_ids),
-        width, height, std::move(caption), false, nullptr, false
+        make_object<inputPhoto>(
+            std::move(photo), std::move(thumbnail), nullptr,
+            std::move(added_sticker_file_ids), width, height
+        ),
+        std::move(caption), false, nullptr, false
     );
 }
 
 inline object_ptr<inputMessageDocument> Mock_InputMessageDocument(object_ptr<InputFile> &&document,
                                                                   object_ptr<inputThumbnail> &&thumbnail,
                                                                   object_ptr<formattedText> &&caption) {
-    return make_object<inputMessageDocument>(std::move(document), std::move(thumbnail), false, std::move(caption));
+    return make_object<inputMessageDocument>(
+        make_object<inputDocument>(std::move(document), std::move(thumbnail), false),
+        std::move(caption)
+    );
 }
 
 inline object_ptr<sendMessage> Mock_SendMessage(int64_t chat_id, int64_t message_thread_id,

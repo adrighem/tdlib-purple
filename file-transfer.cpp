@@ -106,7 +106,9 @@ static void updateDocumentUploadProgress(const td::td_api::file &file, PurpleXfe
             auto sendMessageRequest = td::td_api::make_object<td::td_api::sendMessage>();
             auto content = td::td_api::make_object<td::td_api::inputMessageDocument>();
             content->caption_ = td::td_api::make_object<td::td_api::formattedText>();
-            content->document_ = td::td_api::make_object<td::td_api::inputFileId>(file.id_);
+            content->document_ = td::td_api::make_object<td::td_api::inputDocument>(
+                td::td_api::make_object<td::td_api::inputFileId>(file.id_),
+                nullptr, false);
             sendMessageRequest->input_message_content_ = std::move(content);
             sendMessageRequest->chat_id_ = chatId.value();
 

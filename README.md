@@ -11,6 +11,7 @@ The main goal is to keep tdlib-purple usable with newer TDLib versions while mak
 - CI builds and tests for common build options
 - release-please managed changelogs and version bumps
 - GitHub Releases with ready-to-install Linux packages
+- conservative rich text translation between libpurple HTML and TDLib `formattedText`
 
 Release assets currently include:
 
@@ -19,6 +20,14 @@ Release assets currently include:
 - Ubuntu 24.04 LTS `.deb`
 - Fedora 44 `.rpm`
 - Enterprise Linux 9 compatible `.rpm`
+
+Rich text support intentionally uses a small libpurple-compatible HTML subset:
+
+- bold, italic, underline, strikethrough, inline code, preformatted text, block quotes, and spoilers
+- HTTP(S), Telegram user, and matching `mailto:` links
+- incoming Telegram URL, email, mention, pre-code, and spoiler entities are shown as libpurple HTML
+
+Unsupported styling such as font face, size, color, arbitrary spans, lists, and tables is treated as plain text.
 
 Download packages from the latest GitHub Release:
 

@@ -12,6 +12,7 @@
 #include <functional>
 #include <iterator>
 #include <ctime>
+#include <limits>
 
 enum {
     MAX_MESSAGE_PARTS = 10,
@@ -765,8 +766,12 @@ struct MessagePart {
         Strikethrough,
         Code,
         Pre,
+        PreCode,
         BlockQuote,
+        Spoiler,
         TextUrl,
+        EmailAddress,
+        MentionName,
     };
 
     struct Entity {
@@ -876,36 +881,66 @@ static bool isClosingTag(const std::string &tag)
 
 static std::string getTagAttribute(const std::string &tag, const char *name)
 {
-    std::string lowerTag  = asciiLower(tag);
     std::string lowerName = asciiLower(name);
     size_t pos = 0;
-    while ((pos = lowerTag.find(lowerName, pos)) != std::string::npos) {
-        bool validStart = (pos == 0) ||
-                          !isalnum(static_cast<unsigned char>(lowerTag[pos - 1]));
-        size_t valuePos = pos + lowerName.size();
-        while ((valuePos < lowerTag.size()) && isspace(static_cast<unsigned char>(lowerTag[valuePos])))
-            valuePos++;
-        if (validStart && (valuePos < lowerTag.size()) && (lowerTag[valuePos] == '=')) {
-            valuePos++;
-            while ((valuePos < tag.size()) && isspace(static_cast<unsigned char>(tag[valuePos])))
-                valuePos++;
+    while ((pos < tag.size()) && isspace(static_cast<unsigned char>(tag[pos])))
+        pos++;
+    if ((pos < tag.size()) && (tag[pos] == '/'))
+        pos++;
+    while ((pos < tag.size()) && isspace(static_cast<unsigned char>(tag[pos])))
+        pos++;
 
-            size_t valueEnd = valuePos;
-            if ((valuePos < tag.size()) && ((tag[valuePos] == '"') || (tag[valuePos] == '\''))) {
-                char quote = tag[valuePos++];
-                valueEnd = tag.find(quote, valuePos);
-                if (valueEnd == std::string::npos)
-                    valueEnd = tag.size();
+    while ((pos < tag.size()) &&
+           (isalnum(static_cast<unsigned char>(tag[pos])) || (tag[pos] == '-')))
+        pos++;
+
+    while (pos < tag.size()) {
+        while ((pos < tag.size()) && isspace(static_cast<unsigned char>(tag[pos])))
+            pos++;
+        if ((pos >= tag.size()) || (tag[pos] == '/'))
+            break;
+
+        size_t attrStart = pos;
+        while ((pos < tag.size()) &&
+               (isalnum(static_cast<unsigned char>(tag[pos])) ||
+                (tag[pos] == '-') || (tag[pos] == '_') || (tag[pos] == ':')))
+            pos++;
+        if (pos == attrStart) {
+            pos++;
+            continue;
+        }
+
+        std::string attrName = asciiLower(tag.substr(attrStart, pos - attrStart));
+        while ((pos < tag.size()) && isspace(static_cast<unsigned char>(tag[pos])))
+            pos++;
+        if ((pos >= tag.size()) || (tag[pos] != '='))
+            continue;
+        pos++;
+        while ((pos < tag.size()) && isspace(static_cast<unsigned char>(tag[pos])))
+            pos++;
+
+        size_t valueStart = pos;
+        size_t valueEnd = pos;
+        if ((pos < tag.size()) && ((tag[pos] == '"') || (tag[pos] == '\''))) {
+            char quote = tag[pos++];
+            valueStart = pos;
+            valueEnd = tag.find(quote, pos);
+            if (valueEnd == std::string::npos) {
+                valueEnd = tag.size();
+                pos = tag.size();
             } else {
-                while ((valueEnd < tag.size()) &&
-                       !isspace(static_cast<unsigned char>(tag[valueEnd])) &&
-                       (tag[valueEnd] != '>'))
-                    valueEnd++;
+                pos = valueEnd + 1;
             }
-            std::string value = tag.substr(valuePos, valueEnd - valuePos);
+        } else {
+            while ((pos < tag.size()) && !isspace(static_cast<unsigned char>(tag[pos])))
+                pos++;
+            valueEnd = pos;
+        }
+
+        if (attrName == lowerName) {
+            std::string value = tag.substr(valueStart, valueEnd - valueStart);
             return unescapeHtml(value.c_str(), value.size());
         }
-        pos += lowerName.size();
     }
     return "";
 }
@@ -916,6 +951,65 @@ static bool isSupportedTextUrl(const std::string &url)
     return !lowerUrl.compare(0, 7, "http://") ||
            !lowerUrl.compare(0, 8, "https://") ||
            !lowerUrl.compare(0, 5, "tg://");
+}
+
+static bool isSimpleEmailAddress(const std::string &email)
+{
+    size_t at = email.find('@');
+    if ((at == std::string::npos) || (at == 0) || (at == email.size() - 1))
+        return false;
+    if (email.find('@', at + 1) != std::string::npos)
+        return false;
+
+    for (char c: email) {
+        unsigned char ch = static_cast<unsigned char>(c);
+        if ((ch <= ' ') || (c == '<') || (c == '>') || (c == '"'))
+            return false;
+    }
+    return true;
+}
+
+static bool getMailtoAddress(const std::string &url, std::string &email)
+{
+    if (asciiLower(url).compare(0, 7, "mailto:"))
+        return false;
+    email = url.substr(7);
+    return isSimpleEmailAddress(email);
+}
+
+static bool parsePositiveInt64(const std::string &s, int64_t &value)
+{
+    if (s.empty())
+        return false;
+
+    int64_t result = 0;
+    for (char c: s) {
+        if (!isdigit(static_cast<unsigned char>(c)))
+            return false;
+        int digit = c - '0';
+        if (result > (std::numeric_limits<int64_t>::max() - digit) / 10)
+            return false;
+        result = result * 10 + digit;
+    }
+    if (result <= 0)
+        return false;
+
+    value = result;
+    return true;
+}
+
+static bool getMentionNameUserId(const std::string &url, int64_t &userId)
+{
+    const char prefix[] = "tg://user?id=";
+    std::string lowerUrl = asciiLower(url);
+    if (lowerUrl.compare(0, sizeof(prefix) - 1, prefix))
+        return false;
+    return parsePositiveInt64(url.substr(sizeof(prefix) - 1), userId);
+}
+
+static bool isGeneratedSpoilerStyle(const std::string &style)
+{
+    return asciiLower(style) == "background-color:#000000;color:#000000";
 }
 
 static bool tagToEntityKind(const std::string &name, const std::string &tag, bool closing,
@@ -936,11 +1030,30 @@ static bool tagToEntityKind(const std::string &name, const std::string &tag, boo
         kind = MessagePart::EntityKind::Pre;
     else if (name == "blockquote")
         kind = MessagePart::EntityKind::BlockQuote;
+    else if (name == "span") {
+        if (!closing && !isGeneratedSpoilerStyle(getTagAttribute(tag, "style")))
+            return false;
+        kind = MessagePart::EntityKind::Spoiler;
+    }
     else if (name == "a") {
         argument = closing ? "" : getTagAttribute(tag, "href");
-        if (!closing && (argument.empty() || !isSupportedTextUrl(argument)))
-            return false;
-        kind = MessagePart::EntityKind::TextUrl;
+        if (!closing) {
+            std::string email;
+            int64_t userId = 0;
+            if (getMailtoAddress(argument, email)) {
+                kind = MessagePart::EntityKind::EmailAddress;
+                argument = email;
+            } else if (getMentionNameUserId(argument, userId)) {
+                kind = MessagePart::EntityKind::MentionName;
+                argument = std::to_string(userId);
+            } else if (isSupportedTextUrl(argument)) {
+                kind = MessagePart::EntityKind::TextUrl;
+            } else {
+                return false;
+            }
+        } else {
+            kind = MessagePart::EntityKind::TextUrl;
+        }
     } else
         return false;
 
@@ -963,10 +1076,22 @@ makeTextEntityType(MessagePart::EntityKind kind, const std::string &argument)
             return td::td_api::make_object<td::td_api::textEntityTypeCode>();
         case MessagePart::EntityKind::Pre:
             return td::td_api::make_object<td::td_api::textEntityTypePre>();
+        case MessagePart::EntityKind::PreCode:
+            return td::td_api::make_object<td::td_api::textEntityTypePreCode>("");
         case MessagePart::EntityKind::BlockQuote:
             return td::td_api::make_object<td::td_api::textEntityTypeBlockQuote>();
+        case MessagePart::EntityKind::Spoiler:
+            return td::td_api::make_object<td::td_api::textEntityTypeSpoiler>();
         case MessagePart::EntityKind::TextUrl:
             return td::td_api::make_object<td::td_api::textEntityTypeTextUrl>(argument);
+        case MessagePart::EntityKind::EmailAddress:
+            return td::td_api::make_object<td::td_api::textEntityTypeEmailAddress>();
+        case MessagePart::EntityKind::MentionName: {
+            int64_t userId = 0;
+            if (!parsePositiveInt64(argument, userId))
+                return nullptr;
+            return td::td_api::make_object<td::td_api::textEntityTypeMentionName>(userId);
+        }
     }
 
     return nullptr;
@@ -977,6 +1102,7 @@ struct ParsedText {
         MessagePart::EntityKind kind;
         std::string             argument;
         int32_t                 startOffset;
+        size_t                  startByteOffset;
     };
 
     std::string text;
@@ -996,10 +1122,15 @@ static void appendParsedText(ParsedText &parsed, const char *text, size_t len)
 }
 
 static void addParsedEntity(ParsedText &parsed, MessagePart::EntityKind kind,
-                            const std::string &argument, int32_t startOffset)
+                            const std::string &argument, int32_t startOffset,
+                            size_t startByteOffset)
 {
     int32_t length = parsed.utf16Length - startOffset;
     if (length <= 0)
+        return;
+
+    if ((kind == MessagePart::EntityKind::EmailAddress) &&
+        (parsed.text.substr(startByteOffset) != argument))
         return;
 
     MessagePart::Entity entity;
@@ -1008,6 +1139,48 @@ static void addParsedEntity(ParsedText &parsed, MessagePart::EntityKind kind,
     entity.kind     = kind;
     entity.argument = argument;
     parsed.entities.push_back(entity);
+}
+
+static bool entityKindMatchesClosing(MessagePart::EntityKind openKind,
+                                     MessagePart::EntityKind closingKind)
+{
+    if (closingKind == MessagePart::EntityKind::TextUrl)
+        return (openKind == MessagePart::EntityKind::TextUrl) ||
+               (openKind == MessagePart::EntityKind::EmailAddress) ||
+               (openKind == MessagePart::EntityKind::MentionName);
+    return openKind == closingKind;
+}
+
+static void combinePreCodeEntities(ParsedText &parsed)
+{
+    std::vector<bool> remove(parsed.entities.size(), false);
+    for (size_t pre = 0; pre < parsed.entities.size(); pre++) {
+        if (parsed.entities[pre].kind != MessagePart::EntityKind::Pre)
+            continue;
+
+        for (size_t code = 0; code < parsed.entities.size(); code++) {
+            const MessagePart::Entity &entity = parsed.entities[code];
+            bool matchingCode = !remove[code] &&
+                                (entity.kind == MessagePart::EntityKind::Code) &&
+                                (entity.offset == parsed.entities[pre].offset) &&
+                                (entity.length == parsed.entities[pre].length);
+            if (matchingCode) {
+                parsed.entities[pre].kind = MessagePart::EntityKind::PreCode;
+                remove[code] = true;
+                break;
+            }
+        }
+    }
+
+    if (std::find(remove.begin(), remove.end(), true) == remove.end())
+        return;
+
+    std::vector<MessagePart::Entity> kept;
+    kept.reserve(parsed.entities.size());
+    for (size_t i = 0; i < parsed.entities.size(); i++)
+        if (!remove[i])
+            kept.push_back(std::move(parsed.entities[i]));
+    parsed.entities = std::move(kept);
 }
 
 static ParsedText parseRichText(const char *text, size_t len)
@@ -1041,16 +1214,20 @@ static ParsedText parseRichText(const char *text, size_t len)
             if (tagToEntityKind(name, tag, closing, kind, argument)) {
                 if (closing) {
                     auto it = std::find_if(parsed.openEntities.rbegin(), parsed.openEntities.rend(),
-                        [kind](const ParsedText::OpenEntity &entity) { return entity.kind == kind; });
+                        [kind](const ParsedText::OpenEntity &entity) {
+                            return entityKindMatchesClosing(entity.kind, kind);
+                        });
                     if (it != parsed.openEntities.rend()) {
-                        addParsedEntity(parsed, it->kind, it->argument, it->startOffset);
+                        addParsedEntity(parsed, it->kind, it->argument,
+                                        it->startOffset, it->startByteOffset);
                         parsed.openEntities.erase(std::next(it).base());
                     }
                 } else {
                     ParsedText::OpenEntity entity;
-                    entity.kind        = kind;
-                    entity.argument    = argument;
-                    entity.startOffset = parsed.utf16Length;
+                    entity.kind            = kind;
+                    entity.argument        = argument;
+                    entity.startOffset     = parsed.utf16Length;
+                    entity.startByteOffset = parsed.text.size();
                     parsed.openEntities.push_back(entity);
                 }
             }
@@ -1062,7 +1239,8 @@ static ParsedText parseRichText(const char *text, size_t len)
 
     appendParsedText(parsed, textStart, end - textStart);
     for (auto it = parsed.openEntities.rbegin(); it != parsed.openEntities.rend(); ++it)
-        addParsedEntity(parsed, it->kind, it->argument, it->startOffset);
+        addParsedEntity(parsed, it->kind, it->argument, it->startOffset, it->startByteOffset);
+    combinePreCodeEntities(parsed);
     return parsed;
 }
 
@@ -1185,7 +1363,9 @@ int transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiv
 
         if (hasImage) {
             td::td_api::object_ptr<td::td_api::inputMessagePhoto> content = td::td_api::make_object<td::td_api::inputMessagePhoto>();
-            content->photo_ = td::td_api::make_object<td::td_api::inputFileLocal>(tempFileName);
+            content->photo_ = td::td_api::make_object<td::td_api::inputPhoto>(
+                td::td_api::make_object<td::td_api::inputFileLocal>(tempFileName),
+                nullptr, nullptr, std::vector<int32_t>(), 0, 0);
             content->caption_ = makeFormattedText(input);
 
             sendMessageRequest->input_message_content_ = std::move(content);

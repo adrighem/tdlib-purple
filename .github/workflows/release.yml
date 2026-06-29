@@ -30,7 +30,7 @@ permissions:
 
 env:
   # Must match the td submodule commit. Increment TD_MARK to invalidate the TDLib build cache.
-  TD_TAG: "49b3bcbb6bfebf2ed44dd9f25102d2e1a94a58c4"
+  TD_TAG: "a17f87c4cff7b90b278d12b91ba0614383aaee82"
   TD_MARK: "m2"
 
 jobs:
