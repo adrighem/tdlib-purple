@@ -787,11 +787,10 @@ TEST_F(PrivateChatTest, SendImage)
             nullptr,
             nullptr,
             nullptr,
-            make_object<inputMessagePhoto>(
+            Mock_InputMessagePhoto(
                 make_object<inputFileLocal>(),
-                nullptr, nullptr, std::vector<int32_t>(), 0, 0,
-                make_object<formattedText>("caption1", std::vector<object_ptr<textEntity>>()),
-                false, nullptr, false
+                nullptr, std::vector<int32_t>(), 0, 0,
+                make_object<formattedText>("caption1", std::vector<object_ptr<textEntity>>())
             )
         ),
         make_object<sendMessage>(
@@ -800,11 +799,10 @@ TEST_F(PrivateChatTest, SendImage)
             nullptr,
             nullptr,
             nullptr,
-            make_object<inputMessagePhoto>(
+            Mock_InputMessagePhoto(
                 make_object<inputFileLocal>(),
-                nullptr, nullptr, std::vector<int32_t>(), 0, 0,
-                make_object<formattedText>("caption2", std::vector<object_ptr<textEntity>>()),
-                false, nullptr, false
+                nullptr, std::vector<int32_t>(), 0, 0,
+                make_object<formattedText>("caption2", std::vector<object_ptr<textEntity>>())
             )
         )
     );
@@ -1146,7 +1144,7 @@ TEST_F(PrivateChatTest, SendMessage_DropsUnsupportedTextUrlSchemes)
         11, 3, make_object<textEntityTypeTextUrl>("HTTPS://example.com/path")
     ));
     entities.push_back(make_object<textEntity>(
-        15, 2, make_object<textEntityTypeTextUrl>("tg://user?id=123")
+        15, 2, make_object<textEntityTypeMentionName>(123)
     ));
     tgl.verifyRequest(*Mock_SendMessage(
         chatIds[0],
@@ -1155,6 +1153,65 @@ TEST_F(PrivateChatTest, SendMessage_DropsUnsupportedTextUrlSchemes)
         nullptr,
         Mock_InputMessageText(
             make_object<formattedText>("email file web tg", std::move(entities)),
+            false
+        )
+    ));
+}
+
+TEST_F(PrivateChatTest, SendMessage_ParsesOnlyExactHrefAttribute)
+{
+    loginWithOneContact();
+
+    ASSERT_EQ(0, pluginInfo().send_im(
+        connection,
+        purpleUserName(0).c_str(),
+        "<a data-href=\"https://example.com/wrong\">fake</a> "
+        "<a href=https://example.com/path>real</a>",
+        PURPLE_MESSAGE_SEND
+    ));
+
+    std::vector<object_ptr<textEntity>> entities;
+    entities.push_back(make_object<textEntity>(
+        5, 4, make_object<textEntityTypeTextUrl>("https://example.com/path")
+    ));
+    tgl.verifyRequest(*Mock_SendMessage(
+        chatIds[0],
+        0,
+        nullptr,
+        nullptr,
+        Mock_InputMessageText(
+            make_object<formattedText>("fake real", std::move(entities)),
+            false
+        )
+    ));
+}
+
+TEST_F(PrivateChatTest, SendMessage_AdditionalRichTextEntities)
+{
+    loginWithOneContact();
+
+    ASSERT_EQ(0, pluginInfo().send_im(
+        connection,
+        purpleUserName(0).c_str(),
+        "😃 <a href=\"mailto:foo@example.com\">foo@example.com</a> "
+        "<a href=\"tg://user?id=123\">mention</a> "
+        "<pre><code>code</code></pre> "
+        "<span style=\"background-color:#000000;color:#000000\">secret</span>",
+        PURPLE_MESSAGE_SEND
+    ));
+
+    std::vector<object_ptr<textEntity>> entities;
+    entities.push_back(make_object<textEntity>(3, 15, make_object<textEntityTypeEmailAddress>()));
+    entities.push_back(make_object<textEntity>(19, 7, make_object<textEntityTypeMentionName>(123)));
+    entities.push_back(make_object<textEntity>(27, 4, make_object<textEntityTypePreCode>("")));
+    entities.push_back(make_object<textEntity>(32, 6, make_object<textEntityTypeSpoiler>()));
+    tgl.verifyRequest(*Mock_SendMessage(
+        chatIds[0],
+        0,
+        nullptr,
+        nullptr,
+        Mock_InputMessageText(
+            make_object<formattedText>("😃 foo@example.com mention code secret", std::move(entities)),
             false
         )
     ));
@@ -1215,6 +1272,48 @@ TEST_F(PrivateChatTest, ReceiveMessage_RichTextEntities)
         connection,
         purpleUserName(0),
         "<b><i>😃bo</i></b> <a href=\"https://example.com/path\">link</a>",
+        PURPLE_MESSAGE_RECV,
+        date
+    ));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {messageId}, true));
+}
+
+TEST_F(PrivateChatTest, ReceiveMessage_AdditionalRichTextEntities)
+{
+    constexpr int64_t messageId = 10000;
+    constexpr int32_t date      = 123456;
+
+    loginWithOneContact();
+
+    std::vector<object_ptr<textEntity>> entities;
+    entities.push_back(make_object<textEntity>(0, 15, make_object<textEntityTypeEmailAddress>()));
+    entities.push_back(make_object<textEntity>(16, 7, make_object<textEntityTypeMentionName>(123)));
+    entities.push_back(make_object<textEntity>(24, 4, make_object<textEntityTypePreCode>("")));
+    entities.push_back(make_object<textEntity>(29, 6, make_object<textEntityTypeSpoiler>()));
+
+    auto richMessageText = make_object<messageText>();
+    richMessageText->text_ = make_object<formattedText>(
+        "foo@example.com mention code secret",
+        std::move(entities)
+    );
+    richMessageText->link_preview_options_ = nullptr;
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        messageId,
+        userIds[0],
+        chatIds[0],
+        false,
+        date,
+        std::move(richMessageText)
+    )));
+
+    prpl.verifyEvents(ServGotImEvent(
+        connection,
+        purpleUserName(0),
+        "<a href=\"mailto:foo@example.com\">foo@example.com</a> "
+        "<a href=\"tg://user?id=123\">mention</a> "
+        "<pre><code>code</code></pre> "
+        "<span style=\"background-color:#000000;color:#000000\">secret</span>",
         PURPLE_MESSAGE_RECV,
         date
     ));

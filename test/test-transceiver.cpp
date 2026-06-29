@@ -548,8 +548,10 @@ uint64_t TestTransceiver::verifyRequest(const td::td_api::Function &request)
         if (send.input_message_content_ &&
             send.input_message_content_->get_id() == inputMessagePhoto::ID) {
             const auto &photo = static_cast<const inputMessagePhoto &>(*send.input_message_content_);
-            if (photo.photo_ && photo.photo_->get_id() == inputFileLocal::ID) {
-                m_inputPhotoPaths.push_back(static_cast<const inputFileLocal &>(*photo.photo_).path_);
+            if (photo.photo_ &&
+                photo.photo_->photo_ &&
+                photo.photo_->photo_->get_id() == inputFileLocal::ID) {
+                m_inputPhotoPaths.push_back(static_cast<const inputFileLocal &>(*photo.photo_->photo_).path_);
             }
         }
     }
