@@ -232,6 +232,23 @@ public:
     : PendingRequest(requestId), type(type), chatId(chatId) {}
 };
 
+struct UnreadReactionInfo {
+    std::string sender;
+    std::string text;
+};
+
+class UnreadReactionsRequest: public PendingRequest {
+public:
+    ChatId chatId;
+    MessageId messageId;
+    std::vector<UnreadReactionInfo> reactions;
+
+    UnreadReactionsRequest(uint64_t requestId, ChatId chatId, MessageId messageId,
+                           std::vector<UnreadReactionInfo> reactions)
+    : PendingRequest(requestId), chatId(chatId), messageId(messageId),
+      reactions(std::move(reactions)) {}
+};
+
 struct IncomingMessage {
     td::td_api::object_ptr<td::td_api::message> message;
     td::td_api::object_ptr<td::td_api::message> repliedMessage;

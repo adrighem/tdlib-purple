@@ -388,6 +388,51 @@ TEST_F(PrivateChatTest, EditedMessageAddsUpdatedLine)
     prpl.verifyNoEvents();
 }
 
+TEST_F(PrivateChatTest, UnreadReactionQuotesOriginalMessage)
+{
+    constexpr int64_t messageId = 10000;
+    constexpr int32_t date      = 123456;
+    loginWithOneContact();
+
+    tgl.update(make_object<updateMessageUnreadReactions>(
+        chatIds[0],
+        messageId,
+        make_vector<unreadReaction>(make_object<unreadReaction>(
+            make_object<reactionTypeEmoji>("👍"),
+            make_object<messageSenderUser>(userIds[0]),
+            false
+        )),
+        1
+    ));
+
+    uint64_t getMessageRequestId = tgl.verifyRequest(getMessage(chatIds[0], messageId));
+    prpl.verifyNoEvents();
+
+    tgl.reply(getMessageRequestId, makeMessage(
+        messageId,
+        selfId,
+        chatIds[0],
+        true,
+        date,
+        makeTextMessage("Deploy <now>")
+    ));
+
+    prpl.verifyEvents(ServGotImEvent(
+        connection,
+        purpleUserName(0),
+        fmt::format(replyPattern, selfFirstName + " " + selfLastName,
+                    "Deploy &lt;now&gt;", "👍"),
+        static_cast<PurpleMessageFlags>(PURPLE_MESSAGE_RECV | PURPLE_MESSAGE_NO_LOG),
+        0
+    ));
+
+    tgl.update(make_object<updateMessageUnreadReactions>(
+        chatIds[0], messageId, std::vector<object_ptr<unreadReaction>>(), 0
+    ));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+}
+
 TEST_F(PrivateChatTest, ContactedByNew_ImmediatePhoneNumber)
 {
     login();

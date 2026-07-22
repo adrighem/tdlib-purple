@@ -128,6 +128,51 @@ TEST_F(GroupChatTest, BasicGroupReceiveTextAndReply)
     tgl.verifyRequest(*Mock_ViewMessages(groupChatId, {messageId[1]}, true));
 }
 
+TEST_F(GroupChatTest, UnreadReactionQuotesOriginalMessage)
+{
+    constexpr int64_t messageId    = 10000;
+    constexpr int32_t date         = 123456;
+    constexpr int     purpleChatId = 1;
+    loginWithBasicGroup();
+    tgl.update(standardUpdateUserNoPhone(0));
+
+    tgl.update(make_object<updateMessageUnreadReactions>(
+        groupChatId,
+        messageId,
+        make_vector<unreadReaction>(make_object<unreadReaction>(
+            make_object<reactionTypeEmoji>("🎉"),
+            make_object<messageSenderUser>(userIds[0]),
+            false
+        )),
+        1
+    ));
+
+    uint64_t getMessageRequestId = tgl.verifyRequest(getMessage(groupChatId, messageId));
+    prpl.verifyNoEvents();
+
+    tgl.reply(getMessageRequestId, makeMessage(
+        messageId,
+        selfId,
+        groupChatId,
+        true,
+        date,
+        makeTextMessage("Release ready")
+    ));
+
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(connection, purpleChatId, groupChatPurpleName, groupChatTitle),
+        ServGotChatEvent(
+            connection,
+            purpleChatId,
+            userFirstNames[0] + " " + userLastNames[0],
+            fmt::format(replyPattern, selfFirstName + " " + selfLastName,
+                        "Release ready", "🎉"),
+            static_cast<PurpleMessageFlags>(PURPLE_MESSAGE_RECV | PURPLE_MESSAGE_NO_LOG),
+            0
+        )
+    );
+}
+
 TEST_F(GroupChatTest, EditedMessageAddsUpdatedLine)
 {
     constexpr int32_t date         = 12345;

@@ -88,17 +88,26 @@ static std::string messageReactionsToString(const std::vector<td::td_api::object
     return result.empty() ? _("none") : result;
 }
 
-static std::string unreadReactionsToString(const std::vector<td::td_api::object_ptr<td::td_api::unreadReaction>> &reactions)
+static std::string reactionSenderToString(
+    const td::td_api::object_ptr<td::td_api::MessageSender> &sender,
+    const TdAccountData &account)
 {
-    std::string result;
-    for (const auto &reaction: reactions) {
-        if (!reaction)
-            continue;
-        if (!result.empty())
-            result += ", ";
-        result += reactionTypeToString(reaction->type_.get());
+    if (sender) {
+        if (sender->get_id() == td::td_api::messageSenderUser::ID) {
+            std::string displayName = account.getDisplayName(getUserId(sender));
+            if (!displayName.empty())
+                return displayName;
+        } else if (sender->get_id() == td::td_api::messageSenderChat::ID) {
+            ChatId chatId = chatIdFromTdInt(
+                static_cast<const td::td_api::messageSenderChat *>(sender.get())->chat_id_);
+            const td::td_api::chat *chat = account.getChat(chatId);
+            if (chat && !chat->title_.empty())
+                return chat->title_;
+        }
     }
-    return result.empty() ? _("none") : result;
+
+    // TRANSLATOR: Placeholder for an unknown message reaction sender. Will be used like a username.
+    return _("Someone");
 }
 
 static void showChatUpdate(TdAccountData &account, ChatId chatId, const std::string &message,
@@ -291,12 +300,35 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
 
     case td::td_api::updateMessageUnreadReactions::ID: {
         const auto &messageUpdate = static_cast<const td::td_api::updateMessageUnreadReactions &>(update);
-        // TRANSLATOR: In-chat status update. First argument is a message id, second is a reaction summary.
-        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
-                       formatMessage(_("Unread reactions on message {0}: {1}"),
-                                     {std::to_string(messageUpdate.message_id_),
-                                      unreadReactionsToString(messageUpdate.unread_reactions_)}),
-                       PURPLE_MESSAGE_NO_LOG);
+        std::vector<UnreadReactionInfo> reactions;
+        for (const auto &reaction: messageUpdate.unread_reactions_) {
+            if (!reaction || !reaction->type_)
+                continue;
+
+            UnreadReactionInfo info;
+            info.sender = reactionSenderToString(reaction->sender_id_, m_data);
+            info.text = reactionTypeToString(reaction->type_.get());
+            reactions.push_back(std::move(info));
+        }
+
+        if (reactions.empty())
+            break;
+
+        ChatId chatId = chatIdFromTdInt(messageUpdate.chat_id_);
+        if (!m_data.getChat(chatId))
+            break;
+
+        MessageId messageId = MessageId::fromString(std::to_string(messageUpdate.message_id_).c_str());
+        auto getMessageRequest = td::td_api::make_object<td::td_api::getMessage>(
+            messageUpdate.chat_id_, messageUpdate.message_id_);
+        uint64_t requestId = m_transceiver.sendQuery(
+            std::move(getMessageRequest), &PurpleTdClient::unreadReactionsMessageResponse);
+        m_data.addPendingRequest<UnreadReactionsRequest>(
+            requestId,
+            std::make_unique<UnreadReactionsRequest>(requestId, chatId, messageId,
+                                                     std::move(reactions)));
+        m_transceiver.setQueryTimer(requestId, &PurpleTdClient::unreadReactionsMessageResponse,
+                                    1, true);
         break;
     }
 
@@ -848,6 +880,40 @@ void PurpleTdClient::onIncomingMessage(td::td_api::object_ptr<td::td_api::messag
     }
 
     handleIncomingMessage(m_data, *chat, std::move(message), PendingMessageQueue::Append);
+}
+
+void PurpleTdClient::unreadReactionsMessageResponse(
+    uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
+{
+    std::unique_ptr<UnreadReactionsRequest> request =
+        m_data.getPendingRequest<UnreadReactionsRequest>(requestId);
+    if (!request)
+        return;
+
+    const td::td_api::chat *chat = m_data.getChat(request->chatId);
+    if (!chat)
+        return;
+
+    const td::td_api::message *originalMessage = nullptr;
+    if (object && (object->get_id() == td::td_api::message::ID))
+        originalMessage = static_cast<const td::td_api::message *>(object.get());
+    else
+        purple_debug_misc(config::pluginId,
+                          "Failed to fetch message %" G_GINT64_FORMAT " for unread reactions\n",
+                          request->messageId.value());
+
+    std::string quote = formatMessageQuote(originalMessage, m_data);
+    for (const UnreadReactionInfo &reaction: request->reactions) {
+        TgMessageInfo messageInfo;
+        messageInfo.type = TgMessageInfo::Type::Other;
+        messageInfo.incomingGroupchatSender = reaction.sender;
+        messageInfo.timestamp = 0;
+        messageInfo.outgoing = false;
+
+        std::string text = quote + "\n" + reaction.text;
+        showMessageText(m_data, *chat, messageInfo, text.c_str(), nullptr,
+                        PURPLE_MESSAGE_NO_LOG);
+    }
 }
 
 void PurpleTdClient::updateChatLastMessage(td::td_api::updateChatLastMessage &lastMessage)

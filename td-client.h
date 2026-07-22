@@ -100,6 +100,8 @@ private:
     // Login sequence end
 
     void       onIncomingMessage(td::td_api::object_ptr<td::td_api::message> message);
+    void       unreadReactionsMessageResponse(uint64_t requestId,
+                                              td::td_api::object_ptr<td::td_api::Object> object);
     void       updateChatLastMessage(td::td_api::updateChatLastMessage &lastMessage);
     void       updateVisibleChatMemberList(const td::td_api::updateChatMember &update);
     void       setProfilePhotoResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);

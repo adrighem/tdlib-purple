@@ -8,6 +8,7 @@ std::string makeNoticeWithSender(const td::td_api::chat &chat, const TgMessageIn
                                  const char *noticeText, PurpleAccount *account);
 std::string getMessageText(const td::td_api::formattedText &text);
 std::string describeMessageContent(const td::td_api::MessageContent &content, const TdAccountData &account);
+std::string formatMessageQuote(const td::td_api::message *message, TdAccountData &account);
 std::string makeInlineImageText(int imgstoreId);
 void sendConversationReadReceipts(TdAccountData &account, PurpleConversation *conv);
 void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const TgMessageInfo &message,
