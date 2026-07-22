@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v1.1.0...tdlib-purple-v1.1.1) (2026-07-22)
+
+
+### Bug Fixes
+
+* quote original messages for unread reactions ([a2e62d5](https://github.com/adrighem/tdlib-purple/commit/a2e62d5b172ea1f07e406b5cc08a66ee4a480601))
+
 ## [1.1.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v1.0.0...tdlib-purple-v1.1.0) (2026-06-29)
 
 
