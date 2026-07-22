@@ -424,7 +424,7 @@ static void showMessageTextChat(TdAccountData &account, const td::td_api::chat &
         sendConversationReadReceipts(account, baseConv);
 }
 
-static std::string quoteMessage(const td::td_api::message *message, TdAccountData &account)
+std::string formatMessageQuote(const td::td_api::message *message, TdAccountData &account)
 {
     const td::td_api::user *originalAuthor = nullptr;
     if (message)
@@ -520,7 +520,7 @@ void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
     std::string newText;
     if (text) {
         if (message.repliedMessageId.valid())
-            newText = quoteMessage(message.repliedMessage.get(), account);
+            newText = formatMessageQuote(message.repliedMessage.get(), account);
         if (!message.forwardedFrom.empty()) {
             if (!newText.empty())
                 newText += "\n";
