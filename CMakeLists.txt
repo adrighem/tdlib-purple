@@ -63,6 +63,7 @@ set(TDLIB_PURPLE_PLUGIN_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/sticker.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/file-transfer.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/call.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/forum-topics.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/identifiers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/secret-chat.cpp
 )
