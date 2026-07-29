@@ -763,11 +763,12 @@ void TestTransceiver::reply(uint64_t requestId, td::td_api::object_ptr<td::td_ap
 
 void TestTransceiver::runTimeouts()
 {
-    for (const TimerInfo &timer: m_timers) {
+    while (!m_timers.empty()) {
+        const TimerInfo timer = m_timers.front();
+        m_timers.erase(m_timers.begin());
         while (timer.function(timer.data)) {
         }
     }
-    m_timers.clear();
 }
 
 guint TestTransceiver::addTimeout(guint interval, GSourceFunc function, gpointer data)
@@ -844,6 +845,28 @@ TEST(TestTransceiverHarness, IgnoresResponseAfterOwnerIsDestroyed)
     }
 
     backend.update(make_object<updateConnectionState>(make_object<connectionStateReady>()));
+}
+
+TEST(TestTransceiverHarness, TimeoutCallbackMayDestroyTransceiver)
+{
+    TestTransceiver backend;
+    std::unique_ptr<TdTransceiver> transceiver(
+        new TdTransceiver(nullptr, nullptr, nullptr, &backend));
+    bool callbackCalled = false;
+
+    transceiver->sendQueryWithTimeout(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object>) {
+            callbackCalled = true;
+            transceiver.reset();
+        },
+        1);
+    backend.verifyRequest(getMe());
+
+    backend.runTimeouts();
+
+    EXPECT_TRUE(callbackCalled);
+    EXPECT_EQ(nullptr, transceiver);
 }
 
 }

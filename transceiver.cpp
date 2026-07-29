@@ -267,14 +267,19 @@ void TdTransceiver::setQueryTimer(uint64_t queryId, ResponseCb handler, unsigned
 
 gboolean TdTransceiver::timerCallback(gpointer userdata)
 {
-    TimerCallbackData *data        = static_cast<TimerCallbackData *>(userdata);
-    TdTransceiver     *transceiver = data->m_transceiver;
+    TimerCallbackData *data = static_cast<TimerCallbackData *>(userdata);
+    TdTransceiver *transceiver = data->m_transceiver;
+    const uint64_t requestId = data->requestId;
+    const bool cancelResponse = data->cancelResponse;
+    ResponseCb2 callback = std::move(data->callback);
+    std::shared_ptr<TdTransceiverImpl> impl = transceiver->m_impl;
 
-    data->callback(data->requestId, nullptr);
+    if (cancelResponse)
+        impl->m_responseHandlers.erase(requestId);
+    impl->cancelTimer(requestId);
 
-    if (data->cancelResponse)
-        transceiver->m_impl->m_responseHandlers.erase(data->requestId);
-    transceiver->m_impl->cancelTimer(data->requestId);
+    if (callback)
+        callback(requestId, nullptr);
 
     return FALSE; // one-time callback
 }
