@@ -16,8 +16,6 @@ void setUiName(const char *name);
 
 };
 
-using RoomlistData = std::vector<std::pair<PurpleRoomlistFieldType, std::string>>;
-
 #if !GLIB_CHECK_VERSION(2, 34, 0)
 static void g_list_free_full (GList *list, GDestroyNotify free_func)
 {

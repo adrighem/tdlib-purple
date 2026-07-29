@@ -788,14 +788,25 @@ void *purple_request_input(void *handle, const char *title, const char *primary,
 PurpleRoomlist *purple_roomlist_new(PurpleAccount *account)
 {
     PurpleRoomlist *roomlist = new PurpleRoomlist;
+    roomlist->account = account;
+    roomlist->fields = NULL;
+    roomlist->rooms = NULL;
+    roomlist->in_progress = FALSE;
+    roomlist->ui_data = NULL;
+    roomlist->proto_data = NULL;
     roomlist->ref = 1;
-    roomlist->ui_data = new RoomlistData;
     return roomlist;
 }
 
 void purple_roomlist_set_in_progress(PurpleRoomlist *list, gboolean in_progress)
 {
+    list->in_progress = in_progress;
     EVENT(RoomlistInProgressEvent, list, in_progress);
+}
+
+gboolean purple_roomlist_get_in_progress(PurpleRoomlist *list)
+{
+    return list->in_progress;
 }
 
 void purple_roomlist_ref(PurpleRoomlist *list)
@@ -803,12 +814,44 @@ void purple_roomlist_ref(PurpleRoomlist *list)
     list->ref++;
 }
 
+static void freeRoomlistField(gpointer data)
+{
+    PurpleRoomlistField *field = static_cast<PurpleRoomlistField *>(data);
+    if (!field)
+        return;
+
+    g_free(field->label);
+    g_free(field->name);
+    delete field;
+}
+
+static void freeRoomlistRoom(PurpleRoomlist *list, PurpleRoomlistRoom *room)
+{
+    GList *fieldInfo = list->fields;
+    GList *fieldValue = room->fields;
+    while (fieldInfo && fieldValue) {
+        const PurpleRoomlistField *field =
+            static_cast<const PurpleRoomlistField *>(fieldInfo->data);
+        if (field && field->type == PURPLE_ROOMLIST_FIELD_STRING)
+            g_free(fieldValue->data);
+        fieldInfo = fieldInfo->next;
+        fieldValue = fieldValue->next;
+    }
+
+    g_list_free(room->fields);
+    g_free(room->name);
+    delete room;
+}
+
 void purple_roomlist_unref(PurpleRoomlist *list)
 {
     ASSERT_NE(0u, list->ref);
     list->ref--;
     if (list->ref == 0) {
-        delete static_cast<RoomlistData *>(list->ui_data);
+        for (GList *item = list->rooms; item; item = item->next)
+            freeRoomlistRoom(list, static_cast<PurpleRoomlistRoom *>(item->data));
+        g_list_free(list->rooms);
+        g_list_free_full(list->fields, freeRoomlistField);
         delete list;
     }
 }
@@ -819,65 +862,108 @@ PurpleRoomlistField *purple_roomlist_field_new(PurpleRoomlistFieldType type,
 {
     PurpleRoomlistField *field = new PurpleRoomlistField;
     field->type = type;
-    field->name = strdup(name);
+    field->label = g_strdup(label);
+    field->name = g_strdup(name);
+    field->hidden = hidden;
     return field;
 }
 
 void purple_roomlist_set_fields(PurpleRoomlist *list, GList *fields)
 {
-    RoomlistData *fieldStore = static_cast<RoomlistData *>(list->ui_data);
-    for (GList *field = fields; field; field = g_list_next(field)) {
-        PurpleRoomlistField *f = static_cast<PurpleRoomlistField *>(field->data);
-        fieldStore->emplace_back(f->type, f->name);
-        free(f->name);
-        delete f;
-    }
-    g_list_free(fields);
+    list->fields = fields;
 }
 
-struct RealRoom {
-    std::vector<std::string> fieldValues;
-    GList firstField = {NULL, NULL, NULL};
-};
+GList *purple_roomlist_get_fields(PurpleRoomlist *list)
+{
+    return list->fields;
+}
 
 PurpleRoomlistRoom *purple_roomlist_room_new(PurpleRoomlistRoomType type, const gchar *name,
                                          PurpleRoomlistRoom *parent)
 {
-    PurpleRoomlistRoom *room = reinterpret_cast<PurpleRoomlistRoom *>(new RealRoom);
+    PurpleRoomlistRoom *room = new PurpleRoomlistRoom;
+    room->type = type;
+    room->name = g_strdup(name);
+    room->fields = NULL;
+    room->parent = parent;
+    room->expanded_once = FALSE;
     return room;
 }
 
-void purple_roomlist_room_add_field(PurpleRoomlist *list, PurpleRoomlistRoom *notRoom, gconstpointer field)
+void purple_roomlist_room_add_field(PurpleRoomlist *list, PurpleRoomlistRoom *room, gconstpointer value)
 {
-    RoomlistData *fieldList = static_cast<RoomlistData *>(list->ui_data);
-    RealRoom *room = reinterpret_cast<RealRoom *>(notRoom);
-    size_t index = room->fieldValues.size();
-    switch (fieldList->at(index).first) {
+    const guint index = g_list_length(room->fields);
+    PurpleRoomlistField *field =
+        static_cast<PurpleRoomlistField *>(g_list_nth_data(list->fields, index));
+    ASSERT_NE(nullptr, field) << "Adding more room values than declared fields";
+
+    gpointer storedValue = const_cast<gpointer>(value);
+    switch (field->type) {
         case PURPLE_ROOMLIST_FIELD_BOOL:
-            room->fieldValues.push_back(field ? "true" : "false");
+            storedValue = GINT_TO_POINTER(value != NULL);
             break;
         case PURPLE_ROOMLIST_FIELD_INT:
-            room->fieldValues.push_back(std::to_string(GPOINTER_TO_INT(field)));
             break;
         case PURPLE_ROOMLIST_FIELD_STRING:
-            room->fieldValues.push_back(static_cast<const char *>(field));
+            storedValue = g_strdup(static_cast<const char *>(value));
             break;
     }
+    room->fields = g_list_append(room->fields, storedValue);
 }
 
-GList * purple_roomlist_room_get_fields(PurpleRoomlistRoom *notRoom)
+PurpleRoomlistRoomType purple_roomlist_room_get_type(PurpleRoomlistRoom *room)
 {
-    RealRoom *room = reinterpret_cast<RealRoom *>(notRoom);
-    if (!room->fieldValues.empty())
-        room->firstField.data = const_cast<char *>(room->fieldValues[0].c_str());
-    return &room->firstField;
+    return room->type;
 }
 
-void purple_roomlist_room_add(PurpleRoomlist *list, PurpleRoomlistRoom *notRoom)
+const char *purple_roomlist_room_get_name(PurpleRoomlistRoom *room)
 {
-    RealRoom *room = reinterpret_cast<RealRoom *>(notRoom);
-    EVENT(RoomlistAddRoomEvent, list, room->fieldValues);
-    delete room;
+    return room->name;
+}
+
+PurpleRoomlistRoom *purple_roomlist_room_get_parent(PurpleRoomlistRoom *room)
+{
+    return room->parent;
+}
+
+GList *purple_roomlist_room_get_fields(PurpleRoomlistRoom *room)
+{
+    return room->fields;
+}
+
+static std::vector<std::string> getRoomlistFieldValues(PurpleRoomlist *list,
+                                                        PurpleRoomlistRoom *room)
+{
+    std::vector<std::string> values;
+    GList *fieldInfo = list->fields;
+    GList *fieldValue = room->fields;
+    while (fieldInfo && fieldValue) {
+        const PurpleRoomlistField *field =
+            static_cast<const PurpleRoomlistField *>(fieldInfo->data);
+        switch (field->type) {
+            case PURPLE_ROOMLIST_FIELD_BOOL:
+                values.push_back(GPOINTER_TO_INT(fieldValue->data) ? "true" : "false");
+                break;
+            case PURPLE_ROOMLIST_FIELD_INT:
+                values.push_back(std::to_string(GPOINTER_TO_INT(fieldValue->data)));
+                break;
+            case PURPLE_ROOMLIST_FIELD_STRING:
+                values.push_back(fieldValue->data
+                                     ? static_cast<const char *>(fieldValue->data)
+                                     : "");
+                break;
+        }
+        fieldInfo = fieldInfo->next;
+        fieldValue = fieldValue->next;
+    }
+    return values;
+}
+
+void purple_roomlist_room_add(PurpleRoomlist *list, PurpleRoomlistRoom *room)
+{
+    ASSERT_EQ(nullptr, g_list_find(list->rooms, room)) << "Adding a room twice";
+    list->rooms = g_list_append(list->rooms, room);
+    EVENT(RoomlistAddRoomEvent, list, room, getRoomlistFieldValues(list, room));
 }
 
 void purple_serv_got_join_chat_failed(PurpleConnection *gc, GHashTable *data)

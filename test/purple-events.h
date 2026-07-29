@@ -8,6 +8,7 @@
 #include <queue>
 #include <iostream>
 #include <map>
+#include <vector>
 
 struct PurpleEvent;
 
@@ -554,17 +555,38 @@ struct RoomlistInProgressEvent: PurpleEvent {
 
 struct RoomlistAddRoomEvent: PurpleEvent {
     PurpleRoomlist *roomlist;
+    PurpleRoomlistRoom *room = NULL;
+    PurpleRoomlistRoomType roomType = PURPLE_ROOMLIST_ROOMTYPE_ROOM;
+    std::string roomName;
+    PurpleRoomlistRoom *parent = NULL;
     std::vector<std::string> fieldValues;
-    const char *fieldToCheck = NULL;
-    const char *valueToCheck = NULL;
+    std::string fieldToCheck;
+    std::string valueToCheck;
+    bool compareRoomMetadata = false;
+    bool compareRoomPointer = false;
+    bool compareNamedField = false;
 
     RoomlistAddRoomEvent(PurpleRoomlist *roomlist, const std::vector<std::string> &values)
     : PurpleEvent(PurpleEventType::RoomlistAddRoom), roomlist(roomlist), fieldValues(values) {}
 
+    RoomlistAddRoomEvent(PurpleRoomlist *roomlist, PurpleRoomlistRoom *room,
+                         const std::vector<std::string> &values)
+    : PurpleEvent(PurpleEventType::RoomlistAddRoom), roomlist(roomlist), room(room),
+      roomType(room ? room->type : PURPLE_ROOMLIST_ROOMTYPE_ROOM),
+      roomName((room && room->name) ? room->name : ""),
+      parent(room ? room->parent : NULL), fieldValues(values), compareRoomMetadata(true),
+      compareRoomPointer(true) {}
+
+    RoomlistAddRoomEvent(PurpleRoomlist *roomlist, PurpleRoomlistRoomType type,
+                         const std::string &name, PurpleRoomlistRoom *parent,
+                         const std::vector<std::string> &values)
+    : PurpleEvent(PurpleEventType::RoomlistAddRoom), roomlist(roomlist), roomType(type),
+      roomName(name), parent(parent), fieldValues(values), compareRoomMetadata(true) {}
+
     RoomlistAddRoomEvent(PurpleRoomlist *roomlist, const char *fieldToCheck,
                          const char *valueToCheck)
     : PurpleEvent(PurpleEventType::RoomlistAddRoom), roomlist(roomlist), fieldToCheck(fieldToCheck),
-      valueToCheck(valueToCheck) {}
+      valueToCheck(valueToCheck), compareNamedField(true) {}
 };
 
 #endif

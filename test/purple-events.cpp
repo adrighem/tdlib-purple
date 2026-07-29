@@ -302,16 +302,36 @@ static void compare(const RoomlistInProgressEvent &actual, const RoomlistInProgr
 static void compare(const RoomlistAddRoomEvent &actual, const RoomlistAddRoomEvent &expected)
 {
     COMPARE(roomlist);
-    ASSERT_EQ(nullptr, actual.fieldToCheck);
-    ASSERT_EQ(nullptr, actual.valueToCheck);
-    ASSERT_NE(nullptr, expected.fieldToCheck);
-    ASSERT_NE(nullptr, expected.valueToCheck);
+    ASSERT_TRUE(actual.compareRoomMetadata);
+    ASSERT_NE(nullptr, actual.room);
 
-    RoomlistData *fieldList = static_cast<RoomlistData *>(actual.roomlist->ui_data);
-    for (unsigned i = 0; i < fieldList->size(); i++)
-        if (fieldList->at(i).second == expected.fieldToCheck) {
-            ASSERT_EQ(std::string(expected.valueToCheck), actual.fieldValues.at(i));
+    if (expected.compareRoomPointer)
+        COMPARE(room);
+
+    if (expected.compareRoomMetadata) {
+        COMPARE(roomType);
+        COMPARE(roomName);
+        COMPARE(parent);
+    }
+
+    if (!expected.compareNamedField) {
+        COMPARE(fieldValues);
+        return;
+    }
+
+    unsigned index = 0;
+    for (GList *item = actual.roomlist->fields; item; item = item->next, ++index) {
+        const PurpleRoomlistField *field =
+            static_cast<const PurpleRoomlistField *>(item->data);
+        if (field && field->name && field->name == expected.fieldToCheck) {
+            ASSERT_LT(index, actual.fieldValues.size())
+                << "Room is missing a value for field '" << expected.fieldToCheck << "'";
+            ASSERT_EQ(expected.valueToCheck, actual.fieldValues[index]);
+            return;
         }
+    }
+
+    FAIL() << "Room list has no field named '" << expected.fieldToCheck << "'";
 }
 
 static void compareEvents(const PurpleEvent &actual, const PurpleEvent &expected)
