@@ -355,6 +355,29 @@ public:
         {}
     };
 
+    struct DisplayedMessageConversation {
+        PurpleConversationType type = PURPLE_CONV_TYPE_UNKNOWN;
+        std::string name;
+
+        bool operator==(
+            const DisplayedMessageConversation &other) const
+        {
+            return type == other.type && name == other.name;
+        }
+    };
+
+    enum class DisplayedMessageLookupResult {
+        Available,
+        KnownConversationUnavailable,
+        UnknownMessage,
+    };
+
+    enum class DisplayedMessageUpdateResult {
+        Written,
+        KnownConversationUnavailable,
+        UnknownMessage,
+    };
+
     struct {
         unsigned maxCaptionLength = 0;
         unsigned maxMessageLength = 0;
@@ -505,13 +528,33 @@ public:
     void                       extractPendingReadReceipts(
                                       ChatTarget target,
                                       std::vector<MessageId> &messageIds);
-    void                       rememberDisplayedMessage(ChatId chatId, MessageId messageId,
-                                                        PurpleConversation *conv,
-                                                        const std::string &sender,
-                                                        time_t timestamp,
-                                                        PurpleMessageFlags flags);
-    bool                       showUpdatedMessage(ChatId chatId, MessageId messageId,
-                                                  const std::string &newText);
+    void                       rememberMessageTarget(
+                                      ChatTarget target,
+                                      MessageId messageId);
+    void                       replaceMessageId(
+                                      ChatId chatId,
+                                      MessageId oldMessageId,
+                                      MessageId newMessageId);
+    void                       rememberDisplayedMessage(
+                                      ChatTarget target,
+                                      MessageId messageId,
+                                      PurpleConversation *conv,
+                                      const std::string &sender,
+                                      time_t timestamp,
+                                      PurpleMessageFlags flags);
+    bool                       isForumSensitiveChat(
+                                      ChatId chatId) const;
+    bool                       shouldUseLegacyMessageUpdateFallback(
+                                      ChatId chatId,
+                                      MessageId messageId) const;
+    DisplayedMessageLookupResult findDisplayedMessageConversation(
+                                      ChatId chatId,
+                                      MessageId messageId,
+                                      DisplayedMessageConversation &conversation) const;
+    DisplayedMessageUpdateResult showUpdatedMessage(
+                                      ChatId chatId,
+                                      MessageId messageId,
+                                      const std::string &newText);
 private:
     TdAccountData(const TdAccountData &other) = delete;
     TdAccountData &operator=(const TdAccountData &other) = delete;
@@ -539,6 +582,7 @@ private:
         TdSupergroupInfoPtr fullInfo;
         TdChatMembersPtr    members;
         bool                fullInfoRequested = false;
+        bool                hasEverBeenForum = false;
     };
 
     struct SendMessageInfo {
@@ -552,18 +596,21 @@ private:
         PurpleXfer *xfer;
     };
 
-    struct DisplayedMessageInfo {
-        ChatId                 chatId;
-        MessageId              messageId;
-        PurpleConversationType conversationType;
+    struct MessageRouteInfo {
+        ChatTarget             target;
+        PurpleConversationType conversationType =
+            PURPLE_CONV_TYPE_UNKNOWN;
         std::string            conversationName;
         std::string            sender;
-        time_t                 timestamp;
-        PurpleMessageFlags     flags;
+        time_t                 timestamp = 0;
+        PurpleMessageFlags     flags =
+            static_cast<PurpleMessageFlags>(0);
     };
 
     using ChatMap = std::map<ChatId, ChatInfo>;
     using UserMap = std::map<UserId, UserInfo>;
+    using MessageRouteMap =
+        std::map<MessageId, MessageRouteInfo>;
     UserMap                            m_userInfo;
     ChatMap                            m_chatInfo;
     std::map<BasicGroupId, GroupInfo>  m_groups;
@@ -603,11 +650,14 @@ private:
     int32_t                         allocatePurpleChatId();
     int32_t                         allocateForumTopicPurpleId(ForumTopicState &topic);
     bool                            isForumChat(ChatId chatId) const;
+    void                            pruneMessageRoutes(
+                                        ChatId chatId);
 
     // Read receipts not sent immediately due to away status (grouped per exact room)
     std::map<ChatTarget, std::vector<MessageId>> m_pendingReadReceipts;
 
-    std::vector<DisplayedMessageInfo> m_displayedMessages;
+    std::map<ChatId, MessageRouteMap>
+        m_messageRoutes;
 };
 
 #endif

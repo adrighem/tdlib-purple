@@ -236,6 +236,48 @@ protected:
     }
 };
 
+TEST_F(
+    ForumTopicRegistryTest,
+    RememberedMessageRoutesAreBoundedPerChat)
+{
+    const ChatId busyChat =
+        ChatId::fromString("-1000");
+    const ChatId quietChat =
+        ChatId::fromString("-2000");
+    accountData.rememberMessageTarget(
+        ChatTarget::chat(quietChat),
+        MessageId::fromString("1"));
+
+    for (int64_t messageId = 1;
+         messageId <= 5000; ++messageId) {
+        const std::string value =
+            std::to_string(messageId);
+        accountData.rememberMessageTarget(
+            ChatTarget::chat(busyChat),
+            MessageId::fromString(value.c_str()));
+    }
+
+    TdAccountData::DisplayedMessageConversation conversation;
+    EXPECT_EQ(
+        TdAccountData::DisplayedMessageLookupResult::
+            UnknownMessage,
+        accountData.findDisplayedMessageConversation(
+            busyChat, MessageId::fromString("1"),
+            conversation));
+    EXPECT_EQ(
+        TdAccountData::DisplayedMessageLookupResult::
+            KnownConversationUnavailable,
+        accountData.findDisplayedMessageConversation(
+            busyChat, MessageId::fromString("5000"),
+            conversation));
+    EXPECT_EQ(
+        TdAccountData::DisplayedMessageLookupResult::
+            KnownConversationUnavailable,
+        accountData.findDisplayedMessageConversation(
+            quietChat, MessageId::fromString("1"),
+            conversation));
+}
+
 TEST_F(ForumTopicRegistryTest, GeneralReusesParentPurpleId)
 {
     const ChatId chatId = ChatId::fromString("-7000");

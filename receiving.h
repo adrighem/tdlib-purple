@@ -11,6 +11,11 @@ std::string describeMessageContent(const td::td_api::MessageContent &content, co
 std::string formatMessageQuote(const td::td_api::message *message, TdAccountData &account);
 std::string makeInlineImageText(int imgstoreId);
 void sendConversationReadReceipts(TdAccountData &account, PurpleConversation *conv);
+void writeConversationNotification(
+         PurpleConversation *conversation,
+         const std::string &notification,
+         PurpleMessageFlags extraFlags =
+             static_cast<PurpleMessageFlags>(0));
 bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const TgMessageInfo &message,
                      const char *text, const char *notification, uint32_t extraFlags = 0);
 PurpleConversation *showMessageTextIm(TdAccountData &account, const char *purpleUserName,

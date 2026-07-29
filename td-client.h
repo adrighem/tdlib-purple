@@ -160,6 +160,17 @@ private:
     void       addContactResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       addContactCreatePrivateChatResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       notifyFailedContact(const std::string &errorMessage);
+    bool       showMessageLinkedUpdate(
+                   ChatId chatId, MessageId messageId,
+                   const std::string &message,
+                   PurpleMessageFlags extraFlags =
+                       static_cast<PurpleMessageFlags>(0));
+    bool       showDeletedMessageUpdate(
+                   ChatId chatId,
+                   const std::vector<td::td_api::int53> &messageIds);
+    void       replacePendingMessageId(
+                   const td::td_api::message &message,
+                   MessageId oldMessageId);
     bool       joinForumTopic(ChatTarget target);
     void       completeForumTopicJoin(
                    const ForumTopicLookupResult &result,

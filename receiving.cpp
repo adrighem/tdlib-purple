@@ -312,6 +312,32 @@ static PurpleMessageFlags getNotificationFlags(PurpleMessageFlags extraFlags)
     return (PurpleMessageFlags)flags;
 }
 
+void writeConversationNotification(
+    PurpleConversation *conversation,
+    const std::string &notification,
+    PurpleMessageFlags extraFlags)
+{
+    if (!conversation)
+        return;
+
+    const PurpleConversationType type =
+        purple_conversation_get_type(conversation);
+    const char *conversationName =
+        purple_conversation_get_name(conversation);
+    const std::string who =
+        type == PURPLE_CONV_TYPE_CHAT
+            ? " "
+            : (conversationName ? conversationName : " ");
+    const time_t timestamp =
+        (extraFlags & PURPLE_MESSAGE_NO_LOG)
+            ? 0
+            : time(NULL);
+    purple_conversation_write(
+        conversation, who.c_str(),
+        notification.c_str(),
+        getNotificationFlags(extraFlags), timestamp);
+}
+
 static void sendPendingReadReceipts(
     TdAccountData &account, ChatTarget target)
 {
@@ -394,31 +420,76 @@ PurpleConversation *showMessageTextIm(TdAccountData &account, const char *purple
                                       time_t timestamp, PurpleMessageFlags flags)
 {
     PurpleConversation *conv = NULL;
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    PurpleTdClient *client = getTdClient(purpleAccount);
+    const std::string conversationName =
+        purpleUserName ? purpleUserName : "";
+    const ContinuationGuard canContinue = client
+        ? ContinuationGuard(
+              [purpleAccount, client]() {
+                  return getTdClient(purpleAccount) == client;
+              })
+        : ContinuationGuard();
+    const auto findConversation =
+        [purpleAccount, &conversationName]() {
+            return purple_find_conversation_with_account(
+                PURPLE_CONV_TYPE_IM,
+                conversationName.c_str(), purpleAccount);
+        };
 
     if (text) {
         if (flags & PURPLE_MESSAGE_SEND) {
             // serv_got_im seems to work for messages sent from another client, but not for
             // echoed messages from this client. Therefore, this (code snippet from facebook plugin).
-            conv = getImConversation(account.purpleAccount, purpleUserName);
+            conv = getImConversation(purpleAccount, purpleUserName);
+            if (canContinue && !canContinue())
+                return NULL;
+            conv = findConversation();
+            if (!conv)
+                return NULL;
             purple_conv_im_write(purple_conversation_get_im_data(conv),
-                                 purple_account_get_name_for_display(account.purpleAccount),
+                                 purple_account_get_name_for_display(purpleAccount),
                                  text, flags, timestamp);
+            if (canContinue && !canContinue())
+                return NULL;
+            conv = findConversation();
+            if (!conv)
+                return NULL;
         } else {
-            serv_got_im(purple_account_get_connection(account.purpleAccount), purpleUserName, text,
+            serv_got_im(purple_account_get_connection(purpleAccount), purpleUserName, text,
                         flags, timestamp);
-            conv = getImConversation(account.purpleAccount, purpleUserName);
+            if (canContinue && !canContinue())
+                return NULL;
+            conv = getImConversation(purpleAccount, purpleUserName);
+            if (canContinue && !canContinue())
+                return NULL;
+            conv = findConversation();
+            if (!conv)
+                return NULL;
         }
     }
 
     if (notification) {
         if (conv == NULL)
-            conv = getImConversation(account.purpleAccount, purpleUserName);
+            conv = getImConversation(purpleAccount, purpleUserName);
+        if (canContinue && !canContinue())
+            return NULL;
+        conv = findConversation();
+        if (!conv)
+            return NULL;
         purple_conv_im_write(purple_conversation_get_im_data(conv), purpleUserName, notification,
                              getNotificationFlags(flags), timestamp);
+        if (canContinue && !canContinue())
+            return NULL;
+        conv = findConversation();
+        if (!conv)
+            return NULL;
     }
 
     if (conv != NULL)
         sendConversationReadReceipts(account, conv);
+    if (canContinue && !canContinue())
+        return NULL;
 
     return conv;
 }
@@ -636,6 +707,14 @@ std::string formatMessageQuote(const td::td_api::message *message, TdAccountData
 bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const TgMessageInfo &message,
                      const char *text, const char *notification, uint32_t extraFlags)
 {
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    PurpleTdClient *client = getTdClient(purpleAccount);
+    const ContinuationGuard canContinue = client
+        ? ContinuationGuard(
+              [purpleAccount, client]() {
+                  return getTdClient(purpleAccount) == client;
+              })
+        : ContinuationGuard();
     PurpleMessageFlags directionFlag = message.outgoing ? PURPLE_MESSAGE_SEND : PURPLE_MESSAGE_RECV;
     PurpleMessageFlags flags = (PurpleMessageFlags) (extraFlags | directionFlag);
     if (message.outgoing && !message.sentLocally)
@@ -668,9 +747,11 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
             userName = account.getDisplayName(*privateUser);
         PurpleConversation *conv =
             showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
-        if (text)
-            account.rememberDisplayedMessage(getId(chat), message.id, conv,
-                                             getSenderDisplayName(chat, message, account.purpleAccount),
+        if (canContinue && !canContinue())
+            return false;
+        if (text || notification)
+            account.rememberDisplayedMessage(message.target, message.id, conv,
+                                             getSenderDisplayName(chat, message, purpleAccount),
                                              message.timestamp, flags);
     }
 
@@ -679,22 +760,22 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
         std::string userName = getSecretChatBuddyName(secretChatId);
         PurpleConversation *conv =
             showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
-        if (text)
-            account.rememberDisplayedMessage(getId(chat), message.id, conv,
-                                             getSenderDisplayName(chat, message, account.purpleAccount),
+        if (canContinue && !canContinue())
+            return false;
+        if (text || notification)
+            account.rememberDisplayedMessage(message.target, message.id, conv,
+                                             getSenderDisplayName(chat, message, purpleAccount),
                                              message.timestamp, flags);
     }
 
     if (getBasicGroupId(chat).valid() || getSupergroupId(chat).valid()) {
-        PurpleAccount *purpleAccount = account.purpleAccount;
-        PurpleTdClient *client = getTdClient(purpleAccount);
         PurpleConversation *conv =
             showMessageTextChat(
                 account, chat, message, text, notification, flags);
-        if (client && getTdClient(purpleAccount) != client)
+        if (canContinue && !canContinue())
             return false;
-        if (text)
-            account.rememberDisplayedMessage(getId(chat), message.id, conv,
+        if (text || notification)
+            account.rememberDisplayedMessage(message.target, message.id, conv,
                                              getSenderDisplayName(chat, message, purpleAccount),
                                              message.timestamp, flags);
     }
@@ -1647,6 +1728,9 @@ void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
         }
         forumTopicDisplayAccepted = true;
     }
+
+    account.rememberMessageTarget(
+        target, getId(*message));
 
     if (isReadReceiptsEnabled(account.purpleAccount))
         account.addPendingReadReceipt(target, getId(*message));

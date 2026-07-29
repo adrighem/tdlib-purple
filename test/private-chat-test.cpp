@@ -539,6 +539,131 @@ TEST_F(
     tgl.verifyNoRequests();
 }
 
+TEST_F(
+    PrivateChatTest,
+    BotStyleForumTopicMessageUpdatesKeepLegacyIm)
+{
+    constexpr int64_t messageId = 10000;
+    constexpr int32_t date = 123456;
+    loginWithOneContact();
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        messageId, userIds[0], chatIds[0], false, date,
+        makeTextMessage("original"),
+        make_object<messageTopicForum>(42))));
+    prpl.verifyEvents(ServGotImEvent(
+        connection, purpleUserName(0), "original",
+        PURPLE_MESSAGE_RECV, date));
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[0], {messageId}, true));
+
+    tgl.update(make_object<updateMessageContent>(
+        chatIds[0], messageId, makeTextMessage("edited")));
+    tgl.update(make_object<updateMessageIsPinned>(
+        chatIds[0], messageId, true));
+    tgl.update(make_object<updateDeleteMessages>(
+        chatIds[0], std::vector<int64_t>{messageId},
+        true, false));
+
+    const std::string id = std::to_string(messageId);
+    prpl.verifyEvents(
+        ConversationWriteEvent(
+            purpleUserName(0),
+            "Updated " +
+                userFirstNames[0] + " " + userLastNames[0],
+            "edited", PURPLE_MESSAGE_RECV, date),
+        ConversationWriteEvent(
+            purpleUserName(0), purpleUserName(0),
+            "Message " + id + " was pinned",
+            PURPLE_MESSAGE_SYSTEM, 0),
+        ConversationWriteEvent(
+            purpleUserName(0), purpleUserName(0),
+            "Deleted message(s): " + id,
+            PURPLE_MESSAGE_SYSTEM, 0));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    PrivateChatTest,
+    BotStyleForumTopicUpdateStopsAfterSynchronousImDisconnect)
+{
+    constexpr int64_t messageId = 10000;
+    constexpr int32_t date = 123456;
+    loginWithOneContact();
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        messageId, userIds[0], chatIds[0], false, date,
+        makeTextMessage("original"),
+        make_object<messageTopicForum>(42))));
+    prpl.verifyEvents(ServGotImEvent(
+        connection, purpleUserName(0), "original",
+        PURPLE_MESSAGE_RECV, date));
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[0], {messageId}, true));
+
+    prpl.onNextEvent(
+        [this](PurpleEventType type) {
+            EXPECT_EQ(PurpleEventType::ConversationWrite, type);
+            pluginInfo().close(connection);
+        });
+    tgl.update(make_object<updateMessageIsPinned>(
+        chatIds[0], messageId + 1, true));
+
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    prpl.verifyEvents(ConversationWriteEvent(
+        purpleUserName(0), purpleUserName(0),
+        "Message " + std::to_string(messageId + 1) +
+            " was pinned",
+        PURPLE_MESSAGE_SYSTEM, 0));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    PrivateChatTest,
+    ImNotificationDoesNotReuseConversationDestroyedByCallback)
+{
+    constexpr int64_t messageId = 10000;
+    constexpr int32_t date = 123456;
+    loginWithOneContact();
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        messageId, userIds[0], chatIds[0], false, date,
+        makeTextMessage("original"),
+        make_object<messageTopicForum>(42))));
+    prpl.verifyEvents(ServGotImEvent(
+        connection, purpleUserName(0), "original",
+        PURPLE_MESSAGE_RECV, date));
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[0], {messageId}, true));
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_IM,
+            purpleUserName(0).c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    prpl.onNextEvent(
+        [conversation](PurpleEventType type) {
+            EXPECT_EQ(PurpleEventType::ConversationWrite, type);
+            purple_conversation_destroy(conversation);
+        });
+    tgl.update(make_object<updateMessageIsPinned>(
+        chatIds[0], messageId + 1, true));
+
+    prpl.verifyEvents(ConversationWriteEvent(
+        purpleUserName(0), purpleUserName(0),
+        "Message " + std::to_string(messageId + 1) +
+            " was pinned",
+        PURPLE_MESSAGE_SYSTEM, 0));
+    EXPECT_EQ(
+        nullptr,
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_IM,
+            purpleUserName(0).c_str(), account));
+    tgl.verifyNoRequests();
+}
+
 TEST_F(PrivateChatTest, EditedMessageAddsUpdatedLine)
 {
     loginWithOneContact();

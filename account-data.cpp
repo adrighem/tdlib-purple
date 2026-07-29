@@ -7,6 +7,9 @@
 #include <ctype.h>
 #include <limits>
 
+// Unknown forum updates fail closed, so evicting old routes cannot misroute them.
+static constexpr size_t MaxMessageRoutesPerChat = 4096;
+
 static bool isCanonicalPhoneNumber(const char *s)
 {
     if (*s == '\0')
@@ -385,8 +388,13 @@ void TdAccountData::updateBasicGroupInfo(BasicGroupId groupId, TdGroupInfoPtr gr
 
 void TdAccountData::updateSupergroup(TdSupergroupPtr group)
 {
-    if (group)
-        m_supergroups[getId(*group)].group = std::move(group);
+    if (!group)
+        return;
+
+    SupergroupInfo &info = m_supergroups[getId(*group)];
+    info.hasEverBeenForum =
+        info.hasEverBeenForum || group->is_forum_;
+    info.group = std::move(group);
 }
 
 void TdAccountData::setSupergroupInfoRequested(SupergroupId groupId)
@@ -810,6 +818,7 @@ void TdAccountData::deleteChat(ChatId id)
         if (topic.target.chatId() == id)
             tombstoneForumTopic(topic, generation);
     }
+    m_messageRoutes.erase(id);
     m_chatInfo.erase(id);
 }
 
@@ -1245,51 +1254,257 @@ void TdAccountData::extractPendingReadReceipts(
     m_pendingReadReceipts.erase(receipts);
 }
 
-void TdAccountData::rememberDisplayedMessage(ChatId chatId, MessageId messageId,
-                                             PurpleConversation *conv,
-                                             const std::string &sender,
-                                             time_t timestamp,
-                                             PurpleMessageFlags flags)
+void TdAccountData::rememberMessageTarget(
+    ChatTarget target, MessageId messageId)
 {
-    if (!chatId.valid() || !messageId.valid() || !conv)
+    if (!target.valid() || !messageId.valid())
         return;
 
-    auto it = std::find_if(m_displayedMessages.begin(), m_displayedMessages.end(),
-                           [chatId, messageId](const DisplayedMessageInfo &item) {
-                               return (item.chatId == chatId) && (item.messageId == messageId);
-                           });
-    if (it == m_displayedMessages.end()) {
-        m_displayedMessages.emplace_back();
-        it = m_displayedMessages.end() - 1;
-        it->chatId = chatId;
-        it->messageId = messageId;
+    MessageRouteMap &messages =
+        m_messageRoutes[target.chatId()];
+    auto inserted = messages.emplace(
+        messageId, MessageRouteInfo());
+    MessageRouteInfo &record =
+        inserted.first->second;
+    if (record.target.valid() &&
+        record.target != target) {
+        record = MessageRouteInfo();
     }
-
-    it->conversationType = purple_conversation_get_type(conv);
-    it->conversationName = purple_conversation_get_name(conv) ?: "";
-    it->sender = sender;
-    it->timestamp = timestamp;
-    it->flags = flags;
+    record.target = target;
+    if (inserted.second)
+        pruneMessageRoutes(target.chatId());
 }
 
-bool TdAccountData::showUpdatedMessage(ChatId chatId, MessageId messageId,
-                                       const std::string &newText)
+void TdAccountData::replaceMessageId(
+    ChatId chatId, MessageId oldMessageId,
+    MessageId newMessageId)
 {
-    auto record = std::find_if(m_displayedMessages.begin(), m_displayedMessages.end(),
-                               [chatId, messageId](const DisplayedMessageInfo &item) {
-                                   return (item.chatId == chatId) && (item.messageId == messageId);
-                               });
-    if (record == m_displayedMessages.end())
-        return false;
+    if (!chatId.valid() || !oldMessageId.valid() ||
+        !newMessageId.valid() || oldMessageId == newMessageId) {
+        return;
+    }
+
+    auto chatMessages = m_messageRoutes.find(chatId);
+    if (chatMessages == m_messageRoutes.end())
+        return;
+
+    MessageRouteMap &messages = chatMessages->second;
+    auto oldRecord = messages.find(oldMessageId);
+    if (oldRecord == messages.end())
+        return;
+
+    auto newRecord = messages.find(newMessageId);
+    if (newRecord == messages.end()) {
+        messages[newMessageId] =
+            std::move(oldRecord->second);
+    } else if (
+        newRecord->second.conversationType ==
+            PURPLE_CONV_TYPE_UNKNOWN &&
+        (!newRecord->second.target.valid() ||
+         newRecord->second.target ==
+             oldRecord->second.target)) {
+        messages[newMessageId] =
+            std::move(oldRecord->second);
+    }
+    messages.erase(oldRecord);
+}
+
+void TdAccountData::rememberDisplayedMessage(
+    ChatTarget target, MessageId messageId,
+    PurpleConversation *conv, const std::string &sender,
+    time_t timestamp, PurpleMessageFlags flags)
+{
+    if (!target.valid() || !messageId.valid() || !conv)
+        return;
+
+    MessageRouteMap &messages =
+        m_messageRoutes[target.chatId()];
+    auto inserted = messages.emplace(
+        messageId, MessageRouteInfo());
+    MessageRouteInfo &record =
+        inserted.first->second;
+    record.target = target;
+    record.conversationType =
+        purple_conversation_get_type(conv);
+    const char *conversationName =
+        purple_conversation_get_name(conv);
+    record.conversationName =
+        conversationName ? conversationName : "";
+    record.sender = sender;
+    record.timestamp = timestamp;
+    record.flags = flags;
+    if (inserted.second)
+        pruneMessageRoutes(target.chatId());
+}
+
+void TdAccountData::pruneMessageRoutes(ChatId chatId)
+{
+    auto chatMessages = m_messageRoutes.find(chatId);
+    if (chatMessages == m_messageRoutes.end())
+        return;
+
+    MessageRouteMap &messages = chatMessages->second;
+    while (messages.size() > MaxMessageRoutesPerChat) {
+        auto oldestServerMessage =
+            messages.upper_bound(MessageId());
+        if (oldestServerMessage == messages.end())
+            oldestServerMessage = messages.begin();
+        messages.erase(oldestServerMessage);
+    }
+}
+
+bool TdAccountData::isForumSensitiveChat(
+    ChatId chatId) const
+{
+    if (isForumChat(chatId))
+        return true;
+
+    const td::td_api::chat *chat = getChat(chatId);
+    if (chat) {
+        const SupergroupId groupId =
+            getSupergroupId(*chat);
+        auto group = m_supergroups.find(groupId);
+        if (group != m_supergroups.end() &&
+            group->second.hasEverBeenForum) {
+            return true;
+        }
+    }
+
+    for (const auto &entry : m_forumTopics) {
+        if (entry.first.chatId() == chatId &&
+            entry.first.isForumTopic()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool TdAccountData::shouldUseLegacyMessageUpdateFallback(
+    ChatId chatId, MessageId messageId) const
+{
+    auto chatMessages = m_messageRoutes.find(chatId);
+    if (chatMessages == m_messageRoutes.end())
+        return !isForumSensitiveChat(chatId);
+    auto record = chatMessages->second.find(messageId);
+    if (record == chatMessages->second.end())
+        return !isForumSensitiveChat(chatId);
+
+    const ChatTarget target = record->second.target;
+    if (!target.valid())
+        return !isForumSensitiveChat(chatId);
+
+    return !target.isForumTopic() ||
+           target.forumTopicId() ==
+               ForumTopicId::general();
+}
+
+TdAccountData::DisplayedMessageLookupResult
+TdAccountData::findDisplayedMessageConversation(
+    ChatId chatId, MessageId messageId,
+    DisplayedMessageConversation &conversation) const
+{
+    auto chatMessages = m_messageRoutes.find(chatId);
+    if (chatMessages == m_messageRoutes.end()) {
+        conversation = DisplayedMessageConversation();
+        return DisplayedMessageLookupResult::UnknownMessage;
+    }
+    auto record = chatMessages->second.find(messageId);
+    if (record == chatMessages->second.end()) {
+        conversation = DisplayedMessageConversation();
+        return DisplayedMessageLookupResult::UnknownMessage;
+    }
+
+    const MessageRouteInfo &displayed = record->second;
+    conversation.type = displayed.conversationType;
+    conversation.name = displayed.conversationName;
+    if (conversation.type == PURPLE_CONV_TYPE_UNKNOWN ||
+        conversation.name.empty()) {
+        return DisplayedMessageLookupResult::
+            KnownConversationUnavailable;
+    }
+    if (displayed.target.isForumTopic() &&
+        displayed.target.forumTopicId() !=
+            ForumTopicId::general()) {
+        const ForumTopicState *topic =
+            findForumTopic(displayed.target);
+        if (!topic || topic->deleted || !topic->active) {
+            return DisplayedMessageLookupResult::
+                KnownConversationUnavailable;
+        }
+    }
 
     PurpleConversation *conv = purple_find_conversation_with_account(
-        record->conversationType, record->conversationName.c_str(), purpleAccount);
-    if (!conv)
-        return false;
+        conversation.type, conversation.name.c_str(),
+        purpleAccount);
+    if (!conv) {
+        return DisplayedMessageLookupResult::
+            KnownConversationUnavailable;
+    }
+    if (displayed.conversationType ==
+        PURPLE_CONV_TYPE_CHAT) {
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(conv);
+        if (!chat || purple_conv_chat_has_left(chat)) {
+            return DisplayedMessageLookupResult::
+                KnownConversationUnavailable;
+        }
+    }
 
-    std::string sender = record->sender.empty() ?
-        _("Updated") : formatMessage(_("Updated {}"), record->sender);
+    return DisplayedMessageLookupResult::Available;
+}
+
+TdAccountData::DisplayedMessageUpdateResult
+TdAccountData::showUpdatedMessage(
+    ChatId chatId, MessageId messageId,
+    const std::string &newText)
+{
+    auto chatMessages = m_messageRoutes.find(chatId);
+    if (chatMessages == m_messageRoutes.end()) {
+        return DisplayedMessageUpdateResult::UnknownMessage;
+    }
+    auto record = chatMessages->second.find(messageId);
+    if (record == chatMessages->second.end()) {
+        return DisplayedMessageUpdateResult::UnknownMessage;
+    }
+
+    DisplayedMessageConversation conversation;
+    const DisplayedMessageLookupResult lookup =
+        findDisplayedMessageConversation(
+            chatId, messageId, conversation);
+    if (lookup ==
+        DisplayedMessageLookupResult::
+            KnownConversationUnavailable) {
+        return DisplayedMessageUpdateResult::
+            KnownConversationUnavailable;
+    }
+    if (lookup ==
+        DisplayedMessageLookupResult::UnknownMessage) {
+        return DisplayedMessageUpdateResult::UnknownMessage;
+    }
+
+    const MessageRouteInfo displayed = record->second;
+    PurpleConversation *conv =
+        purple_find_conversation_with_account(
+            conversation.type,
+            conversation.name.c_str(),
+            purpleAccount);
+    if (!conv) {
+        return DisplayedMessageUpdateResult::
+            KnownConversationUnavailable;
+    }
+    if (displayed.conversationType == PURPLE_CONV_TYPE_CHAT) {
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(conv);
+        if (!chat || purple_conv_chat_has_left(chat)) {
+            return DisplayedMessageUpdateResult::
+                KnownConversationUnavailable;
+        }
+    }
+
+    const std::string sender = displayed.sender.empty()
+        ? _("Updated")
+        : formatMessage(_("Updated {}"), displayed.sender);
     purple_conversation_write(conv, sender.c_str(), newText.c_str(),
-                              record->flags, record->timestamp);
-    return true;
+                              displayed.flags, displayed.timestamp);
+    return DisplayedMessageUpdateResult::Written;
 }

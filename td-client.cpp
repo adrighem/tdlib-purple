@@ -24,6 +24,12 @@ static ChatId chatIdFromTdInt(td::td_api::int53 id)
     return ChatId::fromString(idString.c_str());
 }
 
+static MessageId messageIdFromTdInt(td::td_api::int53 id)
+{
+    const std::string idString = std::to_string(id);
+    return MessageId::fromString(idString.c_str());
+}
+
 static bool isChildForumTopic(ChatTarget target)
 {
     return target.valid() && target.isForumTopic() &&
@@ -89,6 +95,15 @@ static std::string messageIdsToString(const std::vector<td::td_api::int53> &ids)
     if (ids.size() > limit)
         result += ", ...";
     return result;
+}
+
+static std::string deletedMessagesNotice(
+    const std::vector<td::td_api::int53> &messageIds)
+{
+    // TRANSLATOR: {} is a comma-separated list of Telegram message IDs.
+    return formatMessage(
+        _("Deleted message(s): {}"),
+        messageIdsToString(messageIds));
 }
 
 static std::string reactionTypeToString(const td::td_api::ReactionType *reaction)
@@ -162,6 +177,169 @@ static void showChatUpdate(TdAccountData &account, ChatId chatId, const std::str
     const td::td_api::chat *chat = account.getChat(chatId);
     if (chat)
         showChatNotification(account, *chat, message.c_str(), extraFlags);
+}
+
+static PurpleConversation *findDisplayedConversation(
+    PurpleAccount *account,
+    const TdAccountData::DisplayedMessageConversation &identity)
+{
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            identity.type, identity.name.c_str(), account);
+    if (!conversation)
+        return nullptr;
+    if (identity.type == PURPLE_CONV_TYPE_CHAT) {
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(conversation);
+        if (!chat || purple_conv_chat_has_left(chat))
+            return nullptr;
+    }
+    return conversation;
+}
+
+bool PurpleTdClient::showMessageLinkedUpdate(
+    ChatId chatId, MessageId messageId,
+    const std::string &message,
+    PurpleMessageFlags extraFlags)
+{
+    TdAccountData::DisplayedMessageConversation identity;
+    const TdAccountData::DisplayedMessageLookupResult lookup =
+        m_data.findDisplayedMessageConversation(
+            chatId, messageId, identity);
+
+    if (lookup ==
+        TdAccountData::DisplayedMessageLookupResult::Available) {
+        PurpleConversation *conversation =
+            findDisplayedConversation(m_account, identity);
+        if (!conversation)
+            return true;
+
+        const std::shared_ptr<LifetimeState> lifetime =
+            m_lifetime;
+        writeConversationNotification(
+            conversation, message, extraFlags);
+        return lifetime->alive;
+    }
+
+    if (lookup !=
+            TdAccountData::DisplayedMessageLookupResult::
+                Available &&
+        m_data.shouldUseLegacyMessageUpdateFallback(
+            chatId, messageId)) {
+        const std::shared_ptr<LifetimeState> lifetime =
+            m_lifetime;
+        showChatUpdate(
+            m_data, chatId, message, extraFlags);
+        return lifetime->alive;
+    }
+
+    return true;
+}
+
+bool PurpleTdClient::showDeletedMessageUpdate(
+    ChatId chatId,
+    const std::vector<td::td_api::int53> &messageIds)
+{
+    if (!m_data.isForumSensitiveChat(chatId)) {
+        const std::shared_ptr<LifetimeState> lifetime =
+            m_lifetime;
+        showChatUpdate(
+            m_data, chatId,
+            deletedMessagesNotice(messageIds));
+        return lifetime->alive;
+    }
+
+    struct DestinationMessages {
+        TdAccountData::DisplayedMessageConversation
+            destination;
+        std::vector<td::td_api::int53> messageIds;
+    };
+
+    std::vector<DestinationMessages> destinations;
+    std::vector<td::td_api::int53> legacyMessageIds;
+    for (td::td_api::int53 rawMessageId : messageIds) {
+        TdAccountData::DisplayedMessageConversation
+            identity;
+        const TdAccountData::DisplayedMessageLookupResult
+            lookup =
+                m_data.findDisplayedMessageConversation(
+                    chatId,
+                    messageIdFromTdInt(rawMessageId),
+                    identity);
+        if (lookup ==
+            TdAccountData::DisplayedMessageLookupResult::
+                Available) {
+            auto destination = std::find_if(
+                destinations.begin(), destinations.end(),
+                [&identity](
+                    const DestinationMessages &item) {
+                    return item.destination == identity;
+                });
+            if (destination == destinations.end()) {
+                destinations.push_back(
+                    DestinationMessages{
+                        identity,
+                        std::vector<td::td_api::int53>()});
+                destination = destinations.end() - 1;
+            }
+            destination->messageIds.push_back(
+                rawMessageId);
+        } else if (
+            m_data.shouldUseLegacyMessageUpdateFallback(
+                chatId,
+                messageIdFromTdInt(rawMessageId))) {
+            legacyMessageIds.push_back(rawMessageId);
+        }
+    }
+
+    for (const DestinationMessages &destination :
+         destinations) {
+        PurpleConversation *conversation =
+            findDisplayedConversation(
+                m_account, destination.destination);
+        if (!conversation)
+            continue;
+
+        const std::shared_ptr<LifetimeState> lifetime =
+            m_lifetime;
+        writeConversationNotification(
+            conversation,
+            deletedMessagesNotice(destination.messageIds));
+        if (!lifetime->alive)
+            return false;
+    }
+
+    if (!legacyMessageIds.empty()) {
+        const std::shared_ptr<LifetimeState> lifetime =
+            m_lifetime;
+        showChatUpdate(
+            m_data, chatId,
+            deletedMessagesNotice(legacyMessageIds));
+        if (!lifetime->alive)
+            return false;
+    }
+
+    return true;
+}
+
+void PurpleTdClient::replacePendingMessageId(
+    const td::td_api::message &message,
+    MessageId oldMessageId)
+{
+    const ChatId chatId = getChatId(message);
+    const MessageId newMessageId = getId(message);
+    m_data.replaceMessageId(
+        chatId, oldMessageId, newMessageId);
+
+    const td::td_api::chat *chat = m_data.getChat(chatId);
+    if (chat) {
+        const ChatTarget target =
+            getMessageRoomTarget(*chat, message);
+        if (target.valid()) {
+            m_data.rememberMessageTarget(
+                target, newMessageId);
+        }
+    }
 }
 
 PurpleTdClient::PurpleTdClient(PurpleAccount *acct, ITransceiverBackend *testBackend)
@@ -307,14 +485,40 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " content update\n",
                           messageUpdate.message_id_);
         if (messageUpdate.new_content_) {
-            std::string description = describeMessageContent(*messageUpdate.new_content_, m_data);
-            if (!m_data.showUpdatedMessage(chatIdFromTdInt(messageUpdate.chat_id_),
-                                           MessageId::fromString(std::to_string(messageUpdate.message_id_).c_str()),
-                                           description)) {
+            const ChatId chatId =
+                chatIdFromTdInt(messageUpdate.chat_id_);
+            const std::string description =
+                describeMessageContent(
+                    *messageUpdate.new_content_, m_data);
+            const std::shared_ptr<LifetimeState> lifetime =
+                m_lifetime;
+            const TdAccountData::
+                DisplayedMessageUpdateResult result =
+                    m_data.showUpdatedMessage(
+                        chatId,
+                        messageIdFromTdInt(
+                            messageUpdate.message_id_),
+                        description);
+            if (!lifetime->alive)
+                return;
+            if (result !=
+                    TdAccountData::
+                        DisplayedMessageUpdateResult::
+                            Written &&
+                m_data.shouldUseLegacyMessageUpdateFallback(
+                    chatId,
+                    messageIdFromTdInt(
+                        messageUpdate.message_id_))) {
                 // TRANSLATOR: In-chat status update. First argument is a Telegram message id, second is message content.
-                showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
-                               formatMessage(_("Message {0} updated: {1}"),
-                                             {std::to_string(messageUpdate.message_id_), description}));
+                showChatUpdate(
+                    m_data, chatId,
+                    formatMessage(
+                        _("Message {0} updated: {1}"),
+                        {std::to_string(
+                             messageUpdate.message_id_),
+                         description}));
+                if (!lifetime->alive)
+                    return;
             }
         }
         break;
@@ -332,10 +536,12 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         purple_debug_misc(config::pluginId, "Incoming update: %zu deleted messages\n",
                           messageUpdate.message_ids_.size());
         if (!messageUpdate.from_cache_) {
-            // TRANSLATOR: In-chat status update, argument is one or more Telegram message ids.
-            showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
-                           formatMessage(_("Deleted message(s): {}"),
-                                         messageIdsToString(messageUpdate.message_ids_)));
+            if (!showDeletedMessageUpdate(
+                    chatIdFromTdInt(
+                        messageUpdate.chat_id_),
+                    messageUpdate.message_ids_)) {
+                return;
+            }
         }
         break;
     }
@@ -347,8 +553,16 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
             _("Message {} was pinned") :
             // TRANSLATOR: In-chat status update, argument is a Telegram message id.
             _("Message {} was unpinned");
-        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
-                       formatMessage(format, std::to_string(messageUpdate.message_id_)));
+        if (!showMessageLinkedUpdate(
+                chatIdFromTdInt(messageUpdate.chat_id_),
+                messageIdFromTdInt(
+                    messageUpdate.message_id_),
+                formatMessage(
+                    format,
+                    std::to_string(
+                        messageUpdate.message_id_)))) {
+            return;
+        }
         break;
     }
 
@@ -366,23 +580,41 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
                                               // TRANSLATOR: Placeholder for an unknown message reaction sender.
                                               _("Someone");
         // TRANSLATOR: In-chat status update. Arguments are user name, message id, old reactions, new reactions.
-        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
-                       formatMessage(_("{0} changed reactions on message {1}: {2} -> {3}"),
-                                     {actor, std::to_string(messageUpdate.message_id_),
-                                      reactionTypesToString(messageUpdate.old_reaction_types_),
-                                      reactionTypesToString(messageUpdate.new_reaction_types_)}),
-                       PURPLE_MESSAGE_NO_LOG);
+        if (!showMessageLinkedUpdate(
+                chatIdFromTdInt(messageUpdate.chat_id_),
+                messageIdFromTdInt(
+                    messageUpdate.message_id_),
+                formatMessage(
+                    _("{0} changed reactions on message {1}: {2} -> {3}"),
+                    {actor,
+                     std::to_string(
+                         messageUpdate.message_id_),
+                     reactionTypesToString(
+                         messageUpdate.old_reaction_types_),
+                     reactionTypesToString(
+                         messageUpdate.new_reaction_types_)}),
+                PURPLE_MESSAGE_NO_LOG)) {
+            return;
+        }
         break;
     }
 
     case td::td_api::updateMessageReactions::ID: {
         const auto &messageUpdate = static_cast<const td::td_api::updateMessageReactions &>(update);
         // TRANSLATOR: In-chat status update. First argument is a message id, second is a reaction summary.
-        showChatUpdate(m_data, chatIdFromTdInt(messageUpdate.chat_id_),
-                       formatMessage(_("Reactions on message {0}: {1}"),
-                                     {std::to_string(messageUpdate.message_id_),
-                                      messageReactionsToString(messageUpdate.reactions_)}),
-                       PURPLE_MESSAGE_NO_LOG);
+        if (!showMessageLinkedUpdate(
+                chatIdFromTdInt(messageUpdate.chat_id_),
+                messageIdFromTdInt(
+                    messageUpdate.message_id_),
+                formatMessage(
+                    _("Reactions on message {0}: {1}"),
+                    {std::to_string(
+                         messageUpdate.message_id_),
+                     messageReactionsToString(
+                         messageUpdate.reactions_)}),
+                PURPLE_MESSAGE_NO_LOG)) {
+            return;
+        }
         break;
     }
 
@@ -487,6 +719,12 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         auto &sendSucceeded = static_cast<const td::td_api::updateMessageSendSucceeded &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " send succeeded\n",
                           sendSucceeded.old_message_id_);
+        if (sendSucceeded.message_) {
+            replacePendingMessageId(
+                *sendSucceeded.message_,
+                messageIdFromTdInt(
+                    sendSucceeded.old_message_id_));
+        }
         removeTempFile(sendSucceeded.old_message_id_);
         break;
     }
@@ -495,6 +733,12 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         auto &sendFailed = static_cast<const td::td_api::updateMessageSendFailed &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " send failed\n",
                           sendFailed.old_message_id_);
+        if (sendFailed.message_) {
+            replacePendingMessageId(
+                *sendFailed.message_,
+                messageIdFromTdInt(
+                    sendFailed.old_message_id_));
+        }
         removeTempFile(sendFailed.old_message_id_);
         notifySendFailed(sendFailed, m_data);
         // TODO notify in chat
