@@ -15,7 +15,12 @@ void PurpleEventReceiver::addEvent(std::unique_ptr<PurpleEvent> event)
         inputCancelCb = inputEvent.cancel_cb;
         inputUserData = inputEvent.user_data;
     }
+    const PurpleEventType type = event->type;
     m_events.push(std::move(event));
+    std::function<void(PurpleEventType)> callback =
+        std::move(m_nextEventCallback);
+    if (callback)
+        callback(type);
 }
 
 #define COMPARE(param) ASSERT_EQ(expected.param, actual.param)
@@ -431,6 +436,13 @@ void PurpleEventReceiver::verifyNoEvents()
 void PurpleEventReceiver::discardEvents()
 {
     while (!m_events.empty()) m_events.pop();
+    m_nextEventCallback = std::function<void(PurpleEventType)>();
+}
+
+void PurpleEventReceiver::onNextEvent(
+    std::function<void(PurpleEventType)> callback)
+{
+    m_nextEventCallback = std::move(callback);
 }
 
 void PurpleEventReceiver::inputEnter(const gchar *value)

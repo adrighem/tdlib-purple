@@ -3,7 +3,10 @@
 
 #include "account-data.h"
 #include <purple.h>
+#include <functional>
 #include <thread>
+
+using ContinuationGuard = std::function<bool()>;
 
 const char *errorCodeMessage();
 
@@ -19,7 +22,9 @@ std::vector<const td::td_api::user *> getUsersByPurpleName(const char *buddyName
 PurpleConversation *getImConversation(PurpleAccount *account, const char *username);
 PurpleConvChat *    getChatConversation(TdAccountData &account, const td::td_api::chat &chat,
                                         ChatTarget target, int chatPurpleId,
-                                        const std::string &displayTitle);
+                                        const std::string &displayTitle,
+                                        const ContinuationGuard &canContinue =
+                                            ContinuationGuard());
 PurpleConvChat *    getChatConversation(TdAccountData &account, const td::td_api::chat &chat,
                                         int chatPurpleId);
 PurpleConvChat *    findChatConversation(PurpleAccount *account, const td::td_api::chat &chat);
@@ -28,8 +33,14 @@ void                setBuddyServerAlias(PurpleBuddy *buddy, const char *alias);
 void                gotBuddyServerAlias(PurpleAccount *account, const char *buddyName, const char *alias);
 
 void                updatePrivateChat(TdAccountData &account, const td::td_api::chat *chat, const td::td_api::user &user);
-void                updateBasicGroupChat(TdAccountData &account, BasicGroupId groupId);
-void                updateSupergroupChat(TdAccountData &account, SupergroupId groupId);
+void                updateBasicGroupChat(
+                        TdAccountData &account, BasicGroupId groupId,
+                        const ContinuationGuard &canContinue =
+                            ContinuationGuard());
+void                updateSupergroupChat(
+                        TdAccountData &account, SupergroupId groupId,
+                        const ContinuationGuard &canContinue =
+                            ContinuationGuard());
 bool                isInviteLinkActive(const td::td_api::chatInviteLink &linkInfo);
 void                removeGroupChat(PurpleAccount *purpleAccount, const td::td_api::chat &chat);
 void                removePrivateChat(TdAccountData &account, const td::td_api::chat &chat);

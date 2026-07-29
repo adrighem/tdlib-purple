@@ -69,6 +69,9 @@ private:
         UserRequest,
         PersistentRejoin,
     };
+    struct LifetimeState {
+        bool alive = true;
+    };
 
     void       processUpdate(td::td_api::Object &object);
     void       processAuthorizationState(td::td_api::AuthorizationState &authState);
@@ -153,6 +156,9 @@ private:
     void       failForumTopicJoins(ChatId chatId);
     void       pruneAbandonedForumTopicJoins(ChatId chatId);
     void       retryExpectedForumTopicJoins(ChatId chatId);
+    void       projectForumTopic(ChatTarget target);
+    void       projectForumTopics(ChatId chatId);
+    void       suspendForumTopics(ChatId chatId);
     void       joinChatResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       joinGroupSearchChatResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       deleteSupergroupResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
@@ -174,6 +180,7 @@ private:
     PurpleAccount        *m_account;
     TdTransceiver         m_transceiver;
     TdAccountData         m_data;
+    std::shared_ptr<LifetimeState> m_lifetime;
     std::unique_ptr<ForumTopicsAdapter> m_forumTopics;
     int32_t               m_lastAuthState = 0;
     std::vector<UserId>   m_usersForNewPrivateChats;

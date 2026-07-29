@@ -9,8 +9,10 @@
 #include <iostream>
 #include <map>
 #include <vector>
+#include <functional>
 
 struct PurpleEvent;
+enum class PurpleEventType: uint8_t;
 
 extern "C" {
     extern PurpleGroup standardPurpleGroup;
@@ -31,6 +33,7 @@ public:
     void verifyEvents2(std::vector<std::shared_ptr<PurpleEvent>> events);
     void verifyNoEvents();
     void discardEvents();
+    void onNextEvent(std::function<void(PurpleEventType)> callback);
 
     void inputEnter(const gchar *value);
     void inputCancel();
@@ -55,6 +58,7 @@ private:
     }
 
     std::queue<std::unique_ptr<PurpleEvent>> m_events;
+    std::function<void(PurpleEventType)> m_nextEventCallback;
     void      *inputUserData = NULL;
     GCallback  inputOkCb     = NULL;
     GCallback  inputCancelCb = NULL;

@@ -373,9 +373,11 @@ TEST_F(ForumTopicRegistryTest, ReconciliationTombstonesOnlyMissingOlderTopics)
     ASSERT_GT(missingPurpleId, 0);
     ASSERT_GT(accountData.activateForumTopic(newer), 0);
 
-    accountData.reconcileForumTopics(
-        chatId, std::set<ChatTarget>{seen}, 6);
+    const std::vector<ChatTarget> tombstoned =
+        accountData.reconcileForumTopics(
+            chatId, std::set<ChatTarget>{seen}, 6);
 
+    EXPECT_EQ(std::vector<ChatTarget>{missing}, tombstoned);
     const TdAccountData::ForumTopicState *generalState =
         accountData.findForumTopic(general);
     const TdAccountData::ForumTopicState *seenState =
@@ -402,6 +404,11 @@ TEST_F(ForumTopicRegistryTest, ReconciliationTombstonesOnlyMissingOlderTopics)
     EXPECT_TRUE(newerState->active);
     EXPECT_EQ(7U, newerState->metadataGeneration);
     EXPECT_FALSE(otherState->deleted);
+
+    const std::vector<ChatTarget> repeated =
+        accountData.reconcileForumTopics(
+            chatId, std::set<ChatTarget>{seen}, 7);
+    EXPECT_TRUE(repeated.empty());
 }
 
 TEST_F(ForumTopicRegistryTest, OnlyNewerMetadataRevivesTombstonedTopic)

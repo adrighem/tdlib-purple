@@ -606,6 +606,40 @@ TEST_F(ForumTopicJoinTest, GroupFirstIneligibleParentClearsExpectedJoin)
     tgl.verifyNoRequests();
 }
 
+TEST_F(ForumTopicJoinTest, GroupFirstIneligibleParentLeavesActiveChild)
+{
+    login();
+    addSavedTopicBookmark(topicDisplayName("Saved"));
+    serv_got_joined_chat(
+        connection, 99, topicPurpleName().c_str());
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(conversation));
+    prpl.discardEvents();
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    tgl.update(make_object<updateSupergroup>(makeForumSupergroup(
+        groupId, make_object<chatMemberStatusLeft>(), 2)));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    tgl.update(make_object<updateNewChat>(makeChat(
+        groupChatId,
+        make_object<chatTypeSupergroup>(groupId, false),
+        groupChatTitle, nullptr, 0, 0, 0)));
+    prpl.verifyEvents(
+        JoinChatFailedEvent(connection, topicPurpleName()));
+    tgl.verifyNoRequests();
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+}
+
 TEST_F(ForumTopicJoinTest, KnownBasicGroupRejectsTopicJoin)
 {
     login();
@@ -840,6 +874,463 @@ TEST_F(ForumTopicJoinTest, SavedJoinRefreshesAliasAndConversationTitle)
     EXPECT_STREQ(
         topicDisplayName("Current").c_str(),
         purple_conversation_get_title(conversation));
+}
+
+TEST_F(ForumTopicJoinTest, LiveRenameRefreshesSavedAliasAndOpenTitle)
+{
+    loginWithForumSupergroup();
+    cacheTopic("Before");
+    joinTopic();
+    expectTopicOpened("Before");
+    addSavedTopicBookmark(topicDisplayName("Before"));
+
+    tgl.update(make_object<updateForumTopicInfo>(
+        makeForumTopicInfo(
+            groupChatId, TopicId, "After", false, true)));
+
+    prpl.verifyEvents(
+        AliasChatEvent(
+            topicPurpleName(), topicDisplayName("After")),
+        ConvSetTitleEvent(
+            topicPurpleName(), topicDisplayName("After"))
+    );
+    tgl.verifyNoRequests();
+
+    PurpleChat *bookmark =
+        purple_blist_find_chat(account, topicPurpleName().c_str());
+    ASSERT_NE(nullptr, bookmark);
+    EXPECT_STREQ(
+        topicDisplayName("After").c_str(),
+        purple_chat_get_name(bookmark));
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(conversation));
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+    EXPECT_STREQ(
+        topicDisplayName("After").c_str(),
+        purple_conversation_get_title(conversation));
+    EXPECT_STREQ(
+        topicPurpleName().c_str(),
+        purple_conversation_get_name(conversation));
+
+    tgl.update(make_object<updateForumTopicInfo>(
+        makeForumTopicInfo(
+            groupChatId, TopicId, "After", false, true)));
+    prpl.verifyNoEvents();
+    tgl.update(make_object<updateForumTopicInfo>(
+        makeForumTopicInfo(
+            groupChatId, TopicId, "After", false, false)));
+    prpl.verifyNoEvents();
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+}
+
+TEST_F(ForumTopicJoinTest, ParentRenameRefreshesSavedTopicPresentation)
+{
+    loginWithForumSupergroup();
+    cacheTopic("Child");
+    joinTopic();
+    expectTopicOpened("Child");
+    addSavedTopicBookmark(topicDisplayName("Child"));
+
+    tgl.update(make_object<updateChatTitle>(
+        groupChatId, "Renamed parent"));
+
+    const std::string renamedTitle =
+        "Renamed parent / Child";
+    prpl.verifyEvents(
+        AliasChatEvent(groupChatPurpleName, "Renamed parent"),
+        AliasChatEvent(topicPurpleName(), renamedTitle),
+        ConvSetTitleEvent(topicPurpleName(), renamedTitle)
+    );
+
+    PurpleChat *bookmark =
+        purple_blist_find_chat(account, topicPurpleName().c_str());
+    ASSERT_NE(nullptr, bookmark);
+    EXPECT_STREQ(
+        renamedTitle.c_str(), purple_chat_get_name(bookmark));
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    EXPECT_STREQ(
+        renamedTitle.c_str(),
+        purple_conversation_get_title(conversation));
+    EXPECT_STREQ(
+        topicPurpleName().c_str(),
+        purple_conversation_get_name(conversation));
+}
+
+TEST_F(ForumTopicJoinTest, ClientDestructionDuringParentRenameIsSafe)
+{
+    loginWithForumSupergroup();
+    cacheTopic("Child");
+    joinTopic();
+    expectTopicOpened("Child");
+    addSavedTopicBookmark(topicDisplayName("Child"));
+
+    prpl.onNextEvent(
+        [this](PurpleEventType type) {
+            EXPECT_EQ(PurpleEventType::AliasChat, type);
+            pluginInfo().close(connection);
+        });
+    tgl.update(make_object<updateChatTitle>(
+        groupChatId, "Renamed parent"));
+
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    prpl.discardEvents();
+    tgl.verifyNoRequests();
+}
+
+TEST_F(ForumTopicJoinTest, ClientDestructionDuringRenameProjectionIsSafe)
+{
+    loginWithForumSupergroup();
+    cacheTopic("Before");
+    joinTopic();
+    expectTopicOpened("Before");
+    addSavedTopicBookmark(topicDisplayName("Before"));
+
+    prpl.onNextEvent(
+        [this](PurpleEventType type) {
+            EXPECT_EQ(PurpleEventType::AliasChat, type);
+            pluginInfo().close(connection);
+        });
+    tgl.update(make_object<updateForumTopicInfo>(
+        makeForumTopicInfo(
+            groupChatId, TopicId, "After")));
+
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    prpl.discardEvents();
+    tgl.verifyNoRequests();
+}
+
+TEST_F(ForumTopicJoinTest, ClientDestructionDuringExactJoinIsSafe)
+{
+    loginWithForumSupergroup();
+    addSavedLeftTopic("Old parent / Old topic");
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t requestId = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+
+    prpl.onNextEvent(
+        [this](PurpleEventType type) {
+            EXPECT_EQ(PurpleEventType::AliasChat, type);
+            pluginInfo().close(connection);
+        });
+    tgl.reply(requestId, makeForumTopic(makeForumTopicInfo(
+        groupChatId, TopicId, "Current")));
+
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    prpl.discardEvents();
+    tgl.verifyNoRequests();
+}
+
+TEST_F(ForumTopicJoinTest, ClientDestructionDuringJoinedChatIsSafe)
+{
+    loginWithForumSupergroup();
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t requestId = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+
+    prpl.onNextEvent(
+        [this](PurpleEventType type) {
+            EXPECT_EQ(PurpleEventType::ServGotJoinedChat, type);
+            pluginInfo().close(connection);
+        });
+    tgl.reply(requestId, makeForumTopic(makeForumTopicInfo(
+        groupChatId, TopicId, "Current")));
+
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    prpl.discardEvents();
+    tgl.verifyNoRequests();
+}
+
+TEST_F(ForumTopicJoinTest, CompleteListingRemovalLeavesAndCanReviveTopic)
+{
+    loginWithForumSupergroup();
+    cacheTopic("Before");
+    joinTopic();
+    expectTopicOpened("Before");
+    addSavedTopicBookmark(topicDisplayName("Before"));
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(conversation));
+    const int32_t purpleId = purple_conv_chat_get_id(
+        purple_conversation_get_chat_data(conversation));
+
+    uint64_t listRequest = 0;
+    PurpleRoomlist *roomlist = startRoomList(listRequest);
+    ASSERT_NE(nullptr, roomlist);
+    tgl.reply(listRequest, makeForumTopicsPage(
+        0, std::vector<object_ptr<forumTopic>>()));
+    prpl.verifyEvents(
+        RoomlistInProgressEvent(roomlist, FALSE));
+    purple_roomlist_unref(roomlist);
+
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+    EXPECT_NE(
+        nullptr,
+        purple_blist_find_chat(
+            account, topicPurpleName().c_str()));
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+    tgl.reply(exactRequest, makeForumTopic(makeForumTopicInfo(
+        groupChatId, TopicId, "Restored")));
+
+    prpl.verifyEvents(
+        AliasChatEvent(
+            topicPurpleName(), topicDisplayName("Restored")),
+        ServGotJoinedChatEvent(
+            connection, purpleId, topicPurpleName(),
+            topicDisplayName("Restored")),
+        PresentConversationEvent(topicPurpleName())
+    );
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+}
+
+TEST_F(ForumTopicJoinTest, PartialListingDoesNotRemoveActiveTopicEarly)
+{
+    loginWithForumSupergroup();
+    cacheTopic("Active");
+    joinTopic();
+    expectTopicOpened("Active");
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(conversation));
+
+    uint64_t listRequest = 0;
+    PurpleRoomlist *roomlist = startRoomList(listRequest);
+    ASSERT_NE(nullptr, roomlist);
+
+    constexpr int32_t OtherTopicId = 43;
+    std::vector<object_ptr<forumTopic>> topics;
+    topics.push_back(makeForumTopic(makeForumTopicInfo(
+        groupChatId, OtherTopicId, "Other")));
+    tgl.reply(listRequest, makeForumTopicsPage(
+        1, std::move(topics), 10, 20, OtherTopicId));
+    prpl.verifyEvents(
+        RoomlistAddRoomEvent(
+            roomlist,
+            PURPLE_ROOMLIST_ROOMTYPE_ROOM,
+            topicDisplayName("Other"),
+            nullptr,
+            std::vector<std::string>{
+                topicPurpleName(OtherTopicId)}
+        )
+    );
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+
+    const uint64_t finalRequest = tgl.verifyRequest(
+        getForumTopics(
+            groupChatId, "", 10, 20, OtherTopicId, 100));
+    tgl.reply(finalRequest, makeForumTopicsPage(
+        1, std::vector<object_ptr<forumTopic>>()));
+    prpl.verifyEvents(
+        RoomlistInProgressEvent(roomlist, FALSE));
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+    purple_roomlist_unref(roomlist);
+}
+
+TEST_F(ForumTopicJoinTest, ForumDisableSuspendsUntilExplicitRejoin)
+{
+    loginWithForumSupergroup();
+    cacheTopic("Child");
+    joinTopic();
+    expectTopicOpened("Child");
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(conversation));
+    const int32_t purpleId = purple_conv_chat_get_id(
+        purple_conversation_get_chat_data(conversation));
+
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2)));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+    EXPECT_EQ(
+        nullptr,
+        purple_blist_find_chat(
+            account, topicPurpleName().c_str()));
+
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2)));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    tgl.update(make_object<updateSupergroup>(makeForumSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2)));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+    tgl.reply(exactRequest, makeForumTopic(makeForumTopicInfo(
+        groupChatId, TopicId, "Child")));
+
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, purpleId, topicPurpleName(),
+            topicDisplayName("Child")),
+        ConvSetTitleEvent(
+            topicPurpleName(), topicDisplayName("Child")),
+        PresentConversationEvent(topicPurpleName())
+    );
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+}
+
+TEST_F(ForumTopicJoinTest, SuspensionLeavesOnlyExactChildWithStaleId)
+{
+    loginWithForumSupergroup();
+    cacheTopic("Child");
+    serv_got_joined_chat(
+        connection, 1, groupChatPurpleName.c_str());
+    serv_got_joined_chat(
+        connection, 1, topicPurpleName().c_str());
+    PurpleConversation *general =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            groupChatPurpleName.c_str(), account);
+    PurpleConversation *child =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, general);
+    ASSERT_NE(nullptr, child);
+    prpl.discardEvents();
+
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2)));
+
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(general)));
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(child)));
+}
+
+TEST_F(ForumTopicJoinTest, MembershipLossSuspendsUntilExplicitRejoin)
+{
+    loginWithForumSupergroup();
+    cacheTopic("Child");
+    joinTopic();
+    expectTopicOpened("Child");
+    addSavedTopicBookmark(topicDisplayName("Child"));
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(conversation));
+    const int32_t purpleId = purple_conv_chat_get_id(
+        purple_conversation_get_chat_data(conversation));
+
+    tgl.update(make_object<updateSupergroup>(makeForumSupergroup(
+        groupId, make_object<chatMemberStatusLeft>(), 2)));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+    EXPECT_NE(
+        nullptr,
+        purple_blist_find_chat(
+            account, topicPurpleName().c_str()));
+
+    tgl.update(make_object<updateForumTopicInfo>(
+        makeForumTopicInfo(
+            groupChatId, TopicId, "Late while ineligible")));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    tgl.update(make_object<updateSupergroup>(makeForumSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2)));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+    tgl.reply(exactRequest, makeForumTopic(makeForumTopicInfo(
+        groupChatId, TopicId, "Child")));
+
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, purpleId, topicPurpleName(),
+            topicDisplayName("Child")),
+        PresentConversationEvent(topicPurpleName())
+    );
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+}
+
+TEST_F(ForumTopicJoinTest, GeneralMetadataKeepsLegacyRoomIdentity)
+{
+    loginWithForumSupergroup();
+    serv_got_joined_chat(
+        connection, 1, groupChatPurpleName.c_str());
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            groupChatPurpleName.c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    prpl.discardEvents();
+
+    tgl.update(make_object<updateForumTopicInfo>(
+        makeForumTopicInfo(
+            groupChatId, ForumTopicId::general().value(),
+            "General", true, true, true)));
+
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+    EXPECT_STREQ(
+        groupChatPurpleName.c_str(),
+        purple_conversation_get_name(conversation));
 }
 
 TEST_F(ForumTopicJoinTest, ChildUnsafeOperationsFailClosed)

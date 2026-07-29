@@ -67,6 +67,17 @@ static bool isEligibleForumParent(
     return group && group->is_forum_;
 }
 
+static std::string getForumTopicDisplayTitle(
+    const td::td_api::chat &parent,
+    const TdAccountData::ForumTopicState &topic)
+{
+    const std::string topicName = topic.name.empty()
+        ? formatMessage(
+              _("Topic {}"), topic.target.forumTopicId().value())
+        : topic.name;
+    return parent.title_ + " / " + topicName;
+}
+
 static bool hasPersistentForumTopicJoin(
     PurpleAccount *account, ChatTarget target)
 {
@@ -180,7 +191,12 @@ PurpleTdClient::PurpleTdClient(PurpleAccount *acct, ITransceiverBackend *testBac
 :   m_account(acct),
     m_transceiver(this, acct, &PurpleTdClient::processUpdate, testBackend),
     m_data(acct, m_transceiver),
-    m_forumTopics(std::make_unique<ForumTopicsAdapter>(m_transceiver, m_data))
+    m_lifetime(std::make_shared<LifetimeState>()),
+    m_forumTopics(std::make_unique<ForumTopicsAdapter>(
+        m_transceiver, m_data,
+        [this](ChatTarget target) {
+            projectForumTopic(target);
+        }))
 {
     StickerConversionThread::setCallback(&PurpleTdClient::onAnimatedStickerConverted);
     setPurpleConnectionInProgress();
@@ -188,6 +204,7 @@ PurpleTdClient::PurpleTdClient(PurpleAccount *acct, ITransceiverBackend *testBac
 
 PurpleTdClient::~PurpleTdClient()
 {
+    m_lifetime->alive = false;
     m_forumTopics->shutdown();
 
     std::vector<PurpleXfer *> transfers;
@@ -283,7 +300,11 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
             m_forumTopics->markRoomListsPending();
         } else {
             const ChatId chatId = getId(*newChat.chat_);
+            const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
             failForumTopicJoins(chatId);
+            if (!lifetime->alive)
+                return;
+            projectForumTopics(chatId);
             purple_debug_misc(config::pluginId,
                               "Incoming update: ignorig ID=%d\n",
                               update.get_id());
@@ -515,10 +536,15 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
 
     case td::td_api::updateChatTitle::ID: {
         auto &chatTitleUpdate = static_cast<td::td_api::updateChatTitle &>(update);
+        const ChatId chatId = getChatId(chatTitleUpdate);
+        const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
         purple_debug_misc(config::pluginId, "Incoming update: update chat title for chat %" G_GINT64_FORMAT "\n",
                           chatTitleUpdate.chat_id_);
-        m_data.updateChatTitle(getChatId(chatTitleUpdate), chatTitleUpdate.title_);
-        updateChat(m_data.getChat(getChatId(chatTitleUpdate)));
+        m_data.updateChatTitle(chatId, chatTitleUpdate.title_);
+        updateChat(m_data.getChat(chatId));
+        if (!lifetime->alive)
+            return;
+        projectForumTopics(chatId);
         break;
     }
 
@@ -1217,6 +1243,7 @@ void PurpleTdClient::avatarDownloadResponse(uint64_t requestId, td::td_api::obje
 
 void PurpleTdClient::updateGroup(td::td_api::object_ptr<td::td_api::basicGroup> group)
 {
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
     if (!group) {
         purple_debug_warning(config::pluginId, "updateBasicGroup with null group\n");
         return;
@@ -1227,7 +1254,9 @@ void PurpleTdClient::updateGroup(td::td_api::object_ptr<td::td_api::basicGroup> 
     const td::td_api::chat *chat = m_data.getBasicGroupChatByGroup(id);
     const ChatId chatId = chat ? getId(*chat) : ChatId::invalid;
     if (chat && resolveDeferredGroupChat(chatId)) {
-        failForumTopicJoins(chatId);
+        if (!lifetime->alive)
+            return;
+        projectForumTopics(chatId);
         return;
     }
 
@@ -1235,13 +1264,20 @@ void PurpleTdClient::updateGroup(td::td_api::object_ptr<td::td_api::basicGroup> 
     // Updates are only supposed to come after authorizationStateReady which sets account to connected.
     // But check purple_account_is_connected just in case.
     if (purple_account_is_connected(m_account))
-        updateBasicGroupChat(m_data, id);
+        updateBasicGroupChat(
+            m_data, id,
+            [lifetime]() {
+                return lifetime->alive;
+            });
+    if (!lifetime->alive)
+        return;
     if (chatId.valid())
-        failForumTopicJoins(chatId);
+        projectForumTopics(chatId);
 }
 
 void PurpleTdClient::updateSupergroup(td::td_api::object_ptr<td::td_api::supergroup> group)
 {
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
     if (!group) {
         purple_debug_warning(config::pluginId, "updateSupergroup with null group\n");
         return;
@@ -1252,7 +1288,12 @@ void PurpleTdClient::updateSupergroup(td::td_api::object_ptr<td::td_api::supergr
     const td::td_api::chat *chat = m_data.getSupergroupChatByGroup(id);
     const ChatId chatId = chat ? getId(*chat) : ChatId::invalid;
     if (chat && resolveDeferredGroupChat(chatId)) {
+        if (!lifetime->alive)
+            return;
         retryExpectedForumTopicJoins(chatId);
+        if (!lifetime->alive)
+            return;
+        projectForumTopics(chatId);
         return;
     }
 
@@ -1260,13 +1301,24 @@ void PurpleTdClient::updateSupergroup(td::td_api::object_ptr<td::td_api::supergr
     // Updates are only supposed to come after authorizationStateReady which sets account to connected.
     // But check purple_account_is_connected just in case.
     if (purple_account_is_connected(m_account))
-        updateSupergroupChat(m_data, id);
+        updateSupergroupChat(
+            m_data, id,
+            [lifetime]() {
+                return lifetime->alive;
+            });
+    if (!lifetime->alive)
+        return;
     if (chatId.valid())
         retryExpectedForumTopicJoins(chatId);
+    if (!lifetime->alive)
+        return;
+    if (chatId.valid())
+        projectForumTopics(chatId);
 }
 
 bool PurpleTdClient::resolveDeferredGroupChat(ChatId chatId)
 {
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
     auto deferred = m_deferredGroupChats.find(chatId);
     if (deferred == m_deferredGroupChats.end())
         return false;
@@ -1289,6 +1341,8 @@ bool PurpleTdClient::resolveDeferredGroupChat(ChatId chatId)
     if (!m_data.isGroupChatWithMembership(*chat)) {
         m_deferredGroupChats.erase(deferred);
         failForumTopicJoins(chatId);
+        if (!lifetime->alive)
+            return true;
         m_data.deleteChat(chatId);
         markForumRoomListsReadyIfPossible();
         return true;
@@ -1299,16 +1353,22 @@ bool PurpleTdClient::resolveDeferredGroupChat(ChatId chatId)
 
     m_deferredGroupChats.erase(deferred);
     updateChat(chat);
+    if (!lifetime->alive)
+        return true;
     markForumRoomListsReadyIfPossible();
     return true;
 }
 
 void PurpleTdClient::resolveDeferredGroupChats()
 {
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
     std::vector<ChatId> chatIds(
         m_deferredGroupChats.begin(), m_deferredGroupChats.end());
-    for (ChatId chatId : chatIds)
+    for (ChatId chatId : chatIds) {
         resolveDeferredGroupChat(chatId);
+        if (!lifetime->alive)
+            return;
+    }
 }
 
 void PurpleTdClient::markForumRoomListsReadyIfPossible()
@@ -1321,6 +1381,11 @@ void PurpleTdClient::updateChat(const td::td_api::chat *chat)
 {
     if (!chat) return;
 
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
+    const ContinuationGuard canContinue =
+        [lifetime]() {
+            return lifetime->alive;
+        };
     const td::td_api::user *privateChatUser = m_data.getUserByPrivateChat(*chat);
     BasicGroupId            basicGroupId    = getBasicGroupId(*chat);
     SupergroupId            supergroupId    = getSupergroupId(*chat);
@@ -1355,11 +1420,17 @@ void PurpleTdClient::updateChat(const td::td_api::chat *chat)
         // purple_blist_find_chat doesn't work if account is not connected
         if (basicGroupId.valid()) {
             requestBasicGroupFullInfo(basicGroupId);
-            updateBasicGroupChat(m_data, basicGroupId);
+            updateBasicGroupChat(
+                m_data, basicGroupId, canContinue);
+            if (!lifetime->alive)
+                return;
         }
         if (supergroupId.valid()) {
             requestSupergroupFullInfo(supergroupId);
-            updateSupergroupChat(m_data, supergroupId);
+            updateSupergroupChat(
+                m_data, supergroupId, canContinue);
+            if (!lifetime->alive)
+                return;
         }
     } else {
         if (basicGroupId.valid() || supergroupId.valid())
@@ -1413,9 +1484,15 @@ void PurpleTdClient::addChat(td::td_api::object_ptr<td::td_api::chat> chat)
 
     purple_debug_misc(config::pluginId, "Add chat: '%s'\n", chat->title_.c_str());
     ChatId chatId = getId(*chat);
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
     m_data.addChat(std::move(chat));
     updateChat(m_data.getChat(chatId));
+    if (!lifetime->alive)
+        return;
     retryExpectedForumTopicJoins(chatId);
+    if (!lifetime->alive)
+        return;
+    projectForumTopics(chatId);
 }
 
 void PurpleTdClient::handleUserChatAction(const td::td_api::updateChatAction &updateChatAction)
@@ -1800,6 +1877,11 @@ bool PurpleTdClient::joinForumTopic(ChatTarget target)
 void PurpleTdClient::completeForumTopicJoin(
     const ForumTopicLookupResult &result)
 {
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
+    const ContinuationGuard canContinue =
+        [lifetime]() {
+            return lifetime->alive;
+        };
     const ChatTarget target = result.target;
     auto pending = m_pendingForumTopicJoins.find(target);
     if (pending == m_pendingForumTopicJoins.end())
@@ -1848,19 +1930,21 @@ void PurpleTdClient::completeForumTopicJoin(
         return;
     }
 
-    const std::string topicName = topic->name.empty()
-        ? formatMessage(_("Topic {}"), target.forumTopicId().value())
-        : topic->name;
     const std::string displayTitle =
-        parent->title_ + " / " + topicName;
+        getForumTopicDisplayTitle(*parent, *topic);
     if (bookmark) {
         const char *bookmarkTitle = purple_chat_get_name(bookmark);
         if (!bookmarkTitle || displayTitle != bookmarkTitle)
             purple_blist_alias_chat(bookmark, displayTitle.c_str());
+        if (!lifetime->alive)
+            return;
     }
 
     PurpleConvChat *conversation = getChatConversation(
-        m_data, *parent, target, purpleId, displayTitle);
+        m_data, *parent, target, purpleId, displayTitle,
+        canContinue);
+    if (!lifetime->alive)
+        return;
     if (!conversation) {
         m_data.deactivateForumTopic(target);
         failForumTopicJoin(target);
@@ -1874,6 +1958,14 @@ void PurpleTdClient::completeForumTopicJoin(
     if (!currentTitle || displayTitle != currentTitle)
         purple_conversation_set_title(
             baseConversation, displayTitle.c_str());
+    if (!lifetime->alive)
+        return;
+    baseConversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            getPurpleChatName(target).c_str(), m_account);
+    if (!baseConversation)
+        return;
     purple_conversation_present(baseConversation);
 }
 
@@ -1895,6 +1987,7 @@ void PurpleTdClient::failForumTopicJoin(ChatTarget target)
 
 void PurpleTdClient::failForumTopicJoins(ChatId chatId)
 {
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
     pruneAbandonedForumTopicJoins(chatId);
 
     std::set<ChatTarget> failedTargets;
@@ -1918,6 +2011,8 @@ void PurpleTdClient::failForumTopicJoins(ChatId chatId)
     for (ChatTarget target : failedTargets) {
         m_data.removeExpectedChat(target);
         failForumTopicJoin(target);
+        if (!lifetime->alive)
+            return;
     }
 }
 
@@ -1955,6 +2050,7 @@ void PurpleTdClient::pruneAbandonedForumTopicJoins(ChatId chatId)
 
 void PurpleTdClient::retryExpectedForumTopicJoins(ChatId chatId)
 {
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
     pruneAbandonedForumTopicJoins(chatId);
 
     std::vector<ChatTarget> targets;
@@ -1986,8 +2082,139 @@ void PurpleTdClient::retryExpectedForumTopicJoins(ChatId chatId)
         return;
     }
 
-    for (ChatTarget target : targets)
+    for (ChatTarget target : targets) {
         joinForumTopic(target);
+        if (!lifetime->alive)
+            return;
+    }
+}
+
+void PurpleTdClient::projectForumTopic(ChatTarget target)
+{
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
+    if (!isChildForumTopic(target))
+        return;
+
+    const TdAccountData::ForumTopicState *topic =
+        m_data.findForumTopic(target);
+    const td::td_api::chat *parent =
+        m_data.getChat(target.chatId());
+    const bool parentEligible =
+        parent && isEligibleForumParent(m_data, *parent);
+    if (topic && topic->metadataKnown && !parentEligible) {
+        m_data.invalidateForumTopicMetadata(
+            target, m_data.reserveForumTopicGeneration());
+    }
+    const bool available =
+        topic && topic->metadataKnown && !topic->deleted &&
+        parentEligible;
+
+    const std::string purpleName = getPurpleChatName(target);
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT, purpleName.c_str(), m_account);
+    PurpleChat *bookmark = nullptr;
+    if (purple_account_is_connected(m_account)) {
+        bookmark = purple_blist_find_chat(
+            m_account, purpleName.c_str());
+        m_data.setForumTopicSaved(target, bookmark != nullptr);
+    }
+    if (!available) {
+        m_data.deactivateForumTopic(target);
+        if (conversation) {
+            PurpleConvChat *chat =
+                purple_conversation_get_chat_data(conversation);
+            if (chat && !purple_conv_chat_has_left(chat)) {
+                PurpleConnection *connection =
+                    purple_account_get_connection(m_account);
+                const int32_t purpleId =
+                    purple_conv_chat_get_id(chat);
+                if (connection &&
+                    purple_find_chat(connection, purpleId) ==
+                        conversation) {
+                    serv_got_chat_left(connection, purpleId);
+                } else {
+                    // A stale numeric ID can point at another room. Leave the
+                    // exact named conversation directly in that rare case.
+                    purple_conv_chat_left(chat);
+                }
+            }
+        }
+        return;
+    }
+
+    const std::string displayTitle =
+        getForumTopicDisplayTitle(*parent, *topic);
+
+    if (bookmark) {
+        const char *bookmarkTitle =
+            purple_chat_get_name(bookmark);
+        if (!bookmarkTitle || displayTitle != bookmarkTitle)
+            purple_blist_alias_chat(
+                bookmark, displayTitle.c_str());
+        if (!lifetime->alive)
+            return;
+        conversation =
+            purple_find_conversation_with_account(
+                PURPLE_CONV_TYPE_CHAT,
+                purpleName.c_str(), m_account);
+    }
+
+    if (conversation) {
+        const char *currentTitle =
+            purple_conversation_get_title(conversation);
+        if (!currentTitle || displayTitle != currentTitle)
+            purple_conversation_set_title(
+                conversation, displayTitle.c_str());
+    }
+}
+
+void PurpleTdClient::suspendForumTopics(ChatId chatId)
+{
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
+    failForumTopicJoins(chatId);
+    if (!lifetime->alive)
+        return;
+
+    std::vector<const TdAccountData::ForumTopicState *> topics;
+    m_data.getForumTopics(chatId, topics);
+    const uint64_t generation =
+        m_data.reserveForumTopicGeneration();
+    for (const TdAccountData::ForumTopicState *topic : topics) {
+        if (!topic || topic->isGeneral())
+            continue;
+
+        const ChatTarget target = topic->target;
+        m_data.invalidateForumTopicMetadata(
+            target, generation);
+        projectForumTopic(target);
+        if (!lifetime->alive)
+            return;
+    }
+}
+
+void PurpleTdClient::projectForumTopics(ChatId chatId)
+{
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
+    const td::td_api::chat *parent =
+        m_data.getChat(chatId);
+    if (!parent) {
+        suspendForumTopics(chatId);
+        return;
+    }
+    if (!isEligibleForumParent(m_data, *parent)) {
+        suspendForumTopics(chatId);
+        return;
+    }
+
+    std::vector<const TdAccountData::ForumTopicState *> topics;
+    m_data.getForumTopics(chatId, topics);
+    for (const TdAccountData::ForumTopicState *topic : topics) {
+        if (topic)
+            projectForumTopic(topic->target);
+        if (!lifetime->alive)
+            return;
+    }
 }
 
 void PurpleTdClient::closeConversation(const char *conversationName)

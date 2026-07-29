@@ -180,7 +180,8 @@ PurpleConversation *getImConversation(PurpleAccount *account, const char *userna
 
 PurpleConvChat *getChatConversation(
     TdAccountData &account, const td::td_api::chat &chat,
-    ChatTarget target, int chatPurpleId, const std::string &displayTitle)
+    ChatTarget target, int chatPurpleId, const std::string &displayTitle,
+    const ContinuationGuard &canContinue)
 {
     if (!target.valid() || target.chatId() != getId(chat))
         return NULL;
@@ -207,6 +208,8 @@ PurpleConvChat *getChatConversation(
             purple_debug_misc(config::pluginId, "Creating conversation for chat %s (purple id %d)\n",
                               chat.title_.c_str(), chatPurpleId);
             serv_got_joined_chat(purple_account_get_connection(account.purpleAccount), chatPurpleId, chatName.c_str());
+            if (canContinue && !canContinue())
+                return NULL;
             conv = purple_find_conversation_with_account(PURPLE_CONV_TYPE_CHAT, chatName.c_str(),
                                                          account.purpleAccount);
             if (conv == NULL)
@@ -222,6 +225,13 @@ PurpleConvChat *getChatConversation(
                         displayTitle.empty() ? chat.title_ : displayTitle;
                     purple_debug_misc(config::pluginId, "Setting conversation title to '%s'\n", title.c_str());
                     purple_conversation_set_title(conv, title.c_str());
+                    if (canContinue && !canContinue())
+                        return NULL;
+                    conv = purple_find_conversation_with_account(
+                        PURPLE_CONV_TYPE_CHAT, chatName.c_str(),
+                        account.purpleAccount);
+                    if (!conv)
+                        return NULL;
                 }
                 newChatCreated = true;
             }
@@ -381,7 +391,8 @@ void updatePrivateChat(TdAccountData &account, const td::td_api::chat *chat, con
 
 static void updateGroupChat(TdAccountData &account, const td::td_api::chat &chat,
                             const td::td_api::object_ptr<td::td_api::ChatMemberStatus> &groupStatus,
-                            const char *groupType, const std::string &groupId)
+                            const char *groupType, const std::string &groupId,
+                            const ContinuationGuard &canContinue)
 {
     if (!isGroupMember(groupStatus)) {
         purpleDebug("Skipping {} {} because we are not a member", {std::string(groupType), groupId});
@@ -394,11 +405,23 @@ static void updateGroupChat(TdAccountData &account, const td::td_api::chat &chat
         purpleDebug("Adding new chat for {} {} ({})", {std::string(groupType), groupId, chat.title_});
         purpleChat = purple_chat_new(account.purpleAccount, chat.title_.c_str(), getChatComponents(chat));
         purple_blist_add_chat(purpleChat, NULL, NULL);
+        if (canContinue && !canContinue())
+            return;
+        purpleChat = purple_blist_find_chat(
+            account.purpleAccount, chatName.c_str());
+        if (!purpleChat)
+            return;
     } else {
         const char *oldName = purple_chat_get_name(purpleChat);
         if (chat.title_ != oldName) {
             purple_debug_misc(config::pluginId, "Renaming chat '%s' to '%s'\n", oldName, chat.title_.c_str());
             purple_blist_alias_chat(purpleChat, chat.title_.c_str());
+            if (canContinue && !canContinue())
+                return;
+            purpleChat = purple_blist_find_chat(
+                account.purpleAccount, chatName.c_str());
+            if (!purpleChat)
+                return;
         }
     }
 
@@ -409,6 +432,8 @@ static void updateGroupChat(TdAccountData &account, const td::td_api::chat &chat
             purple_debug_misc(config::pluginId, "Rejoining chat %s as previously requested\n", chatName.c_str());
             serv_got_joined_chat(purple_account_get_connection(account.purpleAccount),
                                  account.getPurpleChatId(getId(chat)), chatName.c_str());
+            if (canContinue && !canContinue())
+                return;
         }
         account.removeExpectedChat(getId(chat));
     }
@@ -444,7 +469,9 @@ static void updateGroupChat(TdAccountData &account, const td::td_api::chat &chat
     }
 }
 
-void updateBasicGroupChat(TdAccountData &account, BasicGroupId groupId)
+void updateBasicGroupChat(
+    TdAccountData &account, BasicGroupId groupId,
+    const ContinuationGuard &canContinue)
 {
     const td::td_api::basicGroup *group = account.getBasicGroup(groupId);
     const td::td_api::chat       *chat  = account.getBasicGroupChatByGroup(groupId);
@@ -454,10 +481,14 @@ void updateBasicGroupChat(TdAccountData &account, BasicGroupId groupId)
     else if (!chat)
         purpleDebug("Chat for basic group {} does not exist yet\n", groupId.value());
     else
-        updateGroupChat(account, *chat, group->status_, "basic group", std::to_string(groupId.value()));
+        updateGroupChat(
+            account, *chat, group->status_, "basic group",
+            std::to_string(groupId.value()), canContinue);
 }
 
-void updateSupergroupChat(TdAccountData &account, SupergroupId groupId)
+void updateSupergroupChat(
+    TdAccountData &account, SupergroupId groupId,
+    const ContinuationGuard &canContinue)
 {
     const td::td_api::supergroup *group = account.getSupergroup(groupId);
     const td::td_api::chat       *chat  = account.getSupergroupChatByGroup(groupId);
@@ -467,7 +498,9 @@ void updateSupergroupChat(TdAccountData &account, SupergroupId groupId)
     else if (!chat)
         purpleDebug("Chat for supergroup {} does not exist yet\n", groupId.value());
     else
-        updateGroupChat(account, *chat, group->status_, "supergroup", std::to_string(groupId.value()));
+        updateGroupChat(
+            account, *chat, group->status_, "supergroup",
+            std::to_string(groupId.value()), canContinue);
 }
 
 bool isInviteLinkActive(const td::td_api::chatInviteLink &linkInfo)

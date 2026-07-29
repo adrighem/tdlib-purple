@@ -101,10 +101,12 @@ class ForumTopicsAdapterCore:
 public:
     ForumTopicsAdapterCore(ForumTopicsAdapter *adapter,
                            TdTransceiver &transceiver,
-                           TdAccountData &account)
+                           TdAccountData &account,
+                           ForumTopicChangedCallback topicChanged)
         : m_adapter(adapter),
           m_transceiver(transceiver),
-          m_account(account)
+          m_account(account),
+          m_topicChanged(std::move(topicChanged))
     {}
 
     TdTransceiver &transceiver() { return m_transceiver; }
@@ -121,13 +123,14 @@ public:
         ChatTarget target, ForumTopicLookupCallback callback);
     void cancelForumTopicLookup(ChatTarget target);
     void finish(std::shared_ptr<RoomListSession> session);
-    const TdAccountData::ForumTopicState *upsertMetadata(
+    TdAccountData::ForumTopicUpsertResult upsertMetadata(
         const ForumTopicMetadata &metadata, uint64_t generation);
     void completeTopicLookupIfAvailable(
         const TdAccountData::ForumTopicState &topic);
     void reconcileTopicLookups(
         ChatId chatId, const std::set<ChatTarget> &seenTargets,
         uint64_t generation);
+    void notifyTopicChanged(ChatTarget target);
     bool findForumParent(ChatId chatId, const td::td_api::chat *&chat) const;
 
 private:
@@ -154,10 +157,10 @@ private:
     void completeTopicLookup(
         ChatTarget target, uint64_t serial,
         ForumTopicLookupStatus status, int32_t tdlibErrorCode = 0);
-
     ForumTopicsAdapter *m_adapter;
     TdTransceiver &m_transceiver;
     TdAccountData &m_account;
+    ForumTopicChangedCallback m_topicChanged;
     bool m_roomListsReady = false;
     bool m_shuttingDown = false;
     std::map<PurpleRoomlist *, std::shared_ptr<RoomListSession>> m_sessions;
@@ -280,6 +283,7 @@ void ForumTopicsAdapterCore::shutdown()
         return;
 
     m_shuttingDown = true;
+    m_topicChanged = ForumTopicChangedCallback();
     std::vector<PurpleRoomlist *> roomLists;
     roomLists.reserve(m_sessions.size());
     for (const auto &entry : m_sessions) {
@@ -312,14 +316,24 @@ bool ForumTopicsAdapterCore::findForumParent(
     return supergroup && supergroup->is_forum_;
 }
 
-const TdAccountData::ForumTopicState *
+TdAccountData::ForumTopicUpsertResult
 ForumTopicsAdapterCore::upsertMetadata(
     const ForumTopicMetadata &metadata, uint64_t generation)
 {
-    const TdAccountData::ForumTopicUpsertResult result =
-        m_account.upsertForumTopic(metadata.target, metadata.name,
-                                  metadata.closed, metadata.hidden, generation);
-    return result.state;
+    return m_account.upsertForumTopic(
+        metadata.target, metadata.name,
+        metadata.closed, metadata.hidden, generation);
+}
+
+void ForumTopicsAdapterCore::notifyTopicChanged(
+    ChatTarget target)
+{
+    if (m_shuttingDown)
+        return;
+
+    const ForumTopicChangedCallback callback = m_topicChanged;
+    if (callback)
+        callback(target);
 }
 
 void ForumTopicsAdapterCore::processUpdate(
@@ -332,16 +346,25 @@ void ForumTopicsAdapterCore::processUpdate(
     if (!adaptForumTopicInfo(*update.info_, metadata))
         return;
 
-    const TdAccountData::ForumTopicState *topic =
+    const TdAccountData::ForumTopicUpsertResult upsert =
         upsertMetadata(
             metadata, m_account.reserveForumTopicGeneration());
+    const TdAccountData::ForumTopicState *topic = upsert.state;
     if (!topic || topic->isGeneral())
         return;
+    const ChatTarget target = topic->target;
 
-    for (const std::shared_ptr<RoomListSession> &session : sessionSnapshot())
+    for (const std::shared_ptr<RoomListSession> &session : sessionSnapshot()) {
         session->projectTopic(*topic);
+        if (m_shuttingDown)
+            return;
+    }
 
     completeTopicLookupIfAvailable(*topic);
+    if (m_shuttingDown)
+        return;
+    if (upsert.applied)
+        notifyTopicChanged(target);
 }
 
 void ForumTopicsAdapterCore::completeTopicLookupIfAvailable(
@@ -511,15 +534,20 @@ void ForumTopicsAdapterCore::handleTopicLookup(
     }
 
     const uint64_t generation = pending->second.metadataGeneration;
-    upsertMetadata(metadata, generation);
+    const TdAccountData::ForumTopicUpsertResult upsert =
+        upsertMetadata(metadata, generation);
 
     const TdAccountData::ForumTopicState *topic =
-        m_account.findForumTopic(target);
+        upsert.state;
     const td::td_api::chat *parent = nullptr;
     if (topic && topic->metadataKnown && !topic->deleted &&
         findForumParent(target.chatId(), parent)) {
         completeTopicLookup(
             target, serial, ForumTopicLookupStatus::Available);
+        if (m_shuttingDown)
+            return;
+        if (upsert.applied)
+            notifyTopicChanged(target);
     } else {
         completeTopicLookup(
             target, serial, ForumTopicLookupStatus::Superseded);
@@ -552,6 +580,8 @@ void ForumTopicsAdapterCore::completeTopicLookup(
     for (const ForumTopicLookupCallback &callback : callbacks) {
         if (callback)
             callback(result);
+        if (m_shuttingDown)
+            break;
     }
 }
 
@@ -755,11 +785,22 @@ void RoomListSession::handlePage(
             continue;
         }
         m_seenTargets.insert(metadata.target);
-        const TdAccountData::ForumTopicState *storedTopic =
+        const TdAccountData::ForumTopicUpsertResult upsert =
             owner->upsertMetadata(metadata, metadataGeneration);
+        const TdAccountData::ForumTopicState *storedTopic =
+            upsert.state;
         if (storedTopic) {
+            const ChatTarget target = storedTopic->target;
             projectTopic(*storedTopic);
+            if (!m_active || owner->shuttingDown())
+                return;
             owner->completeTopicLookupIfAvailable(*storedTopic);
+            if (!m_active || owner->shuttingDown())
+                return;
+            if (upsert.applied)
+                owner->notifyTopicChanged(target);
+            if (!m_active || owner->shuttingDown())
+                return;
         }
         if (!m_active)
             return;
@@ -775,10 +816,18 @@ void RoomListSession::handlePage(
 
     if (page.topics_.empty()) {
         if (m_reconciliationSafe) {
-            owner->account().reconcileForumTopics(
-                chatId, m_seenTargets, metadataGeneration);
+            const std::vector<ChatTarget> tombstoned =
+                owner->account().reconcileForumTopics(
+                    chatId, m_seenTargets, metadataGeneration);
             owner->reconcileTopicLookups(
                 chatId, m_seenTargets, metadataGeneration);
+            if (!m_active || owner->shuttingDown())
+                return;
+            for (ChatTarget target : tombstoned) {
+                owner->notifyTopicChanged(target);
+                if (!m_active || owner->shuttingDown())
+                    return;
+            }
             if (!m_active)
                 return;
         } else {
@@ -855,17 +904,20 @@ bool adaptForumTopicInfo(const td::td_api::forumTopicInfo &info,
 
 struct ForumTopicsAdapter::Impl {
     Impl(ForumTopicsAdapter *adapter, TdTransceiver &transceiver,
-         TdAccountData &account)
+         TdAccountData &account,
+         ForumTopicChangedCallback topicChanged)
         : core(std::make_shared<ForumTopicsAdapterCore>(
-              adapter, transceiver, account))
+              adapter, transceiver, account, std::move(topicChanged)))
     {}
 
     std::shared_ptr<ForumTopicsAdapterCore> core;
 };
 
 ForumTopicsAdapter::ForumTopicsAdapter(
-    TdTransceiver &transceiver, TdAccountData &account)
-    : m_impl(new Impl(this, transceiver, account))
+    TdTransceiver &transceiver, TdAccountData &account,
+    ForumTopicChangedCallback topicChanged)
+    : m_impl(new Impl(
+          this, transceiver, account, std::move(topicChanged)))
 {}
 
 ForumTopicsAdapter::~ForumTopicsAdapter()

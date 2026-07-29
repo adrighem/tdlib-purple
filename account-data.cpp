@@ -872,23 +872,26 @@ uint64_t TdAccountData::reserveForumTopicGeneration()
     return m_forumTopicGeneration;
 }
 
-void TdAccountData::tombstoneForumTopic(
+bool TdAccountData::tombstoneForumTopic(
     ForumTopicState &topic, uint64_t generation)
 {
     if (generation <= topic.metadataGeneration)
-        return;
+        return false;
 
+    const bool changed = !topic.deleted || topic.active;
     topic.deleted = true;
     topic.active = false;
     topic.metadataGeneration = generation;
+    return changed;
 }
 
-void TdAccountData::reconcileForumTopics(
+std::vector<ChatTarget> TdAccountData::reconcileForumTopics(
     ChatId chatId, const std::set<ChatTarget> &seenTargets,
     uint64_t generation)
 {
+    std::vector<ChatTarget> tombstoned;
     if (!chatId.valid())
-        return;
+        return tombstoned;
     if (generation > m_forumTopicGeneration)
         m_forumTopicGeneration = generation;
 
@@ -899,8 +902,10 @@ void TdAccountData::reconcileForumTopics(
             continue;
         }
 
-        tombstoneForumTopic(topic, generation);
+        if (tombstoneForumTopic(topic, generation))
+            tombstoned.push_back(topic.target);
     }
+    return tombstoned;
 }
 
 TdAccountData::ForumTopicState *TdAccountData::findForumTopicMutable(

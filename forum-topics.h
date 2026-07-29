@@ -57,10 +57,14 @@ struct ForumTopicLookupResult {
 
 using ForumTopicLookupCallback =
     std::function<void(const ForumTopicLookupResult &)>;
+using ForumTopicChangedCallback =
+    std::function<void(ChatTarget)>;
 
 class ForumTopicsAdapter {
 public:
-    ForumTopicsAdapter(TdTransceiver &transceiver, TdAccountData &account);
+    ForumTopicsAdapter(
+        TdTransceiver &transceiver, TdAccountData &account,
+        ForumTopicChangedCallback topicChanged = ForumTopicChangedCallback());
     ~ForumTopicsAdapter();
 
     ForumTopicsAdapter(const ForumTopicsAdapter &) = delete;

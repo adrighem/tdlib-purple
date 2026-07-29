@@ -437,7 +437,7 @@ public:
                                       ChatTarget target,
                                       uint64_t generation);
     uint64_t                      reserveForumTopicGeneration();
-    void                          reconcileForumTopics(
+    std::vector<ChatTarget>       reconcileForumTopics(
                                       ChatId chatId,
                                       const std::set<ChatTarget> &seenTargets,
                                       uint64_t generation);
@@ -593,7 +593,7 @@ private:
     std::unique_ptr<PendingRequest> getPendingRequestImpl(uint64_t requestId);
     PendingRequest *                findPendingRequestImpl(uint64_t requestId);
     ForumTopicState *               findForumTopicMutable(ChatTarget target);
-    void                            tombstoneForumTopic(ForumTopicState &topic,
+    bool                            tombstoneForumTopic(ForumTopicState &topic,
                                                         uint64_t generation);
     int32_t                         allocatePurpleChatId();
     int32_t                         allocateForumTopicPurpleId(ForumTopicState &topic);

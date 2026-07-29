@@ -1295,6 +1295,14 @@ PurpleConversation *serv_got_joined_chat(PurpleConnection *gc,
     return conv;
 }
 
+void serv_got_chat_left(PurpleConnection *gc, int id)
+{
+    PurpleConversation *conversation = purple_find_chat(gc, id);
+    if (conversation)
+        purple_conv_chat_left(
+            purple_conversation_get_chat_data(conversation));
+}
+
 void serv_got_typing(PurpleConnection *gc, const char *name, int timeout,
 					 PurpleTypingState state)
 {
