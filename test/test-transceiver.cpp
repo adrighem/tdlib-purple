@@ -123,15 +123,55 @@ void compare(const inputMessageDocument &actual, const inputMessageDocument &exp
     COMPARE(caption_ != nullptr);
 }
 
+static void compare(const MessageTopic &actual, const MessageTopic &expected)
+{
+    ASSERT_EQ(expected.get_id(), actual.get_id());
+    switch (expected.get_id()) {
+    case messageTopicThread::ID:
+        ASSERT_EQ(
+            static_cast<const messageTopicThread &>(expected).message_thread_id_,
+            static_cast<const messageTopicThread &>(actual).message_thread_id_
+        );
+        break;
+    case messageTopicForum::ID:
+        ASSERT_EQ(
+            static_cast<const messageTopicForum &>(expected).forum_topic_id_,
+            static_cast<const messageTopicForum &>(actual).forum_topic_id_
+        );
+        break;
+    case messageTopicDirectMessages::ID:
+        ASSERT_EQ(
+            static_cast<const messageTopicDirectMessages &>(expected).direct_messages_chat_topic_id_,
+            static_cast<const messageTopicDirectMessages &>(actual).direct_messages_chat_topic_id_
+        );
+        break;
+    case messageTopicSavedMessages::ID:
+        ASSERT_EQ(
+            static_cast<const messageTopicSavedMessages &>(expected).saved_messages_topic_id_,
+            static_cast<const messageTopicSavedMessages &>(actual).saved_messages_topic_id_
+        );
+        break;
+    }
+}
+
 void compare(const viewMessages &actual, const viewMessages &expected)
 {
     COMPARE(chat_id_);
+    COMPARE(message_ids_);
+    COMPARE(source_ != nullptr);
+    if (actual.source_ != nullptr) {
+        ASSERT_EQ(expected.source_->get_id(), actual.source_->get_id());
+    }
     COMPARE(force_read_);
 }
 
 void compare(const sendMessage &actual, const sendMessage &expected)
 {
     COMPARE(chat_id_);
+    COMPARE(topic_id_ != nullptr);
+    if (actual.topic_id_ != nullptr) {
+        compare(*actual.topic_id_, *expected.topic_id_);
+    }
     COMPARE(reply_to_ != nullptr);
     COMPARE(input_message_content_ != nullptr);
     if (actual.input_message_content_ != nullptr) {
@@ -167,6 +207,31 @@ void compare(const getMessage &actual, const getMessage &expected)
 {
     COMPARE(chat_id_);
     COMPARE(message_id_);
+}
+
+void compare(const getForumTopic &actual, const getForumTopic &expected)
+{
+    COMPARE(chat_id_);
+    COMPARE(forum_topic_id_);
+}
+
+void compare(const getForumTopics &actual, const getForumTopics &expected)
+{
+    COMPARE(chat_id_);
+    COMPARE(query_);
+    COMPARE(offset_date_);
+    COMPARE(offset_message_id_);
+    COMPARE(offset_forum_topic_id_);
+    COMPARE(limit_);
+}
+
+void compare(const getForumTopicHistory &actual, const getForumTopicHistory &expected)
+{
+    COMPARE(chat_id_);
+    COMPARE(forum_topic_id_);
+    COMPARE(from_message_id_);
+    COMPARE(offset_);
+    COMPARE(limit_);
 }
 
 void compare(const sendChatAction &actual, const sendChatAction &expected)
@@ -263,6 +328,9 @@ void compare_func(const td::td_api::Function &actual, const td::td_api::Function
         C(getBasicGroupFullInfo)
         C(joinChatByInviteLink)
         C(getMessage)
+        C(getForumTopic)
+        C(getForumTopics)
+        C(getForumTopicHistory)
         C(sendChatAction)
         C(addProxy)
         C(addContact)
@@ -665,6 +733,38 @@ std::string TestTransceiver::addInputPhoto(const void *data, size_t size)
     std::string path = "/tmp/test_photo_" + std::to_string(m_inputPhotoPaths.size());
     m_inputPhotoPaths.push_back(path);
     return path;
+}
+
+TEST(TestTransceiverHarness, MockSendMessagePreservesTypedTopic)
+{
+    auto request = Mock_SendMessage(
+        123,
+        make_object<messageTopicForum>(42),
+        nullptr,
+        nullptr,
+        nullptr
+    );
+
+    ASSERT_NE(nullptr, request->topic_id_);
+    ASSERT_EQ(messageTopicForum::ID, request->topic_id_->get_id());
+    EXPECT_EQ(
+        42,
+        static_cast<const messageTopicForum &>(*request->topic_id_).forum_topic_id_
+    );
+}
+
+TEST(TestTransceiverHarness, MockViewMessagesPreservesSource)
+{
+    auto request = Mock_ViewMessages(
+        123,
+        {10, 11},
+        true,
+        make_object<messageSourceForumTopicHistory>()
+    );
+
+    EXPECT_EQ((std::vector<int64_t>{10, 11}), request->message_ids_);
+    ASSERT_NE(nullptr, request->source_);
+    EXPECT_EQ(messageSourceForumTopicHistory::ID, request->source_->get_id());
 }
 
 }

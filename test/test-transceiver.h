@@ -12,9 +12,16 @@
 namespace td {
 namespace td_api {
 
-// Backward-compatible helpers for TDLib 1.8.64
-inline object_ptr<viewMessages> Mock_ViewMessages(int64_t chat_id, std::vector<int64_t> message_ids, bool force_read) {
-    return make_object<td::td_api::viewMessages>(chat_id, std::move(message_ids), nullptr, force_read);
+// Helpers for constructing requests against the pinned TDLib schema.
+inline object_ptr<viewMessages> Mock_ViewMessages(
+    int64_t chat_id,
+    std::vector<int64_t> message_ids,
+    bool force_read,
+    object_ptr<MessageSource> &&source = nullptr)
+{
+    return make_object<td::td_api::viewMessages>(
+        chat_id, std::move(message_ids), std::move(source), force_read
+    );
 }
 
 inline object_ptr<inputMessageText> Mock_InputMessageText(object_ptr<formattedText> &&text, bool clear_draft = false) {
@@ -45,11 +52,17 @@ inline object_ptr<inputMessageDocument> Mock_InputMessageDocument(object_ptr<Inp
     );
 }
 
-inline object_ptr<sendMessage> Mock_SendMessage(int64_t chat_id, int64_t message_thread_id,
-                                          object_ptr<InputMessageReplyTo> &&reply_to,
-                                          object_ptr<messageSendOptions> &&options,
-                                          object_ptr<InputMessageContent> &&content) {
-    return make_object<td::td_api::sendMessage>(chat_id, nullptr, std::move(reply_to), std::move(options), nullptr, std::move(content));
+inline object_ptr<sendMessage> Mock_SendMessage(
+    int64_t chat_id,
+    object_ptr<MessageTopic> &&topic_id,
+    object_ptr<InputMessageReplyTo> &&reply_to,
+    object_ptr<messageSendOptions> &&options,
+    object_ptr<InputMessageContent> &&content)
+{
+    return make_object<td::td_api::sendMessage>(
+        chat_id, std::move(topic_id), std::move(reply_to), std::move(options), nullptr,
+        std::move(content)
+    );
 }
 
 inline object_ptr<sendChatAction> Mock_SendChatAction(int64_t chat_id, object_ptr<ChatAction> &&action) {

@@ -106,6 +106,9 @@ void CommTest::login(std::vector<object_ptr<Object>> &&extraUpdates,
         case getBasicGroupFullInfo::ID:
         case getSupergroupFullInfo::ID:
         case getSupergroupMembers::ID:
+        case getForumTopic::ID:
+        case getForumTopics::ID:
+        case getForumTopicHistory::ID:
         case viewMessages::ID:
             tgl.verifyRequest(*static_cast<Function *>(item.get()));
             break;
