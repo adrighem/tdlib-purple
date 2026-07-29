@@ -198,6 +198,8 @@ ChatId       getChatId(const td::td_api::updateChatTitle &update);
 ChatId       getChatId(const td::td_api::messageOriginChannel &forwardOrigin);
 ChatId       getChatId(const td::td_api::message &message);
 ChatTarget   getChatTarget(const td::td_api::message &message);
+td::td_api::object_ptr<td::td_api::MessageTopic>
+             makeMessageTopic(ChatTarget target);
 ChatId       getChatId(const td::td_api::updateChatAction &update);
 ChatId       getChatId(const td::td_api::updateChatLastMessage &update);
 

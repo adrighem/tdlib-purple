@@ -197,6 +197,18 @@ bool isEligibleForumParent(
     if (!account.isGroupChatWithMembership(chat))
         return false;
 
+    if (!chat.type_ ||
+        chat.type_->get_id() !=
+            td::td_api::chatTypeSupergroup::ID) {
+        return false;
+    }
+
+    const td::td_api::chatTypeSupergroup &supergroupType =
+        static_cast<const td::td_api::chatTypeSupergroup &>(
+            *chat.type_);
+    if (supergroupType.is_channel_)
+        return false;
+
     const SupergroupId groupId = getSupergroupId(chat);
     const td::td_api::supergroup *group =
         groupId.valid() ? account.getSupergroup(groupId) : nullptr;
@@ -1465,9 +1477,12 @@ static td::td_api::object_ptr<td::td_api::formattedText> makeFormattedText(const
     return result;
 }
 
-int transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiver,
+int transmitMessage(ChatTarget target, const char *message, TdTransceiver &transceiver,
                     TdAccountData &account, TdTransceiver::ResponseCb response)
 {
+    if (!target.valid())
+        return -EINVAL;
+
     std::vector<MessagePart> parts;
     parseMessage(message, parts, account);
     if (parts.size() > MAX_MESSAGE_PARTS)
@@ -1475,7 +1490,10 @@ int transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiv
 
     for (const MessagePart &input: parts) {
         td::td_api::object_ptr<td::td_api::sendMessage> sendMessageRequest = td::td_api::make_object<td::td_api::sendMessage>();
-        sendMessageRequest->chat_id_ = chatId.value();
+        sendMessageRequest->chat_id_ =
+            target.chatId().value();
+        sendMessageRequest->topic_id_ =
+            makeMessageTopic(target);
         char *tempFileName = NULL;
         bool  hasImage     = false;
 
@@ -1498,7 +1516,8 @@ int transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiv
         }
 
         uint64_t requestId = transceiver.sendQuery(std::move(sendMessageRequest), response);
-        account.addPendingRequest<SendMessageRequest>(requestId, chatId, tempFileName);
+        account.addPendingRequest<SendMessageRequest>(
+            requestId, target, tempFileName);
         if (tempFileName)
             g_free(tempFileName);
     }
@@ -1531,21 +1550,6 @@ std::string getDownloadXferPeerName(ChatId chatId,
             return getSecretChatBuddyName(secretChatId);
     }
     return message.incomingGroupchatSender;
-}
-
-void notifySendFailed(const td::td_api::updateMessageSendFailed &sendFailed, TdAccountData &account)
-{
-    if (sendFailed.message_ && sendFailed.error_) {
-        const td::td_api::chat *chat = account.getChat(getChatId(*sendFailed.message_));
-        if (chat) {
-            std::string errorMessage = formatMessage(errorCodeMessage(), {std::to_string(sendFailed.error_->code_),
-                                                     sendFailed.error_->message_});
-            // TRANSLATOR: In-chat error message, argument will be text.
-            errorMessage = formatMessage(_("Failed to send message: {}"), errorMessage);
-            showChatNotification(account, *chat, errorMessage.c_str(), sendFailed.message_->date_,
-                                 (PurpleMessageFlags)0);
-        }
-    }
 }
 
 template<typename T>

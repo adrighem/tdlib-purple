@@ -15,7 +15,8 @@ void writeConversationNotification(
          PurpleConversation *conversation,
          const std::string &notification,
          PurpleMessageFlags extraFlags =
-             static_cast<PurpleMessageFlags>(0));
+             static_cast<PurpleMessageFlags>(0),
+         time_t timestamp = static_cast<time_t>(-1));
 bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const TgMessageInfo &message,
                      const char *text, const char *notification, uint32_t extraFlags = 0);
 PurpleConversation *showMessageTextIm(TdAccountData &account, const char *purpleUserName,

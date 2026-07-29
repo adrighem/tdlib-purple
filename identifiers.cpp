@@ -137,6 +137,17 @@ ChatTarget getChatTarget(const td::td_api::message &message)
     return ChatTarget::forumTopic(chatId, topicId);
 }
 
+td::td_api::object_ptr<td::td_api::MessageTopic>
+makeMessageTopic(ChatTarget target)
+{
+    if (!target.valid() || !target.isForumTopic())
+        return nullptr;
+
+    return td::td_api::make_object<
+        td::td_api::messageTopicForum>(
+            target.forumTopicId().value());
+}
+
 ChatId getChatId(const td::td_api::updateChatAction &update)
 {
     return ChatId(update.chat_id_);

@@ -113,7 +113,8 @@ static void updateDocumentUploadProgress(const td::td_api::file &file, PurpleXfe
             sendMessageRequest->chat_id_ = chatId.value();
 
             uint64_t requestId = transceiver.sendQuery(std::move(sendMessageRequest), sendMessageResponse);
-            account.addPendingRequest<SendMessageRequest>(requestId, chatId, nullptr);
+            account.addPendingRequest<SendMessageRequest>(
+                requestId, ChatTarget::chat(chatId), nullptr);
         }
     } else {
         purple_xfer_cancel_remote(upload);

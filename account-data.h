@@ -103,11 +103,18 @@ public:
 
 class SendMessageRequest: public PendingRequest {
 public:
-    ChatId      chatId;
+    ChatTarget  target;
     std::string tempFile;
 
-    SendMessageRequest(uint64_t requestId, ChatId chatId, const char *tempFile)
-    : PendingRequest(requestId), chatId(chatId), tempFile(tempFile ? tempFile : "") {}
+    SendMessageRequest(
+        uint64_t requestId, ChatTarget target,
+        const char *tempFile)
+    : PendingRequest(requestId),
+      target(target),
+      tempFile(tempFile ? tempFile : "")
+    {}
+
+    ~SendMessageRequest() override;
 };
 
 class UploadRequest: public PendingRequest {
@@ -378,6 +385,18 @@ public:
         UnknownMessage,
     };
 
+    enum class PendingSendLookupResult {
+        NotFound,
+        Found,
+        Ambiguous,
+    };
+
+    struct PendingSendInfo {
+        ChatTarget  target;
+        MessageId   messageId;
+        std::string tempFile;
+    };
+
     struct {
         unsigned maxCaptionLength = 0;
         unsigned maxMessageLength = 0;
@@ -387,6 +406,7 @@ public:
     TdTransceiver        &transceiver;
     TdAccountData(PurpleAccount *purpleAccount, TdTransceiver &transceiver)
     : purpleAccount(purpleAccount), transceiver(transceiver) {}
+    ~TdAccountData();
 
     void updateUser(TdUserPtr user);
     void setUserStatus(UserId UserId, td::td_api::object_ptr<td::td_api::UserStatus> status);
@@ -497,8 +517,18 @@ public:
     }
 
     const ContactRequest *     findContactRequest(UserId userId);
-    void                       addTempFileUpload(int64_t messageId, const std::string &path);
-    std::string                extractTempFileUpload(int64_t messageId);
+    void                       addPendingSend(
+                                      ChatTarget target,
+                                      MessageId messageId,
+                                      std::string tempFile);
+    // On success, ownership of pending.tempFile transfers to the caller.
+    PendingSendLookupResult    extractPendingSend(
+                                      MessageId messageId,
+                                      PendingSendInfo &pending);
+    bool                       extractPendingSend(
+                                      ChatId chatId,
+                                      MessageId messageId,
+                                      PendingSendInfo &pending);
     DownloadRequest *          findDownloadRequest(int32_t fileId);
     void                       extractFileTransferRequests(std::vector<PurpleXfer *> &transfers);
 
@@ -532,8 +562,9 @@ public:
                                       ChatTarget target,
                                       MessageId messageId);
     void                       replaceMessageId(
-                                      ChatId chatId,
+                                      ChatId oldChatId,
                                       MessageId oldMessageId,
+                                      ChatId newChatId,
                                       MessageId newMessageId);
     void                       rememberDisplayedMessage(
                                       ChatTarget target,
@@ -585,11 +616,6 @@ private:
         bool                hasEverBeenForum = false;
     };
 
-    struct SendMessageInfo {
-        int64_t     messageId;
-        std::string tempFile;
-    };
-
     struct FileTransferInfo {
         int32_t     fileId;
         ChatId      chatId;
@@ -631,9 +657,10 @@ private:
 
     std::vector<std::unique_ptr<PendingRequest>> m_requests;
 
-    // Newly sent messages containing inline images, for which a temporary file must be removed when
-    // transfer is completed
-    std::vector<SendMessageInfo>       m_sentMessages;
+    // Pending sends retain their original room independently of any fields
+    // TDLib changes in the final message. Inline-image paths share this
+    // ownership record so they are removed on completion or teardown.
+    std::vector<PendingSendInfo>       m_pendingSends;
 
     // Currently active file transfers for which PurpleXfer is used
     std::vector<FileTransferInfo>      m_fileTransfers;

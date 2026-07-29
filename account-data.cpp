@@ -4,11 +4,26 @@
 #include "format.h"
 #include <purple.h>
 #include <algorithm>
+#include <cstdio>
 #include <ctype.h>
 #include <limits>
 
 // Unknown forum updates fail closed, so evicting old routes cannot misroute them.
 static constexpr size_t MaxMessageRoutesPerChat = 4096;
+
+SendMessageRequest::~SendMessageRequest()
+{
+    if (!tempFile.empty())
+        std::remove(tempFile.c_str());
+}
+
+TdAccountData::~TdAccountData()
+{
+    for (const PendingSendInfo &pending : m_pendingSends) {
+        if (!pending.tempFile.empty())
+            std::remove(pending.tempFile.c_str());
+    }
+}
 
 static bool isCanonicalPhoneNumber(const char *s)
 {
@@ -577,8 +592,18 @@ int32_t TdAccountData::allocateForumTopicPurpleId(ForumTopicState &topic)
 bool TdAccountData::isForumChat(ChatId chatId) const
 {
     const td::td_api::chat *chat = getChat(chatId);
-    if (!chat)
+    if (!chat || !chat->type_ ||
+        chat->type_->get_id() !=
+            td::td_api::chatTypeSupergroup::ID) {
         return false;
+    }
+
+    const td::td_api::chatTypeSupergroup &supergroupType =
+        static_cast<const td::td_api::chatTypeSupergroup &>(
+            *chat->type_);
+    if (supergroupType.is_channel_)
+        return false;
+
     const SupergroupId groupId = getSupergroupId(*chat);
     const td::td_api::supergroup *group = getSupergroup(groupId);
     return group && group->is_forum_;
@@ -1097,27 +1122,77 @@ void TdAccountData::extractFileTransferRequests(std::vector<PurpleXfer *> &trans
     }
 }
 
-void TdAccountData::addTempFileUpload(int64_t messageId, const std::string &path)
+void TdAccountData::addPendingSend(
+    ChatTarget target, MessageId messageId,
+    std::string tempFile)
 {
-    m_sentMessages.emplace_back();
-    m_sentMessages.back().messageId = messageId;
-    m_sentMessages.back().tempFile = path;
-}
-
-std::string TdAccountData::extractTempFileUpload(int64_t messageId)
-{
-    auto it = std::find_if(m_sentMessages.begin(), m_sentMessages.end(),
-                           [messageId](const SendMessageInfo &item) {
-                               return (item.messageId == messageId);
-                           });
-
-    std::string result;
-    if (it != m_sentMessages.end()) {
-        result = it->tempFile;
-        m_sentMessages.erase(it);
+    if (!target.valid() || !messageId.valid()) {
+        if (!tempFile.empty())
+            std::remove(tempFile.c_str());
+        return;
     }
 
-    return result;
+    auto existing = std::find_if(
+        m_pendingSends.begin(), m_pendingSends.end(),
+        [target, messageId](const PendingSendInfo &pending) {
+            return pending.target == target &&
+                   pending.messageId == messageId;
+        });
+    if (existing != m_pendingSends.end()) {
+        if (existing->tempFile.empty()) {
+            existing->tempFile = std::move(tempFile);
+        } else if (!tempFile.empty() &&
+                   existing->tempFile != tempFile) {
+            std::remove(tempFile.c_str());
+        }
+        return;
+    }
+
+    m_pendingSends.push_back(
+        PendingSendInfo{
+            target, messageId, std::move(tempFile)});
+}
+
+TdAccountData::PendingSendLookupResult
+TdAccountData::extractPendingSend(
+    MessageId messageId, PendingSendInfo &pending)
+{
+    pending = PendingSendInfo();
+    auto match = m_pendingSends.end();
+    for (auto it = m_pendingSends.begin();
+         it != m_pendingSends.end(); ++it) {
+        if (it->messageId != messageId)
+            continue;
+        if (match != m_pendingSends.end())
+            return PendingSendLookupResult::Ambiguous;
+        match = it;
+    }
+
+    if (match == m_pendingSends.end())
+        return PendingSendLookupResult::NotFound;
+
+    pending = std::move(*match);
+    m_pendingSends.erase(match);
+    return PendingSendLookupResult::Found;
+}
+
+bool TdAccountData::extractPendingSend(
+    ChatId chatId, MessageId messageId,
+    PendingSendInfo &pending)
+{
+    pending = PendingSendInfo();
+    auto match = std::find_if(
+        m_pendingSends.begin(), m_pendingSends.end(),
+        [chatId, messageId](const PendingSendInfo &item) {
+            return item.target.chatId() == chatId &&
+                   item.messageId == messageId;
+        });
+    if (match == m_pendingSends.end())
+        return false;
+
+    pending = std::move(*match);
+    m_pendingSends.erase(match);
+    return true;
 }
 
 void TdAccountData::addFileTransfer(int32_t fileId, PurpleXfer *xfer, ChatId chatId)
@@ -1276,15 +1351,18 @@ void TdAccountData::rememberMessageTarget(
 }
 
 void TdAccountData::replaceMessageId(
-    ChatId chatId, MessageId oldMessageId,
-    MessageId newMessageId)
+    ChatId oldChatId, MessageId oldMessageId,
+    ChatId newChatId, MessageId newMessageId)
 {
-    if (!chatId.valid() || !oldMessageId.valid() ||
-        !newMessageId.valid() || oldMessageId == newMessageId) {
+    if (!oldChatId.valid() || !newChatId.valid() ||
+        !oldMessageId.valid() ||
+        !newMessageId.valid())
         return;
-    }
+    if (oldChatId == newChatId &&
+        oldMessageId == newMessageId)
+        return;
 
-    auto chatMessages = m_messageRoutes.find(chatId);
+    auto chatMessages = m_messageRoutes.find(oldChatId);
     if (chatMessages == m_messageRoutes.end())
         return;
 
@@ -1293,20 +1371,27 @@ void TdAccountData::replaceMessageId(
     if (oldRecord == messages.end())
         return;
 
-    auto newRecord = messages.find(newMessageId);
-    if (newRecord == messages.end()) {
-        messages[newMessageId] =
-            std::move(oldRecord->second);
+    MessageRouteInfo oldInfo =
+        std::move(oldRecord->second);
+    messages.erase(oldRecord);
+    if (messages.empty())
+        m_messageRoutes.erase(chatMessages);
+
+    MessageRouteMap &newMessages =
+        m_messageRoutes[newChatId];
+    auto newRecord = newMessages.find(newMessageId);
+    if (newRecord == newMessages.end()) {
+        newMessages[newMessageId] =
+            std::move(oldInfo);
+        pruneMessageRoutes(newChatId);
     } else if (
         newRecord->second.conversationType ==
             PURPLE_CONV_TYPE_UNKNOWN &&
         (!newRecord->second.target.valid() ||
          newRecord->second.target ==
-             oldRecord->second.target)) {
-        messages[newMessageId] =
-            std::move(oldRecord->second);
+             oldInfo.target)) {
+        newRecord->second = std::move(oldInfo);
     }
-    messages.erase(oldRecord);
 }
 
 void TdAccountData::rememberDisplayedMessage(

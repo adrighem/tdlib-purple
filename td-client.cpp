@@ -36,6 +36,59 @@ static bool isChildForumTopic(ChatTarget target)
            target.forumTopicId() != ForumTopicId::general();
 }
 
+static bool areEquivalentConversationTargets(
+    ChatTarget first, ChatTarget second)
+{
+    if (first == second)
+        return true;
+    if (!first.valid() || !second.valid() ||
+        first.chatId() != second.chatId()) {
+        return false;
+    }
+
+    return (first.isForumTopic() &&
+            first.forumTopicId() == ForumTopicId::general() &&
+            !second.isForumTopic()) ||
+           (second.isForumTopic() &&
+            second.forumTopicId() == ForumTopicId::general() &&
+            !first.isForumTopic());
+}
+
+static bool hasSafeConversationTargetForSend(
+    PurpleAccount *account, int32_t purpleChatId,
+    ChatTarget expectedTarget)
+{
+    bool hasActiveExactChild = false;
+
+    for (GList *item = purple_get_chats(); item; item = item->next) {
+        PurpleConversation *conversation =
+            static_cast<PurpleConversation *>(item->data);
+        if (!conversation ||
+            purple_conversation_get_account(conversation) != account) {
+            continue;
+        }
+
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(conversation);
+        if (!chat || purple_conv_chat_get_id(chat) != purpleChatId)
+            continue;
+
+        const ChatTarget nameTarget = parsePurpleChatName(
+            purple_conversation_get_name(conversation));
+        if (!areEquivalentConversationTargets(
+                nameTarget, expectedTarget)) {
+            return false;
+        }
+        if (isChildForumTopic(expectedTarget) &&
+            !purple_conv_chat_has_left(chat)) {
+            hasActiveExactChild = true;
+        }
+    }
+
+    return !isChildForumTopic(expectedTarget) ||
+           hasActiveExactChild;
+}
+
 static bool hasChildForumConversation(
     PurpleAccount *account, int32_t purpleChatId)
 {
@@ -52,10 +105,10 @@ static bool hasChildForumConversation(
         if (!chat || purple_conv_chat_get_id(chat) != purpleChatId)
             continue;
 
-        const ChatTarget nameTarget = parsePurpleChatName(
-            purple_conversation_get_name(conversation));
-        if (isChildForumTopic(nameTarget))
+        if (isChildForumTopic(parsePurpleChatName(
+                purple_conversation_get_name(conversation)))) {
             return true;
+        }
     }
 
     return false;
@@ -104,6 +157,17 @@ static std::string deletedMessagesNotice(
     return formatMessage(
         _("Deleted message(s): {}"),
         messageIdsToString(messageIds));
+}
+
+static std::string sendFailureNotice(
+    const td::td_api::error &error)
+{
+    const std::string detail = formatMessage(
+        errorCodeMessage(),
+        {std::to_string(error.code_), error.message_});
+    // TRANSLATOR: In-chat error message, argument is a Telegram error.
+    return formatMessage(
+        _("Failed to send message: {}"), detail);
 }
 
 static std::string reactionTypeToString(const td::td_api::ReactionType *reaction)
@@ -322,24 +386,76 @@ bool PurpleTdClient::showDeletedMessageUpdate(
     return true;
 }
 
-void PurpleTdClient::replacePendingMessageId(
+bool PurpleTdClient::showTargetNotification(
+    ChatTarget target, const std::string &message,
+    time_t timestamp, PurpleMessageFlags extraFlags)
+{
+    if (!target.valid())
+        return true;
+
+    const std::shared_ptr<LifetimeState> lifetime =
+        m_lifetime;
+    if (isChildForumTopic(target)) {
+        const TdAccountData::ForumTopicState *topic =
+            m_data.findForumTopic(target);
+        if (!topic || topic->deleted || !topic->active)
+            return true;
+
+        const std::string conversationName =
+            getPurpleChatName(target);
+        PurpleConversation *conversation =
+            purple_find_conversation_with_account(
+                PURPLE_CONV_TYPE_CHAT,
+                conversationName.c_str(), m_account);
+        if (!conversation)
+            return true;
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(conversation);
+        if (!chat || purple_conv_chat_has_left(chat))
+            return true;
+
+        writeConversationNotification(
+            conversation, message, extraFlags, timestamp);
+        return lifetime->alive;
+    }
+
+    const td::td_api::chat *chat =
+        m_data.getChat(target.chatId());
+    if (!chat)
+        return true;
+    if (timestamp >= 0) {
+        showChatNotification(
+            m_data, *chat, message.c_str(),
+            timestamp, extraFlags);
+    } else {
+        showChatNotification(
+            m_data, *chat, message.c_str(), extraFlags);
+    }
+    return lifetime->alive;
+}
+
+ChatTarget PurpleTdClient::replacePendingMessageId(
     const td::td_api::message &message,
-    MessageId oldMessageId)
+    MessageId oldMessageId, ChatId oldChatId)
 {
     const ChatId chatId = getChatId(message);
     const MessageId newMessageId = getId(message);
-    m_data.replaceMessageId(
-        chatId, oldMessageId, newMessageId);
+    if (oldChatId.valid()) {
+        m_data.replaceMessageId(
+            oldChatId, oldMessageId,
+            chatId, newMessageId);
+    }
 
+    ChatTarget target;
     const td::td_api::chat *chat = m_data.getChat(chatId);
     if (chat) {
-        const ChatTarget target =
-            getMessageRoomTarget(*chat, message);
+        target = getMessageRoomTarget(*chat, message);
         if (target.valid()) {
             m_data.rememberMessageTarget(
                 target, newMessageId);
         }
     }
+    return target;
 }
 
 PurpleTdClient::PurpleTdClient(PurpleAccount *acct, ITransceiverBackend *testBackend)
@@ -533,12 +649,23 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
 
     case td::td_api::updateDeleteMessages::ID: {
         const auto &messageUpdate = static_cast<const td::td_api::updateDeleteMessages &>(update);
+        const ChatId chatId =
+            chatIdFromTdInt(messageUpdate.chat_id_);
         purple_debug_misc(config::pluginId, "Incoming update: %zu deleted messages\n",
                           messageUpdate.message_ids_.size());
+        for (td::td_api::int53 rawMessageId :
+             messageUpdate.message_ids_) {
+            TdAccountData::PendingSendInfo pending;
+            if (m_data.extractPendingSend(
+                    chatId,
+                    messageIdFromTdInt(rawMessageId),
+                    pending)) {
+                removeTempFile(pending.tempFile);
+            }
+        }
         if (!messageUpdate.from_cache_) {
             if (!showDeletedMessageUpdate(
-                    chatIdFromTdInt(
-                        messageUpdate.chat_id_),
+                    chatId,
                     messageUpdate.message_ids_)) {
                 return;
             }
@@ -719,13 +846,36 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         auto &sendSucceeded = static_cast<const td::td_api::updateMessageSendSucceeded &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " send succeeded\n",
                           sendSucceeded.old_message_id_);
+        const MessageId oldMessageId =
+            messageIdFromTdInt(
+                sendSucceeded.old_message_id_);
+        TdAccountData::PendingSendInfo pending;
+        const TdAccountData::PendingSendLookupResult lookup =
+            m_data.extractPendingSend(
+                oldMessageId, pending);
         if (sendSucceeded.message_) {
+            ChatId oldChatId;
+            if (lookup ==
+                TdAccountData::PendingSendLookupResult::Found) {
+                oldChatId = pending.target.chatId();
+            } else if (
+                lookup ==
+                TdAccountData::PendingSendLookupResult::NotFound) {
+                oldChatId =
+                    getChatId(*sendSucceeded.message_);
+            } else {
+                purple_debug_warning(
+                    config::pluginId,
+                    "Ambiguous pending message id; final route was not rekeyed\n");
+            }
             replacePendingMessageId(
                 *sendSucceeded.message_,
-                messageIdFromTdInt(
-                    sendSucceeded.old_message_id_));
+                oldMessageId, oldChatId);
         }
-        removeTempFile(sendSucceeded.old_message_id_);
+        if (lookup ==
+            TdAccountData::PendingSendLookupResult::Found) {
+            removeTempFile(pending.tempFile);
+        }
         break;
     }
 
@@ -733,15 +883,57 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         auto &sendFailed = static_cast<const td::td_api::updateMessageSendFailed &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " send failed\n",
                           sendFailed.old_message_id_);
+        const MessageId oldMessageId =
+            messageIdFromTdInt(
+                sendFailed.old_message_id_);
+        TdAccountData::PendingSendInfo pending;
+        const TdAccountData::PendingSendLookupResult lookup =
+            m_data.extractPendingSend(
+                oldMessageId, pending);
+        ChatTarget target;
         if (sendFailed.message_) {
-            replacePendingMessageId(
-                *sendFailed.message_,
-                messageIdFromTdInt(
-                    sendFailed.old_message_id_));
+            ChatId oldChatId;
+            if (lookup ==
+                TdAccountData::PendingSendLookupResult::Found) {
+                oldChatId = pending.target.chatId();
+            } else if (
+                lookup ==
+                TdAccountData::PendingSendLookupResult::NotFound) {
+                oldChatId =
+                    getChatId(*sendFailed.message_);
+            } else {
+                purple_debug_warning(
+                    config::pluginId,
+                    "Ambiguous pending message id; failure notice suppressed\n");
+            }
+            const ChatTarget finalTarget =
+                replacePendingMessageId(
+                    *sendFailed.message_,
+                    oldMessageId, oldChatId);
+            if (lookup ==
+                TdAccountData::PendingSendLookupResult::Found) {
+                target = pending.target;
+            } else if (
+                lookup ==
+                TdAccountData::PendingSendLookupResult::NotFound) {
+                target = finalTarget;
+            }
+        } else if (
+            lookup ==
+            TdAccountData::PendingSendLookupResult::Found) {
+            target = pending.target;
         }
-        removeTempFile(sendFailed.old_message_id_);
-        notifySendFailed(sendFailed, m_data);
-        // TODO notify in chat
+        if (lookup ==
+            TdAccountData::PendingSendLookupResult::Found) {
+            removeTempFile(pending.tempFile);
+        }
+        if (sendFailed.message_ && sendFailed.error_ &&
+            !showTargetNotification(
+                target,
+                sendFailureNotice(*sendFailed.error_),
+                sendFailed.message_->date_)) {
+            return;
+        }
         break;
     }
 
@@ -1383,7 +1575,10 @@ int PurpleTdClient::sendMessage(const char *buddyName, const char *message)
     }
 
     if (chat) {
-        int ret = transmitMessage(getId(*chat), message, m_transceiver, m_data, &PurpleTdClient::sendMessageResponse);
+        int ret = transmitMessage(
+            ChatTarget::chat(getId(*chat)), message,
+            m_transceiver, m_data,
+            &PurpleTdClient::sendMessageResponse);
         if (ret < 0)
             return ret;
         // Message shall not be echoed: tdlib will shortly present it as a new message and it will be displayed then
@@ -1406,16 +1601,44 @@ void PurpleTdClient::sendMessageResponse(uint64_t requestId, td::td_api::object_
     if (!request)
         return;
     if (object && (object->get_id() == td::td_api::message::ID)) {
-        if (!request->tempFile.empty()) {
-            const td::td_api::message &message = static_cast<td::td_api::message &>(*object);
-            m_data.addTempFileUpload(message.id_, request->tempFile);
+        const td::td_api::message &message =
+            static_cast<const td::td_api::message &>(*object);
+        ChatTarget target = request->target;
+        const td::td_api::chat *chat =
+            m_data.getChat(getChatId(message));
+        if (chat) {
+            const ChatTarget responseTarget =
+                getMessageRoomTarget(*chat, message);
+            if (responseTarget.valid() &&
+                responseTarget != target) {
+                purple_debug_warning(
+                    config::pluginId,
+                    "Send response changed the requested message target\n");
+            }
+        }
+        if (getChatId(message) == target.chatId()) {
+            m_data.rememberMessageTarget(
+                target, getId(message));
+        }
+        std::string tempFile;
+        tempFile.swap(request->tempFile);
+        if (getId(message).valid() &&
+            message.sending_state_) {
+            m_data.addPendingSend(
+                target, getId(message),
+                std::move(tempFile));
+        } else {
+            removeTempFile(tempFile);
         }
     } else {
         // TRANSLATOR: In-chat error message, argument will be a user-sent message
         std::string errorMessage = formatMessage(_("Failed to send message: {}"), getDisplayedError(object));
-        const td::td_api::chat *chat = m_data.getChat(request->chatId);
-        if (chat)
-            showChatNotification(m_data, *chat, errorMessage.c_str());
+        if (!request->tempFile.empty()) {
+            remove(request->tempFile.c_str());
+            request->tempFile.clear();
+        }
+        showTargetNotification(
+            request->target, errorMessage);
     }
 }
 
@@ -2543,11 +2766,11 @@ int PurpleTdClient::sendGroupMessage(int purpleChatId, const char *message)
 {
     const ChatTarget target =
         m_data.getChatTargetByPurpleId(purpleChatId);
-    if (isChildForumTopic(target) ||
-        hasChildForumConversation(m_account, purpleChatId)) {
+    if (!hasSafeConversationTargetForSend(
+            m_account, purpleChatId, target)) {
         purple_debug_warning(
             config::pluginId,
-            "Topic message routing is not available for purple id %d\n",
+            "Refusing mismatched topic conversation for purple id %d\n",
             purpleChatId);
         return -1;
     }
@@ -2561,7 +2784,23 @@ int PurpleTdClient::sendGroupMessage(int purpleChatId, const char *message)
         purple_debug_misc(config::pluginId, "purple id %d (chat %s) is not a group we a member of\n",
                              purpleChatId, chat->title_.c_str());
     else {
-        int ret = transmitMessage(getId(*chat), message, m_transceiver, m_data, &PurpleTdClient::sendMessageResponse);
+        if (isChildForumTopic(target)) {
+            const TdAccountData::ForumTopicState *topic =
+                m_data.findForumTopic(target);
+            if (!topic || topic->deleted || !topic->active ||
+                !isEligibleForumParent(m_data, *chat) ||
+                m_data.getPurpleChatId(target) != purpleChatId) {
+                purple_debug_warning(
+                    config::pluginId,
+                    "Refusing unavailable topic message for purple id %d\n",
+                    purpleChatId);
+                return -1;
+            }
+        }
+
+        int ret = transmitMessage(
+            target, message, m_transceiver, m_data,
+            &PurpleTdClient::sendMessageResponse);
         if (ret < 0)
             return ret;
         return 0;
@@ -2973,9 +3212,9 @@ void PurpleTdClient::getGroupChatList(PurpleRoomlist *roomlist)
     m_forumTopics->startRoomList(roomlist);
 }
 
-void PurpleTdClient::removeTempFile(int64_t messageId)
+void PurpleTdClient::removeTempFile(
+    const std::string &path)
 {
-    std::string path = m_data.extractTempFileUpload(messageId);
     if (!path.empty()) {
         purple_debug_misc(config::pluginId, "Removing temporary file %s\n", path.c_str());
         remove(path.c_str());
@@ -3196,8 +3435,11 @@ void PurpleTdClient::sendMessageCreatePrivateChatResponse(uint64_t requestId, td
         std::string errorMessage;
 
         if (chat) {
-            int ret = transmitMessage(getId(*chat), request->message.c_str(), m_transceiver, m_data,
-                                      &PurpleTdClient::sendMessageResponse);
+            int ret = transmitMessage(
+                ChatTarget::chat(getId(*chat)),
+                request->message.c_str(),
+                m_transceiver, m_data,
+                &PurpleTdClient::sendMessageResponse);
             // Messages copied from libpurple
             if (ret == -E2BIG) {
                 // TRANSLATOR: In-chat error message

@@ -315,7 +315,8 @@ static PurpleMessageFlags getNotificationFlags(PurpleMessageFlags extraFlags)
 void writeConversationNotification(
     PurpleConversation *conversation,
     const std::string &notification,
-    PurpleMessageFlags extraFlags)
+    PurpleMessageFlags extraFlags,
+    time_t timestamp)
 {
     if (!conversation)
         return;
@@ -328,14 +329,14 @@ void writeConversationNotification(
         type == PURPLE_CONV_TYPE_CHAT
             ? " "
             : (conversationName ? conversationName : " ");
-    const time_t timestamp =
+    const time_t writeTimestamp =
         (extraFlags & PURPLE_MESSAGE_NO_LOG)
             ? 0
-            : time(NULL);
+            : (timestamp >= 0 ? timestamp : time(NULL));
     purple_conversation_write(
         conversation, who.c_str(),
         notification.c_str(),
-        getNotificationFlags(extraFlags), timestamp);
+        getNotificationFlags(extraFlags), writeTimestamp);
 }
 
 static void sendPendingReadReceipts(

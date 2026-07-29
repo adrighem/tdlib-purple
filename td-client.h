@@ -168,9 +168,16 @@ private:
     bool       showDeletedMessageUpdate(
                    ChatId chatId,
                    const std::vector<td::td_api::int53> &messageIds);
-    void       replacePendingMessageId(
+    bool       showTargetNotification(
+                   ChatTarget target,
+                   const std::string &message,
+                   time_t timestamp = static_cast<time_t>(-1),
+                   PurpleMessageFlags extraFlags =
+                       static_cast<PurpleMessageFlags>(0));
+    ChatTarget replacePendingMessageId(
                    const td::td_api::message &message,
-                   MessageId oldMessageId);
+                   MessageId oldMessageId,
+                   ChatId oldChatId);
     bool       joinForumTopic(ChatTarget target);
     void       completeForumTopicJoin(
                    const ForumTopicLookupResult &result,
@@ -193,7 +200,7 @@ private:
     void       uploadResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
 
     void       sendMessageResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
-    void       removeTempFile(int64_t messageId);
+    void       removeTempFile(const std::string &path);
 
     void        setTwoFactorAuthResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void        requestRecoveryEmailConfirmation(const std::string &emailInfo);

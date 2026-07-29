@@ -21,6 +21,7 @@ add_executable(tests EXCLUDE_FROM_ALL
     forum-topic-message-update-test.cpp
     forum-topic-receiving-test.cpp
     forum-topic-room-test.cpp
+    forum-topic-sending-test.cpp
     forum-topics-adapter-test.cpp
     libpurple-mock-test.cpp
     test-transceiver.cpp

@@ -70,7 +70,6 @@ std::string getDownloadXferPeerName(ChatId chatId,
                                     const TgMessageInfo &message,
                                     TdAccountData &account);
 
-void notifySendFailed(const td::td_api::updateMessageSendFailed &sendFailed, TdAccountData &account);
 void updateChatConversation(PurpleConvChat *purpleChat, const td::td_api::basicGroupFullInfo &groupInfo,
                     const TdAccountData &account);
 void updateChatConversation(PurpleConvChat *purpleChat, const td::td_api::supergroupFullInfo &groupInfo,
@@ -87,7 +86,7 @@ void removeChatMember(PurpleConvChat *purpleChat, UserId userId, const TdAccount
 void updateChatMember(PurpleConvChat *purpleChat, const td::td_api::chatMember *oldMember,
                       const td::td_api::chatMember *newMember, const TdAccountData &account);
 
-int  transmitMessage(ChatId chatId, const char *message, TdTransceiver &transceiver,
+int  transmitMessage(ChatTarget target, const char *message, TdTransceiver &transceiver,
                      TdAccountData &account, TdTransceiver::ResponseCb response);
 
 void requestRecoveryEmailConfirmation(PurpleConnection *gc, const char *emailInfo);

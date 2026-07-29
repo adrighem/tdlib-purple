@@ -1333,7 +1333,7 @@ TEST_F(ForumTopicJoinTest, GeneralMetadataKeepsLegacyRoomIdentity)
         purple_conversation_get_name(conversation));
 }
 
-TEST_F(ForumTopicJoinTest, ChildUnsafeOperationsFailClosed)
+TEST_F(ForumTopicJoinTest, ChildAdministrationOperationsFailClosed)
 {
     loginWithForumSupergroup();
     cacheTopic("Child");
@@ -1347,11 +1347,6 @@ TEST_F(ForumTopicJoinTest, ChildUnsafeOperationsFailClosed)
     const int32_t purpleId = purple_conv_chat_get_id(
         purple_conversation_get_chat_data(conversation));
 
-    EXPECT_LT(
-        pluginInfo().chat_send(
-            connection, purpleId, "must not reach General",
-            PURPLE_MESSAGE_SEND),
-        0);
     pluginInfo().set_chat_topic(
         connection, purpleId, "must not edit the parent");
     pluginInfo().chat_invite(
