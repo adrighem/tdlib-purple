@@ -120,16 +120,19 @@ static void showChatUpdate(TdAccountData &account, ChatId chatId, const std::str
 }
 
 PurpleTdClient::PurpleTdClient(PurpleAccount *acct, ITransceiverBackend *testBackend)
-:   m_transceiver(this, acct, &PurpleTdClient::processUpdate, testBackend),
-    m_data(acct, m_transceiver)
+:   m_account(acct),
+    m_transceiver(this, acct, &PurpleTdClient::processUpdate, testBackend),
+    m_data(acct, m_transceiver),
+    m_forumTopics(std::make_unique<ForumTopicsAdapter>(m_transceiver, m_data))
 {
     StickerConversionThread::setCallback(&PurpleTdClient::onAnimatedStickerConverted);
-    m_account = acct;
     setPurpleConnectionInProgress();
 }
 
 PurpleTdClient::~PurpleTdClient()
 {
+    m_forumTopics->shutdown();
+
     std::vector<PurpleXfer *> transfers;
     m_data.removeAllFileTransfers(transfers);
     for (PurpleXfer *xfer: transfers) {
@@ -190,11 +193,38 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
     case td::td_api::updateNewChat::ID: {
         auto &newChat = static_cast<td::td_api::updateNewChat &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: new chat\n");
-        if (newChat.chat_->type_->get_id() == td::td_api::chatTypePrivate::ID ||
-            newChat.chat_->type_->get_id() == td::td_api::chatTypeSecret::ID  ||
-            m_data.isGroupChatWithMembership(*newChat.chat_.get()))
+        if (!newChat.chat_ || !newChat.chat_->type_) {
+            purple_debug_warning(config::pluginId,
+                                 "Received new chat without chat type\n");
+            break;
+        }
+
+        const int32_t chatType = newChat.chat_->type_->get_id();
+        const bool isBasicGroup =
+            chatType == td::td_api::chatTypeBasicGroup::ID;
+        const bool isSupergroup =
+            chatType == td::td_api::chatTypeSupergroup::ID;
+        const BasicGroupId basicGroupId = getBasicGroupId(*newChat.chat_);
+        const SupergroupId supergroupId = getSupergroupId(*newChat.chat_);
+        const bool groupMetadataKnown =
+            (isBasicGroup && m_data.getBasicGroup(basicGroupId)) ||
+            (isSupergroup && m_data.getSupergroup(supergroupId));
+
+        if (chatType == td::td_api::chatTypePrivate::ID ||
+            chatType == td::td_api::chatTypeSecret::ID ||
+            m_data.isGroupChatWithMembership(*newChat.chat_)) {
             addChat(std::move(newChat.chat_));
-        else {
+        } else if ((isBasicGroup || isSupergroup) && !groupMetadataKnown) {
+            const ChatId chatId = getId(*newChat.chat_);
+            purple_debug_misc(
+                config::pluginId,
+                "Caching group chat %" G_GINT64_FORMAT
+                " until membership metadata arrives\n",
+                chatId.value());
+            m_data.addChat(std::move(newChat.chat_));
+            m_deferredGroupChats.insert(chatId);
+            m_forumTopics->markRoomListsPending();
+        } else {
             purple_debug_misc(config::pluginId,
                               "Incoming update: ignorig ID=%d\n",
                               update.get_id());
@@ -366,6 +396,13 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
     case td::td_api::updateSupergroup::ID: {
         auto &groupUpdate = static_cast<td::td_api::updateSupergroup &>(update);
         updateSupergroup(std::move(groupUpdate.supergroup_));
+        break;
+    }
+
+    case td::td_api::updateForumTopicInfo::ID: {
+        const auto &topicUpdate =
+            static_cast<const td::td_api::updateForumTopicInfo &>(update);
+        m_forumTopics->processUpdate(topicUpdate);
         break;
     }
 
@@ -683,7 +720,6 @@ void PurpleTdClient::updateSupergroupFull(SupergroupId groupId, td::td_api::obje
 
 void PurpleTdClient::onChatListReady()
 {
-    m_chatListReady = true;
     std::vector<const td::td_api::chat *> chats;
     m_data.getChats(chats);
 
@@ -696,11 +732,9 @@ void PurpleTdClient::onChatListReady()
         }
     }
 
-    for (PurpleRoomlist *roomlist: m_pendingRoomLists) {
-        populateGroupChatList(roomlist, chats, m_data);
-        purple_roomlist_unref(roomlist);
-    }
-    m_pendingRoomLists.clear();
+    resolveDeferredGroupChats();
+    m_chatListReady = true;
+    markForumRoomListsReadyIfPossible();
 
     // Here we could remove buddies for which no private chat exists, meaning they have been remove
     // from the contact list perhaps in another client
@@ -1131,6 +1165,9 @@ void PurpleTdClient::updateGroup(td::td_api::object_ptr<td::td_api::basicGroup> 
 
     BasicGroupId id = getId(*group);
     m_data.updateBasicGroup(std::move(group));
+    const td::td_api::chat *chat = m_data.getBasicGroupChatByGroup(id);
+    if (chat && resolveDeferredGroupChat(getId(*chat)))
+        return;
 
     // purple_blist_find_chat doesn't work if account is not connected.
     // Updates are only supposed to come after authorizationStateReady which sets account to connected.
@@ -1148,12 +1185,66 @@ void PurpleTdClient::updateSupergroup(td::td_api::object_ptr<td::td_api::supergr
 
     SupergroupId id = getId(*group);
     m_data.updateSupergroup(std::move(group));
+    const td::td_api::chat *chat = m_data.getSupergroupChatByGroup(id);
+    if (chat && resolveDeferredGroupChat(getId(*chat)))
+        return;
 
     // purple_blist_find_chat doesn't work if account is not connected.
     // Updates are only supposed to come after authorizationStateReady which sets account to connected.
     // But check purple_account_is_connected just in case.
     if (purple_account_is_connected(m_account))
         updateSupergroupChat(m_data, id);
+}
+
+bool PurpleTdClient::resolveDeferredGroupChat(ChatId chatId)
+{
+    auto deferred = m_deferredGroupChats.find(chatId);
+    if (deferred == m_deferredGroupChats.end())
+        return false;
+
+    const td::td_api::chat *chat = m_data.getChat(chatId);
+    if (!chat) {
+        m_deferredGroupChats.erase(deferred);
+        markForumRoomListsReadyIfPossible();
+        return true;
+    }
+
+    const BasicGroupId basicGroupId = getBasicGroupId(*chat);
+    const SupergroupId supergroupId = getSupergroupId(*chat);
+    const bool metadataKnown =
+        (basicGroupId.valid() && m_data.getBasicGroup(basicGroupId)) ||
+        (supergroupId.valid() && m_data.getSupergroup(supergroupId));
+    if (!metadataKnown)
+        return true;
+
+    if (!m_data.isGroupChatWithMembership(*chat)) {
+        m_deferredGroupChats.erase(deferred);
+        m_data.deleteChat(chatId);
+        markForumRoomListsReadyIfPossible();
+        return true;
+    }
+
+    if (!purple_account_is_connected(m_account))
+        return true;
+
+    m_deferredGroupChats.erase(deferred);
+    updateChat(chat);
+    markForumRoomListsReadyIfPossible();
+    return true;
+}
+
+void PurpleTdClient::resolveDeferredGroupChats()
+{
+    std::vector<ChatId> chatIds(
+        m_deferredGroupChats.begin(), m_deferredGroupChats.end());
+    for (ChatId chatId : chatIds)
+        resolveDeferredGroupChat(chatId);
+}
+
+void PurpleTdClient::markForumRoomListsReadyIfPossible()
+{
+    if (m_chatListReady && m_deferredGroupChats.empty())
+        m_forumTopics->markRoomListsReady();
 }
 
 void PurpleTdClient::updateChat(const td::td_api::chat *chat)
@@ -1168,6 +1259,11 @@ void PurpleTdClient::updateChat(const td::td_api::chat *chat)
         std::to_string(chat->id_), std::to_string(privateChatUser ? privateChatUser->id_ : 0),
         std::to_string(basicGroupId.value()), std::to_string(supergroupId.value())
     });
+
+    if ((basicGroupId.valid() && !m_data.getBasicGroup(basicGroupId)) ||
+        (supergroupId.valid() && !m_data.getSupergroup(supergroupId))) {
+        return;
+    }
 
     // For secret chats, chat photo is same as user profile photo, so hopefully already downloaded.
     // But if not (such as when creating secret chat while downloading new photo for the user),
@@ -1936,26 +2032,7 @@ void PurpleTdClient::showInviteLink(const std::string& purpleChatName)
 
 void PurpleTdClient::getGroupChatList(PurpleRoomlist *roomlist)
 {
-
-    GList *fields = NULL;
-    PurpleRoomlistField *f = purple_roomlist_field_new(PURPLE_ROOMLIST_FIELD_STRING, "",
-                                                       getChatNameComponent(), TRUE);
-    fields = g_list_append (fields, f);
-    // "description" is hard-coded in bitlbee as possible field for chat topic
-    // TRANSLATOR: Groupchat infobox key
-    f = purple_roomlist_field_new(PURPLE_ROOMLIST_FIELD_STRING, _("Description"), "description", FALSE);
-    fields = g_list_append (fields, f);
-    purple_roomlist_set_fields (roomlist, fields);
-
-    purple_roomlist_set_in_progress(roomlist, TRUE);
-    if (m_chatListReady) {
-        std::vector<const td::td_api::chat *> chats;
-        m_data.getChats(chats);
-        populateGroupChatList(roomlist, chats, m_data);
-    } else {
-        purple_roomlist_ref(roomlist);
-        m_pendingRoomLists.push_back(roomlist);
-    }
+    m_forumTopics->startRoomList(roomlist);
 }
 
 void PurpleTdClient::removeTempFile(int64_t messageId)

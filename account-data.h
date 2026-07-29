@@ -429,6 +429,11 @@ public:
                                                     bool closed,
                                                     bool hidden,
                                                     uint64_t generation);
+    uint64_t                      reserveForumTopicGeneration();
+    void                          reconcileForumTopics(
+                                      ChatId chatId,
+                                      const std::set<ChatTarget> &seenTargets,
+                                      uint64_t generation);
     const ForumTopicState         *findForumTopic(ChatTarget target) const;
     void                          getForumTopics(
                                       ChatId chatId,
@@ -553,6 +558,7 @@ private:
     std::map<SupergroupId, SupergroupInfo>  m_supergroups;
     std::map<SecretChatId, SecretChatPtr>   m_secretChats;
     std::map<ChatTarget, ForumTopicState>    m_forumTopics;
+    uint64_t                           m_forumTopicGeneration = 0;
     int32_t                            m_lastChatPurpleId = 0;
 
     // List of contacts for which private chat is not known yet.
@@ -580,6 +586,8 @@ private:
     std::unique_ptr<PendingRequest> getPendingRequestImpl(uint64_t requestId);
     PendingRequest *                findPendingRequestImpl(uint64_t requestId);
     ForumTopicState *               findForumTopicMutable(ChatTarget target);
+    void                            tombstoneForumTopic(ForumTopicState &topic,
+                                                        uint64_t generation);
     int32_t                         allocatePurpleChatId();
     int32_t                         allocateForumTopicPurpleId(ForumTopicState &topic);
     bool                            isForumChat(ChatId chatId) const;

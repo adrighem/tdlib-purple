@@ -633,16 +633,24 @@ static void renameGroup(PurpleConnection *, const char *old_name,
 static PurpleRoomlist *tgprpl_roomlist_get_list (PurpleConnection *gc)
 {
     PurpleTdClient *tdClient = static_cast<PurpleTdClient *>(purple_connection_get_protocol_data(gc));
-    PurpleRoomlist *roomlist = purple_roomlist_new(purple_connection_get_account(gc));
+    if (!tdClient)
+        return NULL;
 
-    if (tdClient)
-        tdClient->getGroupChatList(roomlist);
+    PurpleRoomlist *roomlist = purple_roomlist_new(purple_connection_get_account(gc));
+    tdClient->getGroupChatList(roomlist);
 
     return roomlist;
 }
 
 static void tgprpl_roomlist_cancel (PurpleRoomlist *list)
 {
+    if (!list)
+        return;
+
+    ForumTopicsAdapter *adapter =
+        static_cast<ForumTopicsAdapter *>(list->proto_data);
+    if (adapter)
+        adapter->cancelRoomList(list);
 }
 
 static char *getRoomlistChatName(PurpleRoomlistRoom *room)

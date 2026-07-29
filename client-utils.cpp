@@ -1452,31 +1452,6 @@ void updateOption(const td::td_api::updateOption &option, TdAccountData &account
         purple_debug_misc(config::pluginId, "Option update %s\n", option.name_.c_str());
 }
 
-void populateGroupChatList(PurpleRoomlist *roomlist, const std::vector<const td::td_api::chat *> &chats,
-                           const TdAccountData &account)
-{
-    for (const td::td_api::chat *chat: chats)
-        if (account.isGroupChatWithMembership(*chat)) {
-            PurpleRoomlistRoom *room = purple_roomlist_room_new(PURPLE_ROOMLIST_ROOMTYPE_ROOM,
-                                                                chat->title_.c_str(), NULL);
-            purple_roomlist_room_add_field (roomlist, room, getPurpleChatName(*chat).c_str());
-            BasicGroupId groupId = getBasicGroupId(*chat);
-            if (groupId.valid()) {
-                const td::td_api::basicGroupFullInfo *fullInfo = account.getBasicGroupInfo(groupId);
-                if (fullInfo && !fullInfo->description_.empty())
-                    purple_roomlist_room_add_field(roomlist, room, fullInfo->description_.c_str());
-            }
-            SupergroupId supergroupId = getSupergroupId(*chat);
-            if (supergroupId.valid()) {
-                const td::td_api::supergroupFullInfo *fullInfo = account.getSupergroupInfo(supergroupId);
-                if (fullInfo && !fullInfo->description_.empty())
-                    purple_roomlist_room_add_field(roomlist, room, fullInfo->description_.c_str());
-            }
-            purple_roomlist_room_add(roomlist, room);
-        }
-    purple_roomlist_set_in_progress(roomlist, FALSE);
-}
-
 AccountThread::AccountThread(PurpleAccount* purpleAccount)
 {
     m_accountUserName   = purple_account_get_username(purpleAccount);

@@ -70,9 +70,6 @@ int  transmitMessage(ChatId chatId, const char *message, TdTransceiver &transcei
 void requestRecoveryEmailConfirmation(PurpleConnection *gc, const char *emailInfo);
 
 void updateOption(const td::td_api::updateOption &option, TdAccountData &account);
-void populateGroupChatList(PurpleRoomlist *roomlist, const std::vector<const td::td_api::chat *> &chats,
-                           const TdAccountData &account);
-
 class AccountThread {
 public:
     using Callback = void (PurpleTdClient::*)(AccountThread *thread);

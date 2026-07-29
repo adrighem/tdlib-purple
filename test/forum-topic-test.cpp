@@ -5,6 +5,7 @@
 #include <gtest/gtest.h>
 
 #include <limits>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -341,4 +342,185 @@ TEST_F(ForumTopicRegistryTest, ExpectedRejoinsAreExactTargets)
     accountData.removeExpectedChat(topic);
     EXPECT_TRUE(accountData.isExpectedChat(general));
     EXPECT_FALSE(accountData.isExpectedChat(topic));
+}
+
+TEST_F(ForumTopicRegistryTest, ReconciliationTombstonesOnlyMissingOlderTopics)
+{
+    const ChatId chatId = ChatId::fromString("-7000");
+    const ChatId otherChatId = ChatId::fromString("-8000");
+    const ChatTarget general = ChatTarget::forumTopic(
+        chatId, ForumTopicId::general());
+    const ChatTarget seen = ChatTarget::forumTopic(
+        chatId, ForumTopicId::fromValue(42));
+    const ChatTarget missing = ChatTarget::forumTopic(
+        chatId, ForumTopicId::fromValue(43));
+    const ChatTarget newer = ChatTarget::forumTopic(
+        chatId, ForumTopicId::fromValue(44));
+    const ChatTarget otherChatTopic = ChatTarget::forumTopic(
+        otherChatId, ForumTopicId::fromValue(43));
+    addSupergroupChat(chatId.value(), 700, "Group");
+    addSupergroupChat(otherChatId.value(), 800, "Other");
+
+    accountData.upsertForumTopic(general, "General", false, false, 5);
+    accountData.upsertForumTopic(seen, "Seen", false, false, 5);
+    accountData.upsertForumTopic(missing, "Missing", false, false, 5);
+    accountData.upsertForumTopic(newer, "Live", false, false, 7);
+    accountData.upsertForumTopic(
+        otherChatTopic, "Other", false, false, 5);
+    ASSERT_TRUE(accountData.setForumTopicSaved(missing, true));
+    const int32_t missingPurpleId =
+        accountData.activateForumTopic(missing);
+    ASSERT_GT(missingPurpleId, 0);
+    ASSERT_GT(accountData.activateForumTopic(newer), 0);
+
+    accountData.reconcileForumTopics(
+        chatId, std::set<ChatTarget>{seen}, 6);
+
+    const TdAccountData::ForumTopicState *generalState =
+        accountData.findForumTopic(general);
+    const TdAccountData::ForumTopicState *seenState =
+        accountData.findForumTopic(seen);
+    const TdAccountData::ForumTopicState *missingState =
+        accountData.findForumTopic(missing);
+    const TdAccountData::ForumTopicState *newerState =
+        accountData.findForumTopic(newer);
+    const TdAccountData::ForumTopicState *otherState =
+        accountData.findForumTopic(otherChatTopic);
+    ASSERT_NE(nullptr, generalState);
+    ASSERT_NE(nullptr, seenState);
+    ASSERT_NE(nullptr, missingState);
+    ASSERT_NE(nullptr, newerState);
+    ASSERT_NE(nullptr, otherState);
+    EXPECT_FALSE(generalState->deleted);
+    EXPECT_FALSE(seenState->deleted);
+    EXPECT_TRUE(missingState->deleted);
+    EXPECT_FALSE(missingState->active);
+    EXPECT_TRUE(missingState->saved);
+    EXPECT_EQ(missingPurpleId, missingState->purpleId);
+    EXPECT_EQ(6U, missingState->metadataGeneration);
+    EXPECT_FALSE(newerState->deleted);
+    EXPECT_TRUE(newerState->active);
+    EXPECT_EQ(7U, newerState->metadataGeneration);
+    EXPECT_FALSE(otherState->deleted);
+}
+
+TEST_F(ForumTopicRegistryTest, OnlyNewerMetadataRevivesTombstonedTopic)
+{
+    const ChatId chatId = ChatId::fromString("-7000");
+    const ChatTarget topic = ChatTarget::forumTopic(
+        chatId, ForumTopicId::fromValue(42));
+    addSupergroupChat(chatId.value(), 700, "Group");
+    accountData.upsertForumTopic(topic, "Before", false, false, 5);
+    ASSERT_GT(accountData.activateForumTopic(topic), 0);
+
+    accountData.reconcileForumTopics(chatId, std::set<ChatTarget>(), 6);
+    TdAccountData::ForumTopicUpsertResult equal =
+        accountData.upsertForumTopic(topic, "Equal", true, true, 6);
+    TdAccountData::ForumTopicUpsertResult stale =
+        accountData.upsertForumTopic(topic, "Stale", true, true, 5);
+
+    ASSERT_NE(nullptr, equal.state);
+    EXPECT_FALSE(equal.applied);
+    EXPECT_FALSE(stale.applied);
+    EXPECT_TRUE(equal.state->deleted);
+    EXPECT_EQ("Before", equal.state->name);
+
+    TdAccountData::ForumTopicUpsertResult revived =
+        accountData.upsertForumTopic(topic, "After", true, false, 7);
+
+    ASSERT_NE(nullptr, revived.state);
+    EXPECT_TRUE(revived.applied);
+    EXPECT_FALSE(revived.state->deleted);
+    EXPECT_FALSE(revived.state->active);
+    EXPECT_EQ("After", revived.state->name);
+    EXPECT_TRUE(revived.state->closed);
+    EXPECT_FALSE(revived.state->hidden);
+    EXPECT_EQ(7U, revived.state->metadataGeneration);
+}
+
+TEST_F(ForumTopicRegistryTest, DeletingChatTombstonesAndDeactivatesItsTopics)
+{
+    const ChatId chatId = ChatId::fromString("-7000");
+    const ChatTarget general = ChatTarget::forumTopic(
+        chatId, ForumTopicId::general());
+    const ChatTarget topic = ChatTarget::forumTopic(
+        chatId, ForumTopicId::fromValue(42));
+    addSupergroupChat(chatId.value(), 700, "Group");
+    accountData.upsertForumTopic(general, "General", false, false, 3);
+    accountData.upsertForumTopic(topic, "Saved", false, false, 3);
+    ASSERT_TRUE(accountData.setForumTopicSaved(topic, true));
+    const int32_t purpleId = accountData.activateForumTopic(topic);
+    ASSERT_GT(purpleId, 0);
+    ASSERT_GT(accountData.activateForumTopic(general), 0);
+    const uint64_t listingGeneration =
+        accountData.reserveForumTopicGeneration();
+
+    accountData.deleteChat(chatId);
+
+    const TdAccountData::ForumTopicState *generalState =
+        accountData.findForumTopic(general);
+    const TdAccountData::ForumTopicState *topicState =
+        accountData.findForumTopic(topic);
+    ASSERT_NE(nullptr, generalState);
+    ASSERT_NE(nullptr, topicState);
+    EXPECT_EQ(nullptr, accountData.getChat(chatId));
+    EXPECT_TRUE(generalState->deleted);
+    EXPECT_FALSE(generalState->active);
+    EXPECT_TRUE(topicState->deleted);
+    EXPECT_FALSE(topicState->active);
+    EXPECT_TRUE(topicState->saved);
+    EXPECT_EQ(purpleId, topicState->purpleId);
+
+    TdAccountData::ForumTopicUpsertResult oldListing =
+        accountData.upsertForumTopic(
+            topic, "Old listing", false, false, listingGeneration);
+    EXPECT_FALSE(oldListing.applied);
+    EXPECT_TRUE(oldListing.state->deleted);
+
+    const uint64_t revivalGeneration =
+        accountData.reserveForumTopicGeneration();
+    TdAccountData::ForumTopicUpsertResult revived =
+        accountData.upsertForumTopic(
+            topic, "Revived", false, false, revivalGeneration);
+    ASSERT_TRUE(revived.applied);
+    EXPECT_FALSE(revived.state->deleted);
+    EXPECT_FALSE(revived.state->active);
+    EXPECT_TRUE(revived.state->saved);
+    EXPECT_EQ(purpleId, revived.state->purpleId);
+}
+
+TEST_F(ForumTopicRegistryTest, DeletedSavedTopicAllocatesOnlyAfterRevival)
+{
+    const ChatId chatId = ChatId::fromString("-7000");
+    const ChatTarget topic = ChatTarget::forumTopic(
+        chatId, ForumTopicId::fromValue(42));
+    accountData.upsertForumTopic(topic, "Saved", false, false, 1);
+    ASSERT_TRUE(accountData.setForumTopicSaved(topic, true));
+    ASSERT_EQ(0, accountData.getPurpleChatId(topic));
+    const uint64_t listingGeneration =
+        accountData.reserveForumTopicGeneration();
+
+    accountData.deleteChat(chatId);
+    addSupergroupChat(chatId.value(), 700, "Group");
+
+    const TdAccountData::ForumTopicState *deleted =
+        accountData.findForumTopic(topic);
+    ASSERT_NE(nullptr, deleted);
+    EXPECT_TRUE(deleted->deleted);
+    EXPECT_EQ(0, deleted->purpleId);
+    EXPECT_FALSE(accountData.upsertForumTopic(
+        topic, "Old listing", false, false, listingGeneration).applied);
+    EXPECT_EQ(0, accountData.getPurpleChatId(topic));
+
+    const uint64_t revivalGeneration =
+        accountData.reserveForumTopicGeneration();
+    TdAccountData::ForumTopicUpsertResult revived =
+        accountData.upsertForumTopic(
+            topic, "Revived", false, false, revivalGeneration);
+
+    ASSERT_TRUE(revived.applied);
+    EXPECT_FALSE(revived.state->deleted);
+    EXPECT_TRUE(revived.state->saved);
+    EXPECT_GT(revived.state->purpleId, 0);
+    EXPECT_EQ(revived.state->purpleId, accountData.getPurpleChatId(topic));
 }

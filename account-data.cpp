@@ -446,8 +446,10 @@ void TdAccountData::addChat(TdChatPtr chat)
 
     for (auto &entry : m_forumTopics) {
         ForumTopicState &topic = entry.second;
-        if (topic.target.chatId() == chatId && (topic.saved || topic.active))
+        if (topic.target.chatId() == chatId && !topic.deleted &&
+            (topic.saved || topic.active)) {
             allocateForumTopicPurpleId(topic);
+        }
     }
 }
 
@@ -555,6 +557,8 @@ int32_t TdAccountData::allocatePurpleChatId()
 
 int32_t TdAccountData::allocateForumTopicPurpleId(ForumTopicState &topic)
 {
+    if (topic.deleted)
+        return topic.purpleId;
     if (topic.isGeneral())
         return getPurpleChatId(topic.target.chatId());
     if (topic.purpleId == 0 && getChat(topic.target.chatId()))
@@ -800,6 +804,12 @@ void TdAccountData::getChats(std::vector<const td::td_api::chat *> &chats) const
 
 void TdAccountData::deleteChat(ChatId id)
 {
+    const uint64_t generation = reserveForumTopicGeneration();
+    for (auto &entry : m_forumTopics) {
+        ForumTopicState &topic = entry.second;
+        if (topic.target.chatId() == id)
+            tombstoneForumTopic(topic, generation);
+    }
     m_chatInfo.erase(id);
 }
 
@@ -809,6 +819,8 @@ TdAccountData::ForumTopicUpsertResult TdAccountData::upsertForumTopic(
 {
     if (!target.valid() || !target.isForumTopic())
         return ForumTopicUpsertResult(nullptr, false);
+    if (generation > m_forumTopicGeneration)
+        m_forumTopicGeneration = generation;
 
     auto inserted = m_forumTopics.emplace(target, ForumTopicState(target));
     ForumTopicState &topic = inserted.first->second;
@@ -820,9 +832,51 @@ TdAccountData::ForumTopicUpsertResult TdAccountData::upsertForumTopic(
     topic.name = name;
     topic.closed = closed;
     topic.hidden = hidden;
+    topic.deleted = false;
     topic.metadataGeneration = generation;
     topic.metadataKnown = true;
+    if (topic.saved || topic.active)
+        allocateForumTopicPurpleId(topic);
     return ForumTopicUpsertResult(&topic, true);
+}
+
+uint64_t TdAccountData::reserveForumTopicGeneration()
+{
+    if (m_forumTopicGeneration != std::numeric_limits<uint64_t>::max())
+        ++m_forumTopicGeneration;
+    return m_forumTopicGeneration;
+}
+
+void TdAccountData::tombstoneForumTopic(
+    ForumTopicState &topic, uint64_t generation)
+{
+    if (topic.metadataKnown && generation <= topic.metadataGeneration)
+        return;
+
+    topic.deleted = true;
+    topic.active = false;
+    topic.metadataGeneration = generation;
+}
+
+void TdAccountData::reconcileForumTopics(
+    ChatId chatId, const std::set<ChatTarget> &seenTargets,
+    uint64_t generation)
+{
+    if (!chatId.valid())
+        return;
+    if (generation > m_forumTopicGeneration)
+        m_forumTopicGeneration = generation;
+
+    for (auto &entry : m_forumTopics) {
+        ForumTopicState &topic = entry.second;
+        if (topic.target.chatId() != chatId || topic.isGeneral() ||
+            !topic.metadataKnown ||
+            seenTargets.find(topic.target) != seenTargets.end()) {
+            continue;
+        }
+
+        tombstoneForumTopic(topic, generation);
+    }
 }
 
 TdAccountData::ForumTopicState *TdAccountData::findForumTopicMutable(
@@ -863,7 +917,7 @@ bool TdAccountData::setForumTopicSaved(ChatTarget target, bool saved)
 int32_t TdAccountData::activateForumTopic(ChatTarget target)
 {
     ForumTopicState *topic = findForumTopicMutable(target);
-    if (!topic)
+    if (!topic || topic->deleted)
         return 0;
     topic->active = true;
     return allocateForumTopicPurpleId(*topic);

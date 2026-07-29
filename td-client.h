@@ -3,8 +3,11 @@
 
 #include "account-data.h"
 #include "client-utils.h"
+#include "forum-topics.h"
 #include <td/telegram/Log.h>
 #include <purple.h>
+#include <memory>
+#include <set>
 
 enum class BasicGroupMembership: uint8_t {
     Invalid,
@@ -112,6 +115,9 @@ private:
     void       avatarDownloadResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       updateGroup(td::td_api::object_ptr<td::td_api::basicGroup> group);
     void       updateSupergroup(td::td_api::object_ptr<td::td_api::supergroup> group);
+    bool       resolveDeferredGroupChat(ChatId chatId);
+    void       resolveDeferredGroupChats();
+    void       markForumRoomListsReadyIfPossible();
     void       updateChat(const td::td_api::chat *chat);
     void       updateUserInfo(const td::td_api::user &user, const td::td_api::chat *privateChat);
     void       downloadChatPhoto(const td::td_api::chat &chat);
@@ -155,11 +161,12 @@ private:
     PurpleAccount        *m_account;
     TdTransceiver         m_transceiver;
     TdAccountData         m_data;
+    std::unique_ptr<ForumTopicsAdapter> m_forumTopics;
     int32_t               m_lastAuthState = 0;
     std::vector<UserId>   m_usersForNewPrivateChats;
+    std::set<ChatId>      m_deferredGroupChats;
     bool                  m_chatListReady = false;
     bool                  m_isProxyAdded = false;
-    std::vector<PurpleRoomlist *>               m_pendingRoomLists;
     td::td_api::object_ptr<td::td_api::addedProxy>   m_addedProxy;
     td::td_api::object_ptr<td::td_api::addedProxies> m_proxies;
 

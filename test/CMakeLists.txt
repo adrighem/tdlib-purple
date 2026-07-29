@@ -17,6 +17,7 @@ add_executable(tests EXCLUDE_FROM_ALL
     message-order-test.cpp
     message-history-test.cpp
     forum-topic-test.cpp
+    forum-topic-room-test.cpp
     forum-topics-adapter-test.cpp
     libpurple-mock-test.cpp
     test-transceiver.cpp
