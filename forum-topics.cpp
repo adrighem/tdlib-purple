@@ -142,13 +142,11 @@ private:
 
         PendingTopicLookup(
             uint64_t serial, uint64_t metadataGeneration,
-            ForumTopicLookupCallback callback)
+            std::vector<ForumTopicLookupCallback> callbacks)
             : serial(serial),
-              metadataGeneration(metadataGeneration)
-        {
-            if (callback)
-                callbacks.push_back(std::move(callback));
-        }
+              metadataGeneration(metadataGeneration),
+              callbacks(std::move(callbacks))
+        {}
     };
 
     std::vector<std::shared_ptr<RoomListSession>> sessionSnapshot() const;
@@ -445,7 +443,8 @@ void ForumTopicsAdapterCore::resolveForumTopic(
         return;
     }
 
-    if (!m_account.ensureForumTopicPlaceholder(target)) {
+    topic = m_account.ensureForumTopicPlaceholder(target);
+    if (!topic) {
         if (callback) {
             callback(ForumTopicLookupResult(
                 target, ForumTopicLookupStatus::InvalidTarget));
@@ -453,12 +452,26 @@ void ForumTopicsAdapterCore::resolveForumTopic(
         return;
     }
 
+    std::vector<ForumTopicLookupCallback> callbacks;
     auto pending = m_topicLookups.find(target);
     if (pending != m_topicLookups.end()) {
-        if (callback)
-            pending->second.callbacks.push_back(std::move(callback));
-        return;
+        // An invalidation at or after the pending request guarantees that its
+        // response cannot be applied. Replace it instead of attaching new
+        // work to a request that can only finish as superseded.
+        if (pending->second.metadataGeneration >
+            topic->metadataGeneration) {
+            if (callback) {
+                pending->second.callbacks.push_back(
+                    std::move(callback));
+            }
+            return;
+        }
+
+        callbacks = std::move(pending->second.callbacks);
+        m_topicLookups.erase(pending);
     }
+    if (callback)
+        callbacks.push_back(std::move(callback));
 
     if (++m_lastTopicLookupSerial == 0)
         ++m_lastTopicLookupSerial;
@@ -467,7 +480,7 @@ void ForumTopicsAdapterCore::resolveForumTopic(
         m_account.reserveForumTopicGeneration();
     m_topicLookups.emplace(
         target,
-        PendingTopicLookup(serial, generation, std::move(callback)));
+        PendingTopicLookup(serial, generation, std::move(callbacks)));
 
     auto request = td::td_api::make_object<td::td_api::getForumTopic>(
         target.chatId().value(), target.forumTopicId().value());

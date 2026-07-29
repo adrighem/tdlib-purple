@@ -162,6 +162,75 @@ TEST_F(ForumTopicRoomTest, MetadataBeforeParentIsRetainedWithoutPreprojection)
     purple_roomlist_unref(roomlist);
 }
 
+TEST_F(
+    ForumTopicRoomTest,
+    InvalidatedPendingLookupRestartsAfterParentRestore)
+{
+    login();
+
+    TestTransceiver backend;
+    PurpleTdClient *client = static_cast<PurpleTdClient *>(
+        purple_connection_get_protocol_data(connection));
+    ASSERT_NE(nullptr, client);
+    TdTransceiver transceiver(client, account, nullptr, &backend);
+    TdAccountData accountData(account, transceiver);
+    ForumTopicsAdapter adapter(transceiver, accountData);
+    const ChatId chatId =
+        ChatId::fromString(std::to_string(groupChatId).c_str());
+    const ChatTarget target = ChatTarget::forumTopic(
+        chatId, ForumTopicId::fromValue(42));
+
+    accountData.updateSupergroup(makeForumSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2));
+    accountData.addChat(makeChat(
+        groupChatId,
+        make_object<chatTypeSupergroup>(groupId, false),
+        groupChatTitle
+    ));
+
+    std::vector<ForumTopicLookupStatus> completions;
+    const ForumTopicLookupCallback callback =
+        [&completions](const ForumTopicLookupResult &result) {
+            completions.push_back(result.status);
+        };
+    adapter.resolveForumTopic(target, callback);
+    adapter.resolveForumTopic(target, callback);
+    const uint64_t oldRequest = backend.verifyRequest(
+        getForumTopic(groupChatId, 42));
+    backend.verifyNoRequests();
+
+    accountData.updateSupergroup(makeForumSupergroup(
+        groupId, make_object<chatMemberStatusLeft>(), 2));
+    accountData.invalidateForumTopicMetadata(
+        target, accountData.reserveForumTopicGeneration());
+    accountData.updateSupergroup(makeForumSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2));
+
+    adapter.ensureForumTopicMetadata(target);
+    const uint64_t freshRequest = backend.verifyRequest(
+        getForumTopic(groupChatId, 42));
+    EXPECT_NE(oldRequest, freshRequest);
+    backend.verifyNoRequests();
+
+    backend.reply(oldRequest, makeForumTopic(makeForumTopicInfo(
+        groupChatId, 42, "Stale")));
+    EXPECT_TRUE(completions.empty());
+    const TdAccountData::ForumTopicState *topicState =
+        accountData.findForumTopic(target);
+    ASSERT_NE(nullptr, topicState);
+    EXPECT_FALSE(topicState->metadataKnown);
+
+    backend.reply(freshRequest, makeForumTopic(makeForumTopicInfo(
+        groupChatId, 42, "Fresh")));
+    ASSERT_EQ(2U, completions.size());
+    EXPECT_EQ(ForumTopicLookupStatus::Available, completions[0]);
+    EXPECT_EQ(ForumTopicLookupStatus::Available, completions[1]);
+    topicState = accountData.findForumTopic(target);
+    ASSERT_NE(nullptr, topicState);
+    EXPECT_TRUE(topicState->metadataKnown);
+    EXPECT_EQ("Fresh", topicState->name);
+}
+
 TEST_F(ForumTopicRoomTest, SavedCachedTopicWaitsForAuthoritativeRefresh)
 {
     login();
