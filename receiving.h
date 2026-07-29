@@ -33,10 +33,12 @@ void showDownloadedFileInline(ChatId chatId, TgMessageInfo &message,
                               const std::string &filePath, const char *caption,
                               const std::string &fileDescription,
                               td::td_api::object_ptr<td::td_api::file> thumbnail,
-                              TdTransceiver &transceiver, TdAccountData &account);
+                              TdTransceiver &transceiver, TdAccountData &account,
+                              PendingContentHandle pendingContent);
 bool isStickerAnimated(const std::string &filePath);
 bool shouldConvertAnimatedSticker(const TgMessageInfo &message, const PurpleAccount *purpleAccount);
 void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
+                 const PendingContentHandle &pendingContent,
                  TdTransceiver &transceiver, TdAccountData &account);
 void showMessages(std::vector<IncomingMessage>& messages, TdAccountData &account);
 
@@ -54,9 +56,12 @@ void getFileFromMessage(const IncomingMessage &fullMessage, FileInfo &result);
 void makeFullMessage(const td::td_api::chat &chat, td::td_api::object_ptr<td::td_api::message> message,
                      IncomingMessage &fullMessage, const TdAccountData &account);
 bool isMessageReady(const IncomingMessage &fullMessage, const TdAccountData &account);
-void fetchExtras(IncomingMessage &fullMessage, TdTransceiver &transceiver, TdAccountData &account,
-                 TdTransceiver::ResponseCb2 onFetchReply);
-void checkMessageReady(const IncomingMessage *message, TdTransceiver &transceiver,
+bool replaceQueuedMessageContent(
+                     TdAccountData &account, ChatId chatId,
+                     MessageId messageId,
+                     td::td_api::object_ptr<td::td_api::MessageContent> content,
+                     std::vector<IncomingMessage> &readyMessages);
+void checkMessageReady(const PendingMessageHandle &message, TdTransceiver &transceiver,
                        TdAccountData &account, std::vector<IncomingMessage> *rvReadyMessages = nullptr);
 
 enum class IncomingMessageSource {

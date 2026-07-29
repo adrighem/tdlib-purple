@@ -1064,18 +1064,15 @@ const char *purple_user_dir(void)
 }
 
 PurpleXfer *purple_xfer_new(PurpleAccount *account,
-								PurpleXferType type, const char *who)
+									PurpleXferType type, const char *who)
 {
-    PurpleXfer *xfer = new PurpleXfer;
+    PurpleXfer *xfer = new PurpleXfer();
     xfer->account = account;
     xfer->type = type;
     xfer->who = strdup(who);
     xfer->ref = 1;
-    xfer->filename = NULL;
-    xfer->local_filename = NULL;
     xfer->status = PURPLE_XFER_STATUS_UNKNOWN;
-    xfer->size = 0;
-    memset(&xfer->ops, 0, sizeof(xfer->ops));
+    xfer->fd = -1;
     return xfer;
 }
 
@@ -1087,6 +1084,10 @@ void purple_xfer_ref(PurpleXfer *xfer)
 void purple_xfer_unref(PurpleXfer *xfer)
 {
     if (--xfer->ref == 0) {
+        EXPECT_EQ(nullptr, xfer->dest_fp)
+            << "Destroying a transfer with an open destination file";
+        if (xfer->dest_fp)
+            fclose(xfer->dest_fp);
         free(xfer->who);
         free(xfer->filename);
         free(xfer->local_filename);
@@ -1125,6 +1126,11 @@ void purple_xfer_request_accepted(PurpleXfer *xfer, const char *filename)
 void purple_xfer_set_init_fnc(PurpleXfer *xfer, void (*fnc)(PurpleXfer *))
 {
     xfer->ops.init = fnc;
+}
+
+void purple_xfer_set_start_fnc(PurpleXfer *xfer, void (*fnc)(PurpleXfer *))
+{
+    xfer->ops.start = fnc;
 }
 
 void purple_xfer_set_cancel_send_fnc(PurpleXfer *xfer, void (*fnc)(PurpleXfer *))
@@ -1173,21 +1179,58 @@ void purple_xfer_set_size(PurpleXfer *xfer, size_t size)
 }
 
 void purple_xfer_start(PurpleXfer *xfer, int fd, const char *ip,
-					 unsigned int port)
+						 unsigned int port)
 {
-    EVENT(XferStartEvent, xfer->local_filename);
     xfer->status = PURPLE_XFER_STATUS_STARTED;
+    xfer->fd = (fd == 0) ? -1 : fd;
+
+    // In libpurple, setting STARTED can synchronously call the UI before
+    // begin_transfer opens the destination file. Tests use this event to
+    // model that reentrancy.
+    EVENT(XferStartEvent, xfer->local_filename);
+
+    // Inline progress transfers install a start hook specifically to clean
+    // up a destination that libpurple opens after a synchronous cancellation.
+    // Other mock transfers deliberately retain their historical no-I/O
+    // behavior.
+    if (xfer->type == PURPLE_XFER_RECEIVE &&
+        xfer->ops.start &&
+        xfer->local_filename) {
+        xfer->dest_fp = fopen(xfer->local_filename, "wb");
+        if (!xfer->dest_fp) {
+            purple_xfer_cancel_local(xfer);
+            return;
+        }
+        if (fseek(xfer->dest_fp, xfer->bytes_sent,
+                  SEEK_SET) != 0) {
+            purple_xfer_cancel_local(xfer);
+            return;
+        }
+    }
+
+    xfer->start_time = time(NULL);
+    if (xfer->ops.start)
+        xfer->ops.start(xfer);
 }
 
 void purple_xfer_cancel_local(PurpleXfer *xfer)
 {
-    EVENT(XferLocalCancelEvent, xfer->local_filename ? xfer->local_filename : "");
     xfer->status = PURPLE_XFER_STATUS_CANCEL_LOCAL;
+    xfer->end_time = time(NULL);
+    EVENT(XferLocalCancelEvent, xfer->local_filename ? xfer->local_filename : "");
     if ((xfer->type == PURPLE_XFER_SEND) && xfer->ops.cancel_send)
         xfer->ops.cancel_send(xfer);
     if ((xfer->type == PURPLE_XFER_RECEIVE) && xfer->ops.cancel_recv)
         xfer->ops.cancel_recv(xfer);
 
+    if (xfer->fd != -1) {
+        close(xfer->fd);
+        xfer->fd = -1;
+    }
+    if (xfer->dest_fp) {
+        fclose(xfer->dest_fp);
+        xfer->dest_fp = NULL;
+    }
     purple_xfer_unref(xfer);
 }
 
@@ -1199,12 +1242,21 @@ gboolean purple_xfer_is_canceled(const PurpleXfer *xfer)
 
 void purple_xfer_cancel_remote(PurpleXfer *xfer)
 {
-    EVENT(XferRemoteCancelEvent, xfer->local_filename);
     xfer->status = PURPLE_XFER_STATUS_CANCEL_REMOTE;
+    xfer->end_time = time(NULL);
+    EVENT(XferRemoteCancelEvent, xfer->local_filename);
     if ((xfer->type == PURPLE_XFER_SEND) && xfer->ops.cancel_send)
         xfer->ops.cancel_send(xfer);
     if ((xfer->type == PURPLE_XFER_RECEIVE) && xfer->ops.cancel_recv)
         xfer->ops.cancel_recv(xfer);
+    if (xfer->fd != -1) {
+        close(xfer->fd);
+        xfer->fd = -1;
+    }
+    if (xfer->dest_fp) {
+        fclose(xfer->dest_fp);
+        xfer->dest_fp = NULL;
+    }
     purple_xfer_unref(xfer);
 }
 
@@ -1230,6 +1282,8 @@ size_t purple_xfer_get_bytes_sent(const PurpleXfer *xfer)
 
 void purple_xfer_set_completed(PurpleXfer *xfer, gboolean completed)
 {
+    if (completed)
+        xfer->status = PURPLE_XFER_STATUS_DONE;
     EVENT(XferCompletedEvent, xfer->local_filename, completed, xfer->bytes_sent);
 }
 
@@ -1240,10 +1294,29 @@ void purple_xfer_update_progress(PurpleXfer *xfer)
 
 void purple_xfer_end(PurpleXfer *xfer)
 {
+    if (xfer->status != PURPLE_XFER_STATUS_DONE) {
+        purple_xfer_cancel_local(xfer);
+        return;
+    }
+
+    xfer->end_time = time(NULL);
     EVENT(XferEndEvent, xfer->local_filename);
     if (xfer->ops.end)
         xfer->ops.end(xfer);
+    if (xfer->fd != -1) {
+        close(xfer->fd);
+        xfer->fd = -1;
+    }
+    if (xfer->dest_fp) {
+        fclose(xfer->dest_fp);
+        xfer->dest_fp = NULL;
+    }
     purple_xfer_unref(xfer);
+}
+
+time_t purple_xfer_get_end_time(const PurpleXfer *xfer)
+{
+    return xfer->end_time;
 }
 
 PurpleXferStatusType purple_xfer_get_status(const PurpleXfer *xfer)

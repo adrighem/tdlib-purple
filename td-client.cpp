@@ -30,10 +30,46 @@ static MessageId messageIdFromTdInt(td::td_api::int53 id)
     return MessageId::fromString(idString.c_str());
 }
 
+static TdAccountData::PendingSendLookupResult
+extractPendingSendForUpdate(
+    TdAccountData &data, const td::td_api::message *message,
+    MessageId oldMessageId,
+    TdAccountData::PendingSendInfo &pending)
+{
+    if (message &&
+        data.extractPendingSend(
+            getChatId(*message), oldMessageId, pending)) {
+        return TdAccountData::PendingSendLookupResult::Found;
+    }
+
+    return data.extractPendingSend(oldMessageId, pending);
+}
+
 static bool isChildForumTopic(ChatTarget target)
 {
     return target.valid() && target.isForumTopic() &&
            target.forumTopicId() != ForumTopicId::general();
+}
+
+static PurpleConvChat *getActiveChatWithPurpleId(
+    PurpleConversation *conversation, PurpleAccount *account,
+    int32_t purpleChatId)
+{
+    if (!conversation ||
+        purple_conversation_get_account(conversation) != account) {
+        return nullptr;
+    }
+
+    PurpleConvChat *chat =
+        purple_conversation_get_chat_data(conversation);
+    // libpurple can retain left conversations across reconnects, while this
+    // plugin's per-client numeric chat ID allocator starts over.
+    if (!chat ||
+        purple_conv_chat_get_id(chat) != purpleChatId ||
+        purple_conv_chat_has_left(chat)) {
+        return nullptr;
+    }
+    return chat;
 }
 
 static bool hasSafeConversationTargetForSend(
@@ -45,14 +81,10 @@ static bool hasSafeConversationTargetForSend(
     for (GList *item = purple_get_chats(); item; item = item->next) {
         PurpleConversation *conversation =
             static_cast<PurpleConversation *>(item->data);
-        if (!conversation ||
-            purple_conversation_get_account(conversation) != account) {
-            continue;
-        }
-
         PurpleConvChat *chat =
-            purple_conversation_get_chat_data(conversation);
-        if (!chat || purple_conv_chat_get_id(chat) != purpleChatId)
+            getActiveChatWithPurpleId(
+                conversation, account, purpleChatId);
+        if (!chat)
             continue;
 
         const ChatTarget nameTarget = parsePurpleChatName(
@@ -61,8 +93,7 @@ static bool hasSafeConversationTargetForSend(
                 nameTarget, expectedTarget)) {
             return false;
         }
-        if (isChildForumTopic(expectedTarget) &&
-            !purple_conv_chat_has_left(chat)) {
+        if (isChildForumTopic(expectedTarget)) {
             hasActiveExactChild = true;
         }
     }
@@ -77,14 +108,10 @@ static bool hasChildForumConversation(
     for (GList *item = purple_get_chats(); item; item = item->next) {
         PurpleConversation *conversation =
             static_cast<PurpleConversation *>(item->data);
-        if (!conversation ||
-            purple_conversation_get_account(conversation) != account) {
-            continue;
-        }
-
         PurpleConvChat *chat =
-            purple_conversation_get_chat_data(conversation);
-        if (!chat || purple_conv_chat_get_id(chat) != purpleChatId)
+            getActiveChatWithPurpleId(
+                conversation, account, purpleChatId);
+        if (!chat)
             continue;
 
         if (isChildForumTopic(parsePurpleChatName(
@@ -580,23 +607,38 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
     }
 
     case td::td_api::updateMessageContent::ID: {
-        const auto &messageUpdate = static_cast<const td::td_api::updateMessageContent &>(update);
+        auto &messageUpdate =
+            static_cast<td::td_api::updateMessageContent &>(
+                update);
         purple_debug_misc(config::pluginId, "Incoming update: message %" G_GINT64_FORMAT " content update\n",
                           messageUpdate.message_id_);
         if (messageUpdate.new_content_) {
             const ChatId chatId =
                 chatIdFromTdInt(messageUpdate.chat_id_);
+            const MessageId messageId =
+                messageIdFromTdInt(
+                    messageUpdate.message_id_);
             const std::string description =
                 describeMessageContent(
                     *messageUpdate.new_content_, m_data);
             const std::shared_ptr<LifetimeState> lifetime =
                 m_lifetime;
+            std::vector<IncomingMessage> readyMessages;
+            if (replaceQueuedMessageContent(
+                    m_data, chatId, messageId,
+                    std::move(messageUpdate.new_content_),
+                    readyMessages)) {
+                if (!lifetime->alive)
+                    return;
+                showMessages(readyMessages, m_data);
+                if (!lifetime->alive)
+                    return;
+                break;
+            }
             const TdAccountData::
                 DisplayedMessageUpdateResult result =
                     m_data.showUpdatedMessage(
-                        chatId,
-                        messageIdFromTdInt(
-                            messageUpdate.message_id_),
+                        chatId, messageId,
                         description);
             if (!lifetime->alive)
                 return;
@@ -605,9 +647,7 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
                         DisplayedMessageUpdateResult::
                             Written &&
                 m_data.shouldUseLegacyMessageUpdateFallback(
-                    chatId,
-                    messageIdFromTdInt(
-                        messageUpdate.message_id_))) {
+                    chatId, messageId)) {
                 // TRANSLATOR: In-chat status update. First argument is a Telegram message id, second is message content.
                 showChatUpdate(
                     m_data, chatId,
@@ -651,9 +691,21 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
                 removeTempFile(pending.tempFile);
             }
         }
+        PendingMessageQueue::RemoveResult removedMessages;
+        if (!messageUpdate.from_cache_) {
+            removedMessages =
+                m_data.pendingMessages.removeMessages(
+                    chatId, deletedMessageIds);
+        }
         m_data.discardPendingReadReceipts(
             chatId, deletedMessageIds);
         if (!messageUpdate.from_cache_) {
+            const std::shared_ptr<LifetimeState> lifetime =
+                m_lifetime;
+            showMessages(
+                removedMessages.readyMessages, m_data);
+            if (!lifetime->alive)
+                return;
             if (!showDeletedMessageUpdate(
                     chatId,
                     messageUpdate.message_ids_)) {
@@ -841,7 +893,8 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
                 sendSucceeded.old_message_id_);
         TdAccountData::PendingSendInfo pending;
         const TdAccountData::PendingSendLookupResult lookup =
-            m_data.extractPendingSend(
+            extractPendingSendForUpdate(
+                m_data, sendSucceeded.message_.get(),
                 oldMessageId, pending);
         if (sendSucceeded.message_) {
             ChatId oldChatId;
@@ -878,7 +931,8 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
                 sendFailed.old_message_id_);
         TdAccountData::PendingSendInfo pending;
         const TdAccountData::PendingSendLookupResult lookup =
-            m_data.extractPendingSend(
+            extractPendingSendForUpdate(
+                m_data, sendFailed.message_.get(),
                 oldMessageId, pending);
         ChatTarget target;
         if (sendFailed.message_) {
@@ -1290,10 +1344,38 @@ void PurpleTdClient::onAnimatedStickerConverted(AccountThread *arg)
 {
     std::unique_ptr<AccountThread> baseThread(arg);
     StickerConversionThread *thread = dynamic_cast<StickerConversionThread *>(arg);
-    const td::td_api::chat  *chat   = thread ? m_data.getChat(thread->chatId) : nullptr;
-    if (!chat || !thread)
+    if (!thread)
         return;
-    IncomingMessage *pendingMessage = m_data.pendingMessages.findPendingMessage(getId(*chat), thread->message().id);
+
+    const PendingContentHandle pendingContent =
+        thread->pendingContent();
+    const auto discardOutput = [thread]() {
+        if (!thread->getOutputFileName().empty())
+            remove(thread->getOutputFileName().c_str());
+    };
+    if (!pendingContent.currentAndNotCancelled()) {
+        discardOutput();
+        return;
+    }
+
+    const td::td_api::chat *chat =
+        m_data.getChat(thread->chatId);
+    if (!chat) {
+        discardOutput();
+        return;
+    }
+
+    IncomingMessage *pendingMessage =
+        pendingContent.valid()
+        ? m_data.pendingMessages.findPendingMessage(
+              pendingContent)
+        : nullptr;
+    if (pendingContent.valid() && !pendingMessage &&
+        pendingContent.message.disposition() !=
+            PendingMessageState::Disposition::Released) {
+        discardOutput();
+        return;
+    }
 
     std::string  errorMessage = thread->getErrorMessage();
     gchar       *imageData    =  NULL;
@@ -1310,8 +1392,8 @@ void PurpleTdClient::onAnimatedStickerConverted(AccountThread *arg)
             g_error_free(error);
         } else
             success = true;
-        remove(thread->getOutputFileName().c_str());
     }
+    discardOutput();
 
     if (success) {
         int id = purple_imgstore_add_with_id (imageData, imageSize, NULL);
@@ -1319,8 +1401,10 @@ void PurpleTdClient::onAnimatedStickerConverted(AccountThread *arg)
             pendingMessage->animatedStickerConverted = true;
             pendingMessage->animatedStickerConvertSuccess = true;
             pendingMessage->animatedStickerImageId = id;
-            checkMessageReady(pendingMessage, m_transceiver, m_data);
-            pendingMessage = nullptr;
+            checkMessageReady(
+                pendingContent.message,
+                m_transceiver, m_data);
+            return;
         } else {
             std::string text = makeInlineImageText(id);
             showMessageText(m_data, *chat, thread->message(), text.c_str(), NULL, PURPLE_MESSAGE_IMAGES);
@@ -1329,8 +1413,19 @@ void PurpleTdClient::onAnimatedStickerConverted(AccountThread *arg)
         if (pendingMessage) {
             pendingMessage->animatedStickerConverted = true;
             pendingMessage->animatedStickerConvertSuccess = false;
-            checkMessageReady(pendingMessage, m_transceiver, m_data);
+            const std::shared_ptr<LifetimeState> lifetime =
+                m_lifetime;
+            checkMessageReady(
+                pendingContent.message,
+                m_transceiver, m_data);
             pendingMessage = nullptr;
+            if (!lifetime->alive)
+                return;
+            if (!pendingContent.currentAndNotCancelled())
+                return;
+            chat = m_data.getChat(thread->chatId);
+            if (!chat)
+                return;
         }
         // TRANSLATOR: In-chat error message, arguments will be a file name and a proper reason
         errorMessage = formatMessage(_("Could not read sticker file {0}: {1}"),

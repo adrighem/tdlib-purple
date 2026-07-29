@@ -21,6 +21,8 @@ constexpr int32_t TopicId = 42;
 constexpr int64_t PendingMessageId = 10;
 constexpr int64_t FailedMessageId = 20;
 constexpr int32_t FailureDate = 12345;
+constexpr int32_t ThirdUserId = 102;
+constexpr int64_t ThirdChatId = 1002;
 const char *const NotificationWho = " ";
 
 gboolean receiptConversationFocused(PurpleConversation *)
@@ -56,6 +58,11 @@ public:
 
 private:
     std::string m_path;
+};
+
+struct PendingPrivateSend {
+    uint64_t requestId = 0;
+    std::string tempPath;
 };
 
 object_ptr<sendMessage> expectedTextSend(
@@ -250,6 +257,92 @@ protected:
                 PURPLE_MESSAGE_SEND),
             0);
         tgl.verifyNoRequests();
+        prpl.verifyNoEvents();
+    }
+
+    void loginWithTwoPrivateChats()
+    {
+        loginWithOneContact();
+        tgl.update(standardUpdateUser(1));
+        tgl.update(standardPrivateChat(1));
+        tgl.verifyNoRequests();
+        prpl.discardEvents();
+    }
+
+    void cacheThirdPrivateChat()
+    {
+        object_ptr<user> thirdUser = makeUser(
+            ThirdUserId, "Johannes", "Kepler", "00003",
+            make_object<userStatusOffline>());
+        thirdUser->is_contact_ = true;
+        tgl.update(make_object<updateUser>(
+            std::move(thirdUser)));
+        tgl.update(make_object<updateNewChat>(makeChat(
+            ThirdChatId,
+            make_object<chatTypePrivate>(ThirdUserId),
+            "Johannes Kepler")));
+        tgl.verifyNoRequests();
+        prpl.discardEvents();
+    }
+
+    PurpleConversation *openPrivateConversation(
+        const std::string &name, bool focused)
+    {
+        PurpleConversation *conversation =
+            purple_conversation_new(
+                PURPLE_CONV_TYPE_IM, account, name.c_str());
+        EXPECT_NE(nullptr, conversation);
+        if (conversation)
+            conversation->ui_ops = receiptUiOps(focused);
+        return conversation;
+    }
+
+    void startPendingPrivateInlineSend(
+        unsigned contactIndex, unsigned photoIndex,
+        const std::string &caption,
+        PendingPrivateSend &pending)
+    {
+        ASSERT_LT(contactIndex, 2u);
+        uint8_t imageData[] = {
+            1, 2, 3, 4,
+            static_cast<uint8_t>(contactIndex + 5)};
+        const int imageId = purple_imgstore_add_with_id(
+            arrayDup(imageData, sizeof(imageData)),
+            sizeof(imageData), "pending-image");
+        ASSERT_GT(imageId, 0);
+        const std::string text = fmt::format(
+            "<img id=\"{}\">{}", imageId, caption);
+
+        ASSERT_EQ(
+            0, pluginInfo().send_im(
+                   connection, purpleUserName(contactIndex).c_str(),
+                   text.c_str(), PURPLE_MESSAGE_SEND));
+        pending.requestId = tgl.verifyRequest(
+            Mock_SendMessage(
+                chatIds[contactIndex], nullptr,
+                nullptr, nullptr,
+                Mock_InputMessagePhoto(
+                    make_object<inputFileLocal>(),
+                    nullptr, std::vector<int32_t>(), 0, 0,
+                    make_object<formattedText>(
+                        caption,
+                        std::vector<object_ptr<textEntity>>()))));
+        pending.tempPath =
+            tgl.getInputPhotoPath(photoIndex);
+        ASSERT_FALSE(pending.tempPath.empty());
+        ASSERT_TRUE(g_file_test(
+            pending.tempPath.c_str(), G_FILE_TEST_EXISTS));
+        prpl.verifyNoEvents();
+    }
+
+    void replyPendingPrivateSend(
+        const PendingPrivateSend &pending,
+        unsigned contactIndex, const std::string &text)
+    {
+        ASSERT_LT(contactIndex, 2u);
+        tgl.reply(pending.requestId, makeMessage(
+            PendingMessageId, selfId, chatIds[contactIndex],
+            true, 1, makeTextMessage(text)));
         prpl.verifyNoEvents();
     }
 };
@@ -853,6 +946,158 @@ TEST_F(
     setTargetFocused(topicTarget(), true);
     flushTargetReadReceipts(topicTarget());
     tgl.verifyNoRequests();
+}
+
+TEST_F(
+    ForumTopicSendingTest,
+    SameTemporaryIdSuccessUsesFinalChatOnly)
+{
+    constexpr int64_t FirstFinalMessageId = 110;
+    constexpr int64_t SecondFinalMessageId = 111;
+
+    loginWithTwoPrivateChats();
+    PurpleConversation *firstConversation =
+        openPrivateConversation(purpleUserName(0), false);
+    PurpleConversation *secondConversation =
+        openPrivateConversation(purpleUserName(1), false);
+    ASSERT_NE(nullptr, firstConversation);
+    ASSERT_NE(nullptr, secondConversation);
+    prpl.discardEvents();
+
+    PendingPrivateSend first;
+    PendingPrivateSend second;
+    startPendingPrivateInlineSend(
+        0, 0, "first pending", first);
+    startPendingPrivateInlineSend(
+        1, 1, "second pending", second);
+    TempFileCleanup firstCleanup(first.tempPath);
+    TempFileCleanup secondCleanup(second.tempPath);
+    replyPendingPrivateSend(
+        first, 0, "first pending");
+    replyPendingPrivateSend(
+        second, 1, "second pending");
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        PendingMessageId, selfId, chatIds[0], true, 1,
+        makeTextMessage("first pending"))));
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        PendingMessageId, selfId, chatIds[1], true, 1,
+        makeTextMessage("second pending"))));
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+
+    object_ptr<message> secondFinal = makeMessage(
+        SecondFinalMessageId, selfId, chatIds[1], true, 2,
+        makeTextMessage("second pending"));
+    secondFinal->sending_state_ = nullptr;
+    tgl.update(make_object<updateMessageSendSucceeded>(
+        std::move(secondFinal), PendingMessageId));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    EXPECT_TRUE(g_file_test(
+        first.tempPath.c_str(), G_FILE_TEST_EXISTS));
+    EXPECT_FALSE(g_file_test(
+        second.tempPath.c_str(), G_FILE_TEST_EXISTS));
+
+    PurpleTdClient *client = getTdClient(account);
+    ASSERT_NE(nullptr, client);
+    secondConversation->ui_ops = receiptUiOps(true);
+    client->sendReadReceipts(secondConversation);
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[1], {SecondFinalMessageId}, true));
+    firstConversation->ui_ops = receiptUiOps(true);
+    client->sendReadReceipts(firstConversation);
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[0], {PendingMessageId}, true));
+    prpl.verifyNoEvents();
+
+    object_ptr<message> firstFinal = makeMessage(
+        FirstFinalMessageId, selfId, chatIds[0], true, 2,
+        makeTextMessage("first pending"));
+    firstFinal->sending_state_ = nullptr;
+    tgl.update(make_object<updateMessageSendSucceeded>(
+        std::move(firstFinal), PendingMessageId));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_FALSE(g_file_test(
+        first.tempPath.c_str(), G_FILE_TEST_EXISTS));
+}
+
+TEST_F(
+    ForumTopicSendingTest,
+    SameTemporaryIdFailureUsesFinalChatAndKeepsAmbiguity)
+{
+    loginWithTwoPrivateChats();
+    cacheThirdPrivateChat();
+    ASSERT_NE(
+        nullptr,
+        openPrivateConversation(purpleUserName(0), true));
+    ASSERT_NE(
+        nullptr,
+        openPrivateConversation(purpleUserName(1), true));
+    const std::string thirdPurpleName =
+        "id" + std::to_string(ThirdUserId);
+    ASSERT_NE(
+        nullptr,
+        openPrivateConversation(thirdPurpleName, true));
+    prpl.discardEvents();
+
+    PendingPrivateSend first;
+    PendingPrivateSend second;
+    startPendingPrivateInlineSend(
+        0, 0, "first failure", first);
+    startPendingPrivateInlineSend(
+        1, 1, "second failure", second);
+    TempFileCleanup firstCleanup(first.tempPath);
+    TempFileCleanup secondCleanup(second.tempPath);
+    replyPendingPrivateSend(
+        first, 0, "first failure");
+    replyPendingPrivateSend(
+        second, 1, "second failure");
+
+    tgl.update(make_object<updateMessageSendFailed>(
+        makeMessage(
+            FailedMessageId, selfId, ThirdChatId, true,
+            FailureDate, makeTextMessage("unrelated failure")),
+        PendingMessageId,
+        make_object<error>(100, "unrelated rejection")));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_TRUE(g_file_test(
+        first.tempPath.c_str(), G_FILE_TEST_EXISTS));
+    EXPECT_TRUE(g_file_test(
+        second.tempPath.c_str(), G_FILE_TEST_EXISTS));
+
+    tgl.update(make_object<updateMessageSendFailed>(
+        makeMessage(
+            FailedMessageId + 1, selfId, chatIds[1], true,
+            FailureDate, makeTextMessage("second failure")),
+        PendingMessageId,
+        make_object<error>(101, "second rejection")));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ConversationWriteEvent(
+        purpleUserName(1), purpleUserName(1),
+        "Failed to send message: code 101 (second rejection)",
+        PURPLE_MESSAGE_SYSTEM, FailureDate));
+    EXPECT_TRUE(g_file_test(
+        first.tempPath.c_str(), G_FILE_TEST_EXISTS));
+    EXPECT_FALSE(g_file_test(
+        second.tempPath.c_str(), G_FILE_TEST_EXISTS));
+
+    tgl.update(make_object<updateMessageSendFailed>(
+        makeMessage(
+            FailedMessageId + 2, selfId, chatIds[0], true,
+            FailureDate, makeTextMessage("first failure")),
+        PendingMessageId,
+        make_object<error>(102, "first rejection")));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ConversationWriteEvent(
+        purpleUserName(0), purpleUserName(0),
+        "Failed to send message: code 102 (first rejection)",
+        PURPLE_MESSAGE_SYSTEM, FailureDate));
+    EXPECT_FALSE(g_file_test(
+        first.tempPath.c_str(), G_FILE_TEST_EXISTS));
 }
 
 TEST_F(

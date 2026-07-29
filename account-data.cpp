@@ -181,10 +181,145 @@ PendingMessageQueue::Message &PendingMessageQueue::addMessage(ChatQueue &queue, 
     }
 }
 
-IncomingMessage &PendingMessageQueue::addPendingMessage(IncomingMessage &&message,
-    MessageAction action)
+PendingMessageHandle PendingMessageQueue::assignFreshHandle(
+    IncomingMessage &message)
 {
-    if (!message.message) return message;
+    if (!message.message)
+        return PendingMessageHandle();
+
+    const ChatId chatId = getChatId(*message.message);
+    const MessageId messageId = getId(*message.message);
+    cancelReleased(chatId, messageId);
+
+    PendingMessageHandle handle;
+    handle.state = std::shared_ptr<PendingMessageState>(
+        new PendingMessageState(
+            chatId, messageId));
+    message.pendingMessage = handle;
+    message.pendingContent =
+        currentContentHandle(handle);
+    return handle;
+}
+
+void PendingMessageQueue::pruneReleased()
+{
+    for (auto entry = m_releasedMessages.begin();
+         entry != m_releasedMessages.end();) {
+        const std::shared_ptr<PendingMessageState> state =
+            entry->second.lock();
+        if (!state ||
+            state->disposition() !=
+                PendingMessageState::Disposition::Released) {
+            entry = m_releasedMessages.erase(entry);
+        } else {
+            ++entry;
+        }
+    }
+}
+
+void PendingMessageQueue::rememberReleased(
+    const PendingMessageHandle &handle)
+{
+    if (!handle.valid())
+        return;
+
+    pruneReleased();
+    const MessageKey key =
+        std::make_pair(handle.chatId(), handle.messageId());
+    auto previous = m_releasedMessages.find(key);
+    if (previous != m_releasedMessages.end()) {
+        const std::shared_ptr<PendingMessageState> state =
+            previous->second.lock();
+        if (state && state != handle.state) {
+            state->m_disposition =
+                PendingMessageState::Disposition::Cancelled;
+        }
+    }
+    m_releasedMessages[key] = handle.state;
+}
+
+void PendingMessageQueue::markReleased(
+    IncomingMessage &message)
+{
+    if (!message.pendingMessage.valid())
+        return;
+
+    message.pendingMessage.state->m_disposition =
+        PendingMessageState::Disposition::Released;
+    rememberReleased(message.pendingMessage);
+}
+
+void PendingMessageQueue::invalidateReleasedContent(
+    ChatId chatId, MessageId messageId)
+{
+    const MessageKey key =
+        std::make_pair(chatId, messageId);
+    auto entry = m_releasedMessages.find(key);
+    if (entry == m_releasedMessages.end()) {
+        pruneReleased();
+        return;
+    }
+
+    const std::shared_ptr<PendingMessageState> state =
+        entry->second.lock();
+    if (!state ||
+        state->disposition() !=
+            PendingMessageState::Disposition::Released) {
+        m_releasedMessages.erase(entry);
+        pruneReleased();
+        return;
+    }
+
+    ++state->m_contentRevision;
+    if (state->m_contentRevision == 0)
+        ++state->m_contentRevision;
+    pruneReleased();
+}
+
+void PendingMessageQueue::cancelReleased(
+    ChatId chatId, MessageId messageId)
+{
+    const MessageKey key =
+        std::make_pair(chatId, messageId);
+    auto entry = m_releasedMessages.find(key);
+    if (entry != m_releasedMessages.end()) {
+        const std::shared_ptr<PendingMessageState> state =
+            entry->second.lock();
+        if (state) {
+            state->m_disposition =
+                PendingMessageState::Disposition::Cancelled;
+        }
+        m_releasedMessages.erase(entry);
+    }
+    pruneReleased();
+}
+
+void PendingMessageQueue::cancelReleased(
+    ChatId chatId,
+    const std::vector<MessageId> &messageIds)
+{
+    for (MessageId messageId : messageIds)
+        cancelReleased(chatId, messageId);
+}
+
+void PendingMessageQueue::cancelAllReleased()
+{
+    for (auto &entry : m_releasedMessages) {
+        const std::shared_ptr<PendingMessageState> state =
+            entry.second.lock();
+        if (state) {
+            state->m_disposition =
+                PendingMessageState::Disposition::Cancelled;
+        }
+    }
+    m_releasedMessages.clear();
+}
+
+PendingMessageHandle PendingMessageQueue::addPendingMessage(
+    IncomingMessage &&message, MessageAction action)
+{
+    if (!message.message)
+        return PendingMessageHandle();
 
     ChatId     chatId  = getChatId(*message.message);
     auto       queueIt = getChatQueue(chatId);
@@ -204,7 +339,7 @@ IncomingMessage &PendingMessageQueue::addPendingMessage(IncomingMessage &&messag
     Message &newEntry = addMessage(*queue, action);
     newEntry.ready = false;
     newEntry.message = std::move(message);
-    return newEntry.message;
+    return assignFreshHandle(newEntry.message);
 }
 
 void PendingMessageQueue::extractReadyMessages(
@@ -217,31 +352,90 @@ void PendingMessageQueue::extractReadyMessages(
         purple_debug_misc(config::pluginId,"MessageQueue: chat %" G_GINT64_FORMAT ": "
                             "showing message %" G_GINT64_FORMAT "\n",
                             pQueue->chatId.value(), getId(*pReady->message.message).value());
+        markReleased(pReady->message);
         readyMessages.push_back(std::move(pReady->message));
     }
 
     pQueue->messages.erase(pQueue->messages.begin(), pReady);
-    if (pQueue->messages.empty()) {
+    if (pQueue->messages.empty() && pQueue->ready) {
         m_queues.erase(pQueue);
         pQueue = m_queues.end();
     }
 }
 
-void PendingMessageQueue::setMessageReady(ChatId chatId, MessageId messageId,
-                                          std::vector<IncomingMessage> &readyMessages)
+auto PendingMessageQueue::findMessage(
+    const PendingMessageHandle &handle) -> Message *
+{
+    if (!handle.valid() ||
+        handle.disposition() !=
+            PendingMessageState::Disposition::Queued) {
+        return nullptr;
+    }
+
+    auto queue = getChatQueue(handle.chatId());
+    if (queue == m_queues.end())
+        return nullptr;
+
+    auto message = std::find_if(
+        queue->messages.begin(), queue->messages.end(),
+        [&handle](const Message &entry) {
+            return entry.message.pendingMessage.state ==
+                   handle.state;
+        });
+    return message == queue->messages.end()
+        ? nullptr
+        : &*message;
+}
+
+IncomingMessage *PendingMessageQueue::findPendingMessage(
+    const PendingMessageHandle &handle)
+{
+    Message *message = findMessage(handle);
+    return message ? &message->message : nullptr;
+}
+
+IncomingMessage *PendingMessageQueue::findPendingMessage(
+    const PendingContentHandle &handle)
+{
+    if (!handle.current())
+        return nullptr;
+    return findPendingMessage(handle.message);
+}
+
+PendingContentHandle PendingMessageQueue::currentContentHandle(
+    const PendingMessageHandle &handle) const
+{
+    PendingContentHandle content;
+    if (handle.valid()) {
+        content.message = handle;
+        content.revision = handle.state->contentRevision();
+    }
+    return content;
+}
+
+void PendingMessageQueue::setMessageReady(
+    const PendingMessageHandle &handle,
+    std::vector<IncomingMessage> &readyMessages)
 {
     readyMessages.clear();
 
-    auto pQueue = getChatQueue(chatId);
+    if (!handle.valid())
+        return;
+
+    auto pQueue = getChatQueue(handle.chatId());
     if (pQueue == m_queues.end()) return;
 
     purple_debug_misc(config::pluginId,"MessageQueue: chat %" G_GINT64_FORMAT ": "
                       "message %" G_GINT64_FORMAT " now ready\n",
-                      chatId.value(), messageId.value());
+                      handle.chatId().value(),
+                      handle.messageId().value());
 
-    auto it = std::find_if(pQueue->messages.begin(), pQueue->messages.end(), [messageId](const Message &m) {
-        return (getId(*m.message.message) == messageId);
-    });
+    auto it = std::find_if(
+        pQueue->messages.begin(), pQueue->messages.end(),
+        [&handle](const Message &message) {
+            return message.message.pendingMessage.state ==
+                   handle.state;
+        });
     if (it == pQueue->messages.end()) return;
 
     it->ready = true;
@@ -256,8 +450,11 @@ IncomingMessage PendingMessageQueue::addReadyMessage(IncomingMessage &&message,
 
     ChatId chatId  = getChatId(*message.message);
     auto   queueIt = getChatQueue(chatId);
-    if (queueIt == m_queues.end())
+    if (queueIt == m_queues.end()) {
+        assignFreshHandle(message);
+        markReleased(message);
         return std::move(message);
+    }
 
     purple_debug_misc(config::pluginId,"MessageQueue: chat %" G_GINT64_FORMAT ": "
                       "adding pending message %" G_GINT64_FORMAT " (ready)\n",
@@ -266,28 +463,128 @@ IncomingMessage PendingMessageQueue::addReadyMessage(IncomingMessage &&message,
     Message &newEntry = addMessage(*queueIt, action);
     newEntry.ready = true;
     newEntry.message = std::move(message);
+    assignFreshHandle(newEntry.message);
 
     return IncomingMessage();
 }
 
-IncomingMessage *PendingMessageQueue::findPendingMessage(ChatId chatId, MessageId messageId)
+PendingContentHandle PendingMessageQueue::replaceMessageContent(
+    ChatId chatId, MessageId messageId,
+    PreparedMessageContent &&content)
 {
     auto queueIt = getChatQueue(chatId);
-    if (queueIt == m_queues.end()) return nullptr;
-    ChatQueue *queue = &*queueIt;
+    if (queueIt == m_queues.end()) {
+        invalidateReleasedContent(chatId, messageId);
+        return PendingContentHandle();
+    }
 
-    auto it = std::find_if(queue->messages.begin(), queue->messages.end(), [messageId](const Message &m) {
-        return (getId(*m.message.message) == messageId);
-    });
-    return (it != queue->messages.end()) ? &it->message : nullptr;
+    auto entry = std::find_if(
+        queueIt->messages.begin(), queueIt->messages.end(),
+        [messageId](const Message &candidate) {
+            return candidate.message.message &&
+                   getId(*candidate.message.message) == messageId;
+        });
+    if (entry == queueIt->messages.end() ||
+        !entry->message.message) {
+        invalidateReleasedContent(chatId, messageId);
+        return PendingContentHandle();
+    }
+
+    if (!entry->message.pendingMessage.valid())
+        assignFreshHandle(entry->message);
+    PendingMessageHandle handle =
+        entry->message.pendingMessage;
+    ++handle.state->m_contentRevision;
+    if (handle.state->m_contentRevision == 0)
+        ++handle.state->m_contentRevision;
+
+    IncomingMessage &message = entry->message;
+    message.message->content_ = std::move(content.content);
+    message.thumbnail = std::move(content.thumbnail);
+    message.inlineDownloadedFilePath.clear();
+    message.messageInfo.type = content.type;
+    message.selectedPhotoSizeId =
+        content.selectedPhotoSizeId;
+    message.inlineDownloadComplete = false;
+    message.inlineDownloadTimeout = false;
+    message.animatedStickerConverted = false;
+    message.animatedStickerConvertSuccess = false;
+    message.animatedStickerImageId = 0;
+    entry->ready = false;
+
+    message.pendingContent =
+        currentContentHandle(handle);
+    return message.pendingContent;
+}
+
+PendingMessageQueue::RemoveResult
+PendingMessageQueue::removeMessages(
+    ChatId chatId, const std::vector<MessageId> &messageIds)
+{
+    RemoveResult result;
+    if (messageIds.empty())
+        return result;
+
+    cancelReleased(chatId, messageIds);
+    auto queue = getChatQueue(chatId);
+    if (queue == m_queues.end())
+        return result;
+
+    const auto selected =
+        [&messageIds](const Message &entry) {
+            if (!entry.message.message)
+                return false;
+            const MessageId messageId =
+                getId(*entry.message.message);
+            return std::find(
+                       messageIds.begin(), messageIds.end(),
+                       messageId) != messageIds.end();
+        };
+
+    // Cancel every matching incarnation before erasing any of them. This
+    // prevents a removed ready follower from being released when an earlier
+    // blocking message is removed by the same Telegram update.
+    for (Message &entry : queue->messages) {
+        if (selected(entry) &&
+            entry.message.pendingMessage.valid()) {
+            entry.message.pendingMessage.state->m_disposition =
+                PendingMessageState::Disposition::Cancelled;
+        }
+    }
+
+    for (auto entry = queue->messages.begin();
+         entry != queue->messages.end();) {
+        if (selected(*entry)) {
+            entry = queue->messages.erase(entry);
+            ++result.removedCount;
+        } else {
+            ++entry;
+        }
+    }
+
+    if (result.removedCount != 0 && queue->ready)
+        extractReadyMessages(queue, result.readyMessages);
+    return result;
 }
 
 void PendingMessageQueue::flush(std::vector<IncomingMessage> &messages)
 {
     messages.clear();
+    cancelAllReleased();
     for (ChatQueue &queue: m_queues)
-        for (Message &message: queue.messages)
+        for (Message &message: queue.messages) {
+            if (message.message.pendingMessage.valid()) {
+                message.message.pendingMessage.state->m_disposition =
+                    PendingMessageState::Disposition::Cancelled;
+            }
+            // The old incarnation remains cancelled so outstanding replies,
+            // downloads, and conversions cannot act during teardown. Give
+            // only this synchronous display copy a fresh released identity.
+            assignFreshHandle(message.message);
+            markReleased(message.message);
+            message.message.forcedSyncDisplay = true;
             messages.push_back(std::move(message.message));
+        }
     m_queues.clear();
 }
 
@@ -1281,17 +1578,19 @@ const ContactRequest *TdAccountData::findContactRequest(UserId userId)
     return nullptr;
 }
 
-DownloadRequest* TdAccountData::findDownloadRequest(int32_t fileId)
+std::vector<uint64_t> TdAccountData::findDownloadRequestIds(
+    int32_t fileId) const
 {
-    auto it = std::find_if(m_requests.begin(), m_requests.end(),
-                           [fileId](const std::unique_ptr<PendingRequest> &req) {
-                               DownloadRequest *downloadReq = dynamic_cast<DownloadRequest *>(req.get());
-                               return (downloadReq && (downloadReq->fileId == fileId));
-                           });
-
-    if (it != m_requests.end())
-        return static_cast<DownloadRequest *>(it->get());
-    return nullptr;
+    std::vector<uint64_t> requestIds;
+    for (const std::unique_ptr<PendingRequest> &request :
+         m_requests) {
+        const DownloadRequest *download =
+            dynamic_cast<const DownloadRequest *>(
+                request.get());
+        if (download && download->fileId == fileId)
+            requestIds.push_back(download->requestId);
+    }
+    return requestIds;
 }
 
 void TdAccountData::extractFileTransferRequests(std::vector<PurpleXfer *> &transfers)
@@ -1389,7 +1688,8 @@ bool TdAccountData::extractPendingSend(
 }
 
 void TdAccountData::addFileTransfer(
-    int32_t fileId, PurpleXfer *xfer, ChatTarget target)
+    int32_t fileId, PurpleXfer *xfer, ChatTarget target,
+    ReceiveTransferKind receiveKind, uint64_t requestId)
 {
     auto it = std::find_if(
         m_fileTransfers.begin(), m_fileTransfers.end(),
@@ -1399,10 +1699,85 @@ void TdAccountData::addFileTransfer(
     if (it != m_fileTransfers.end()) {
         it->fileId = fileId;
         it->target = target;
+        it->receiveKind = receiveKind;
+        it->requestId = requestId;
     } else {
         m_fileTransfers.push_back(
-            FileTransferInfo{fileId, target, xfer});
+            FileTransferInfo{
+                fileId, target, xfer,
+                receiveKind, requestId});
     }
+}
+
+bool TdAccountData::associateFileTransferRequest(
+    PurpleXfer *xfer, ReceiveTransferKind receiveKind,
+    uint64_t requestId)
+{
+    auto transfer = std::find_if(
+        m_fileTransfers.begin(), m_fileTransfers.end(),
+        [xfer](const FileTransferInfo &candidate) {
+            return candidate.xfer == xfer;
+        });
+    if (transfer == m_fileTransfers.end())
+        return false;
+
+    transfer->receiveKind = receiveKind;
+    transfer->requestId = requestId;
+    return true;
+}
+
+bool TdAccountData::getFileTransferInfo(
+    PurpleXfer *xfer, FileTransferInfo &transfer) const
+{
+    auto match = std::find_if(
+        m_fileTransfers.begin(), m_fileTransfers.end(),
+        [xfer](const FileTransferInfo &candidate) {
+            return candidate.xfer == xfer;
+        });
+    if (match == m_fileTransfers.end())
+        return false;
+
+    transfer = *match;
+    return true;
+}
+
+bool TdAccountData::getFileTransferForRequest(
+    uint64_t requestId,
+    ReceiveTransferKind receiveKind,
+    FileTransferInfo &transfer) const
+{
+    auto match = std::find_if(
+        m_fileTransfers.begin(), m_fileTransfers.end(),
+        [requestId, receiveKind](
+            const FileTransferInfo &candidate) {
+            return candidate.requestId == requestId &&
+                   candidate.receiveKind == receiveKind;
+        });
+    if (match == m_fileTransfers.end())
+        return false;
+
+    transfer = *match;
+    return true;
+}
+
+bool TdAccountData::extractFileTransferForRequest(
+    uint64_t requestId,
+    ReceiveTransferKind receiveKind,
+    FileTransferInfo &transfer)
+{
+    auto match = std::find_if(
+        m_fileTransfers.begin(), m_fileTransfers.end(),
+        [requestId, receiveKind](
+            const FileTransferInfo &candidate) {
+            return candidate.requestId == requestId &&
+                   candidate.receiveKind == receiveKind;
+        });
+    if (match == m_fileTransfers.end())
+        return false;
+
+    transfer = *match;
+    m_fileTransfers.erase(match);
+    return true;
 }
 
 bool TdAccountData::getFileTransfer(

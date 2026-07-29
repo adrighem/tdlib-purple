@@ -10,6 +10,7 @@
 #include <mutex>
 #include <set>
 #include <list>
+#include <memory>
 #include <vector>
 #include <purple.h>
 
@@ -184,12 +185,82 @@ struct TgMessageInfo {
     }
 };
 
+class PendingMessageState {
+public:
+    enum class Disposition {
+        Queued,
+        Released,
+        Cancelled,
+    };
+
+    ChatId chatId() const { return m_chatId; }
+    MessageId messageId() const { return m_messageId; }
+    uint64_t contentRevision() const {
+        return m_contentRevision;
+    }
+    Disposition disposition() const { return m_disposition; }
+
+private:
+    friend class PendingMessageQueue;
+
+    PendingMessageState(ChatId chatId, MessageId messageId)
+    : m_chatId(chatId), m_messageId(messageId)
+    {}
+
+    ChatId      m_chatId;
+    MessageId   m_messageId;
+    uint64_t    m_contentRevision = 1;
+    Disposition m_disposition = Disposition::Queued;
+};
+
+struct PendingMessageHandle {
+    std::shared_ptr<PendingMessageState> state;
+
+    bool valid() const { return static_cast<bool>(state); }
+    ChatId chatId() const {
+        return state ? state->chatId() : ChatId::invalid;
+    }
+    MessageId messageId() const {
+        return state ? state->messageId() : MessageId::invalid;
+    }
+    PendingMessageState::Disposition disposition() const {
+        return state
+            ? state->disposition()
+            : PendingMessageState::Disposition::Cancelled;
+    }
+};
+
+struct PendingContentHandle {
+    PendingMessageHandle message;
+    uint64_t revision = 0;
+
+    bool valid() const {
+        return message.valid() && revision != 0;
+    }
+    bool current() const {
+        return valid() &&
+               revision == message.state->contentRevision();
+    }
+    bool currentAndNotCancelled() const {
+        return current() &&
+               message.disposition() !=
+                   PendingMessageState::Disposition::Cancelled;
+    }
+};
+
 class PurpleTdClient;
+
+enum class ReceiveTransferKind {
+    None,
+    InlineProgress,
+    Standard,
+};
 
 // Used for matching completed downloads to chats they belong to, and for starting PurpleXfer for
 // time-consuming downloads
 class DownloadRequest: public PendingRequest {
 public:
+    ReceiveTransferKind transferKind;
     ChatId         chatId;
 
     // For inline downloads this is a copy of original TgMessageInfo from IncomingMessage.
@@ -202,14 +273,20 @@ public:
     int            tempFd = -1;
     std::string    tempFileName;
     td::td_api::object_ptr<td::td_api::file> thumbnail;
+    PendingContentHandle pendingContent;
 
     // Could not pass object_ptr through variadic funciton :(
-    DownloadRequest(uint64_t requestId, ChatId chatId, TgMessageInfo &message,
+    DownloadRequest(uint64_t requestId,
+                    ReceiveTransferKind transferKind,
+                    ChatId chatId, TgMessageInfo &message,
                     int32_t fileId, int32_t fileSize, const std::string &fileDescription,
-                    td::td_api::file *thumbnail)
-    : PendingRequest(requestId), chatId(chatId), fileId(fileId),
+                    td::td_api::file *thumbnail,
+                    PendingContentHandle pendingContent)
+    : PendingRequest(requestId), transferKind(transferKind),
+      chatId(chatId), fileId(fileId),
       fileSize(fileSize), downloadedSize(0), fileDescription(fileDescription),
-      thumbnail(thumbnail)
+      thumbnail(thumbnail),
+      pendingContent(std::move(pendingContent))
     {
         // If download is started while the message is in PendingMessageQueue, repliedMessage will
         // be on IncomingMessage, and one here in TgMessageInfo will be NULL. In this case,
@@ -219,6 +296,8 @@ public:
         if (message.repliedMessage)
             this->message.repliedMessage = std::move(message.repliedMessage);
     }
+
+    ~DownloadRequest() override;
 };
 
 class AvatarDownloadRequest: public PendingRequest {
@@ -303,6 +382,22 @@ struct IncomingMessage {
     bool     animatedStickerConverted;
     bool     animatedStickerConvertSuccess;
     int      animatedStickerImageId;
+    // Set only for the synchronous best-effort display performed while the
+    // client is being destroyed. Such a display must not start new work.
+    bool     forcedSyncDisplay = false;
+    PendingMessageHandle pendingMessage;
+    // Immutable content incarnation captured when this message is queued or
+    // replaced. Do not reconstruct it from pendingMessage at display time:
+    // a reentrant edit can advance the shared state's revision while an old
+    // released IncomingMessage is still waiting in a display batch.
+    PendingContentHandle pendingContent;
+};
+
+struct PreparedMessageContent {
+    td::td_api::object_ptr<td::td_api::MessageContent> content;
+    td::td_api::object_ptr<td::td_api::file> thumbnail;
+    TgMessageInfo::Type type = TgMessageInfo::Type::Other;
+    int32_t selectedPhotoSizeId = 0;
 };
 
 class PendingMessageQueue {
@@ -315,16 +410,36 @@ public:
     static constexpr MessageAction Prepend = MessageAction::Prepend;
     using TdMessagePtr = td::td_api::object_ptr<td::td_api::message>;
 
-    IncomingMessage &addPendingMessage(IncomingMessage &&message, MessageAction action);
-    void             setMessageReady(ChatId chatId, MessageId messageId,
+    struct RemoveResult {
+        size_t removedCount = 0;
+        std::vector<IncomingMessage> readyMessages;
+    };
+
+    PendingMessageHandle addPendingMessage(
+                                     IncomingMessage &&message,
+                                     MessageAction action);
+    void             setMessageReady(const PendingMessageHandle &handle,
                                      std::vector<IncomingMessage> &readyMessages);
     IncomingMessage  addReadyMessage(IncomingMessage &&message, MessageAction action);
-    IncomingMessage *findPendingMessage(ChatId chatId, MessageId messageId);
+    IncomingMessage *findPendingMessage(
+                                     const PendingMessageHandle &handle);
+    IncomingMessage *findPendingMessage(
+                                     const PendingContentHandle &handle);
+    PendingContentHandle currentContentHandle(
+                                     const PendingMessageHandle &handle) const;
+    PendingContentHandle replaceMessageContent(
+                                     ChatId chatId, MessageId messageId,
+                                     PreparedMessageContent &&content);
+    RemoveResult     removeMessages(
+                                     ChatId chatId,
+                                     const std::vector<MessageId> &messageIds);
     void             flush(std::vector<IncomingMessage> &messages);
     void             setChatNotReady(ChatId chatId);
     void             setChatReady(ChatId chatId, std::vector<IncomingMessage> &readyMessages);
     bool             isChatReady(ChatId chatId);
 private:
+    using MessageKey = std::pair<ChatId, MessageId>;
+
     struct Message {
         IncomingMessage message;
         bool            ready;
@@ -335,9 +450,25 @@ private:
         std::list<Message> messages;
     };
     std::vector<ChatQueue> m_queues;
+    std::map<MessageKey, std::weak_ptr<PendingMessageState>>
+        m_releasedMessages;
 
     std::vector<ChatQueue>::iterator getChatQueue(ChatId chatId);
     Message &addMessage(ChatQueue &queue, MessageAction action);
+    PendingMessageHandle assignFreshHandle(IncomingMessage &message);
+    Message *findMessage(const PendingMessageHandle &handle);
+    void markReleased(IncomingMessage &message);
+    void rememberReleased(
+        const PendingMessageHandle &handle);
+    void invalidateReleasedContent(
+        ChatId chatId, MessageId messageId);
+    void cancelReleased(
+        ChatId chatId, MessageId messageId);
+    void cancelReleased(
+        ChatId chatId,
+        const std::vector<MessageId> &messageIds);
+    void cancelAllReleased();
+    void pruneReleased();
     void extractReadyMessages(std::vector<ChatQueue>::iterator pQueue,
                               std::vector<IncomingMessage> &readyMessages);
 };
@@ -570,19 +701,40 @@ public:
                                       ChatId chatId,
                                       MessageId messageId,
                                       PendingSendInfo &pending);
-    DownloadRequest *          findDownloadRequest(int32_t fileId);
+    std::vector<uint64_t>      findDownloadRequestIds(
+                                      int32_t fileId) const;
     void                       extractFileTransferRequests(std::vector<PurpleXfer *> &transfers);
 
     struct FileTransferInfo {
         int32_t     fileId = 0;
         ChatTarget  target;
         PurpleXfer *xfer = nullptr;
+        ReceiveTransferKind receiveKind =
+            ReceiveTransferKind::None;
+        uint64_t requestId = 0;
     };
 
     void                       addFileTransfer(
                                       int32_t fileId,
                                       PurpleXfer *xfer,
-                                      ChatTarget target);
+                                      ChatTarget target,
+                                      ReceiveTransferKind receiveKind,
+                                      uint64_t requestId);
+    bool                       associateFileTransferRequest(
+                                      PurpleXfer *xfer,
+                                      ReceiveTransferKind receiveKind,
+                                      uint64_t requestId);
+    bool                       getFileTransferInfo(
+                                      PurpleXfer *xfer,
+                                      FileTransferInfo &transfer) const;
+    bool                       getFileTransferForRequest(
+                                      uint64_t requestId,
+                                      ReceiveTransferKind receiveKind,
+                                      FileTransferInfo &transfer) const;
+    bool                       extractFileTransferForRequest(
+                                      uint64_t requestId,
+                                      ReceiveTransferKind receiveKind,
+                                      FileTransferInfo &transfer);
     bool                       getFileTransfer(
                                       int32_t fileId,
                                       PurpleXferType type,

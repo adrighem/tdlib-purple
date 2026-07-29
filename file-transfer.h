@@ -18,7 +18,8 @@ void startDocumentUploadProgress(ChatTarget target, PurpleXfer *xfer, const td::
 void downloadFileInline(int32_t fileId, ChatId chatId, TgMessageInfo &message,
                         const std::string &fileDescription,
                         td::td_api::object_ptr<td::td_api::file> thumbnail,
-                        TdTransceiver &transceiver, TdAccountData &account);
+                        TdTransceiver &transceiver, TdAccountData &account,
+                        PendingContentHandle pendingContent);
 void updateFileTransferProgress(const td::td_api::file &file, TdTransceiver &transceiver,
                                 TdAccountData &account, TdTransceiver::ResponseCb sendMessageResponse);
 

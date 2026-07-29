@@ -761,15 +761,20 @@ static PurpleConversation *showMessageTextChat(
                 account.findForumTopic(target);
             if (!topic || topic->deleted)
                 return NULL;
+
+            // A previously active child is not sufficient evidence that its
+            // parent is still eligible. Telegram can disable forum mode or
+            // revoke membership while a delayed message is waiting.
+            const bool parentAcceptsDisplay =
+                message.isLiveUpdate
+                ? !isKnownIneligibleForumParent(
+                      account, chat)
+                : isEligibleForumParent(account, chat);
+            if (!parentAcceptsDisplay)
+                return NULL;
+
             if (!topic->active) {
-                const bool parentAcceptsDisplay =
-                    message.isLiveUpdate
-                    ? !isKnownIneligibleForumParent(
-                          account, chat)
-                    : isEligibleForumParent(
-                          account, chat);
                 if (!message.forumTopicDisplayAccepted ||
-                    !parentAcceptsDisplay ||
                     account.activateForumTopic(target) == 0) {
                     return NULL;
                 }
@@ -990,6 +995,11 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
         text = newText.c_str();
 
     const bool hasDisplayedContent = text || notification;
+    const std::string senderDisplayName =
+        hasDisplayedContent
+        ? getSenderDisplayName(
+              chat, message, purpleAccount)
+        : std::string();
     const auto finishDisplay =
         [&](PurpleConversation *conv) {
             if (!hasDisplayedContent || !conv)
@@ -997,8 +1007,7 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
 
             account.rememberDisplayedMessage(
                 message.target, message.id, conv,
-                getSenderDisplayName(
-                    chat, message, purpleAccount),
+                senderDisplayName,
                 message.timestamp, flags,
                 message.readReceiptEligible);
             sendConversationReadReceipts(account, conv);
@@ -1021,6 +1030,7 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
             return false;
         if (!finishDisplay(conv))
             return false;
+        return true;
     }
 
     SecretChatId secretChatId = getSecretChatId(chat);
@@ -1034,6 +1044,7 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
             return false;
         if (!finishDisplay(conv))
             return false;
+        return true;
     }
 
     if (getBasicGroupId(chat).valid() || getSupergroupId(chat).valid()) {
@@ -1044,6 +1055,7 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
             return false;
         if (!finishDisplay(conv))
             return false;
+        return true;
     }
 
     return true;
@@ -1116,10 +1128,14 @@ static void showDownloadedSticker(const td::td_api::chat &chat, TgMessageInfo &m
                                   const std::string &filePath,
                                   const std::string &fileDescription,
                                   td::td_api::object_ptr<td::td_api::file> thumbnail,
-                                  TdTransceiver &transceiver, TdAccountData &account)
+                                  TdTransceiver &transceiver, TdAccountData &account,
+                                  PendingContentHandle pendingContent)
 {
+    const ChatId chatId = getId(chat);
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    PurpleTdClient *client = getTdClient(purpleAccount);
     if (isStickerAnimated(filePath)) {
-        if (shouldConvertAnimatedSticker(message, account.purpleAccount)) {
+        if (shouldConvertAnimatedSticker(message, purpleAccount)) {
             // TRANSLATOR: In-chat status update
             std::string notice = makeNoticeWithSender(chat, message, _("Converting sticker"),
                                                       account.purpleAccount);
@@ -1127,19 +1143,29 @@ static void showDownloadedSticker(const td::td_api::chat &chat, TgMessageInfo &m
                     account, chat, message, NULL, notice.c_str())) {
                 return;
             }
+            if (getTdClient(purpleAccount) != client ||
+                !pendingContent.currentAndNotCancelled()) {
+                return;
+            }
+            const td::td_api::chat *currentChat =
+                account.getChat(chatId);
+            if (!currentChat)
+                return;
             StickerConversionThread *thread;
-            thread = new StickerConversionThread(account.purpleAccount, filePath, getId(chat),
-                                                 std::move(message));
+            thread = new StickerConversionThread(purpleAccount, filePath, getId(*currentChat),
+                                                 std::move(message),
+                                                 pendingContent);
             thread->startThread();
         } else if (thumbnail) {
             // Avoid message like "Downloading sticker thumbnail...
             // Also ignore size limits, but only determined testers and crazy people would notice.
             if (thumbnail->local_ && thumbnail->local_->is_downloading_completed_)
                 showDownloadedSticker(chat, message, thumbnail->local_->path_,
-                                      fileDescription, nullptr, transceiver, account);
+                                      fileDescription, nullptr, transceiver, account,
+                                      pendingContent);
             else
                 downloadFileInline(thumbnail->id_, getId(chat), message, fileDescription, nullptr,
-                                   transceiver, account);
+                                   transceiver, account, pendingContent);
         } else {
             showGenericFileInline(chat, message, filePath, NULL, fileDescription, account);
         }
@@ -1170,8 +1196,11 @@ void showDownloadedFileInline(ChatId chatId, TgMessageInfo &message,
                               const std::string &filePath, const char *caption,
                               const std::string &fileDescription,
                               td::td_api::object_ptr<td::td_api::file> thumbnail,
-                              TdTransceiver &transceiver, TdAccountData &account)
+                              TdTransceiver &transceiver, TdAccountData &account,
+                              PendingContentHandle pendingContent)
 {
+    if (!pendingContent.currentAndNotCancelled())
+        return;
     const td::td_api::chat *chat = account.getChat(chatId);
     if (!chat) return;
 
@@ -1181,7 +1210,7 @@ void showDownloadedFileInline(ChatId chatId, TgMessageInfo &message,
         break;
     case TgMessageInfo::Type::Sticker:
         showDownloadedSticker(*chat, message, filePath, fileDescription, std::move(thumbnail),
-                              transceiver, account);
+                              transceiver, account, pendingContent);
         break;
     case TgMessageInfo::Type::Other:
         showGenericFileInline(*chat, message, filePath, caption, fileDescription, account);
@@ -1203,6 +1232,9 @@ struct InlineDownloadInfo {
     ChatId          chatId;
     TgMessageInfo   message;
     std::string     fileDescription;
+    PendingContentHandle pendingContent;
+    PurpleAccount  *purpleAccount;
+    PurpleTdClient *client;
     TdTransceiver  *transceiver;
     TdAccountData  *account;
 };
@@ -1210,8 +1242,13 @@ struct InlineDownloadInfo {
 static void startInlineDownload(void *user_data)
 {
     std::unique_ptr<InlineDownloadInfo> info(static_cast<InlineDownloadInfo *>(user_data));
+    if (getTdClient(info->purpleAccount) != info->client ||
+        !info->pendingContent.currentAndNotCancelled()) {
+        return;
+    }
     downloadFileInline(info->fileId, info->chatId, info->message, info->fileDescription,
-                       nullptr, *info->transceiver, *info->account);
+                       nullptr, *info->transceiver, *info->account,
+                       info->pendingContent);
 }
 
 static void ignoreInlineDownload(InlineDownloadInfo *info)
@@ -1219,9 +1256,14 @@ static void ignoreInlineDownload(InlineDownloadInfo *info)
     delete info;
 }
 
-static void requestInlineDownload(const char *sender, const td::td_api::file &file,
-                                  const std::string &fileDesc, const td::td_api::chat &chat,
-                                  TgMessageInfo &message, TdTransceiver &transceiver, TdAccountData &account)
+static void requestInlineDownload(
+    const td::td_api::file &file,
+    const std::string &fileDesc,
+    const td::td_api::chat &chat,
+    TgMessageInfo &message,
+    const PendingContentHandle &pendingContent,
+    TdTransceiver &transceiver,
+    TdAccountData &account)
 {
     // TRANSLATOR: Download dialog, primary content, argument will be a username.
     std::string question = formatMessage(_("Download file from {}?"),
@@ -1241,6 +1283,9 @@ static void requestInlineDownload(const char *sender, const td::td_api::file &fi
     info->chatId = getId(chat);
     info->message = std::move(message);
     info->fileDescription = fileDesc;
+    info->pendingContent = pendingContent;
+    info->purpleAccount = account.purpleAccount;
+    info->client = getTdClient(info->purpleAccount);
     info->transceiver = &transceiver;
     info->account = &account;
 
@@ -1258,6 +1303,11 @@ static void showFileInline(const td::td_api::chat &chat, IncomingMessage &fullMe
                            const std::string &fileDesc,
                            TdTransceiver &transceiver, TdAccountData &account)
 {
+    const PendingContentHandle pendingContent =
+        fullMessage.pendingContent;
+    const ChatId chatId = getId(chat);
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    PurpleTdClient *client = getTdClient(purpleAccount);
     std::string notice;
     bool        askDownload  = false;
     bool        autoDownload = false;
@@ -1303,32 +1353,80 @@ static void showFileInline(const td::td_api::chat &chat, IncomingMessage &fullMe
         return;
     }
 
+    if (getTdClient(purpleAccount) != client ||
+        !pendingContent.currentAndNotCancelled()) {
+        return;
+    }
+    const td::td_api::chat *currentChat =
+        account.getChat(chatId);
+    if (!currentChat)
+        return;
+
     if (autoDownload || askDownload) {
         if (fullMessage.animatedStickerConverted) {
             if (fullMessage.animatedStickerConvertSuccess) {
                 std::string text = makeInlineImageText(fullMessage.animatedStickerImageId);
-                showMessageText(account, chat, fullMessage.messageInfo, text.c_str(), NULL, PURPLE_MESSAGE_IMAGES);
+                showMessageText(account, *currentChat, fullMessage.messageInfo, text.c_str(), NULL, PURPLE_MESSAGE_IMAGES);
             }
+        } else if (fullMessage.forcedSyncDisplay) {
+            // Teardown may display a fresh released copy, but must never
+            // launch a download, prompt, or sticker conversion. Reuse only
+            // content that is already available synchronously.
+            const std::string availablePath =
+                file.local_ &&
+                    file.local_->is_downloading_completed_
+                ? file.local_->path_
+                : fullMessage.inlineDownloadComplete
+                    ? fullMessage.inlineDownloadedFilePath
+                    : std::string();
+            if (askDownload || availablePath.empty())
+                return;
+            if (fullMessage.messageInfo.type ==
+                    TgMessageInfo::Type::Sticker &&
+                isStickerAnimated(availablePath)) {
+                if (shouldConvertAnimatedSticker(
+                        fullMessage.messageInfo,
+                        purpleAccount)) {
+                    return;
+                }
+                if (fullMessage.thumbnail &&
+                    (!fullMessage.thumbnail->local_ ||
+                     !fullMessage.thumbnail->local_->
+                         is_downloading_completed_)) {
+                    // showDownloadedSticker normally fetches an unavailable
+                    // thumbnail. During teardown, fall back to the already
+                    // downloaded sticker link instead.
+                    fullMessage.thumbnail.reset();
+                }
+            }
+            showDownloadedFileInline(
+                chatId, fullMessage.messageInfo,
+                availablePath, caption, fileDesc,
+                std::move(fullMessage.thumbnail),
+                transceiver, account, pendingContent);
         } else if (file.local_ && file.local_->is_downloading_completed_)
-            showDownloadedFileInline(getId(chat), fullMessage.messageInfo, file.local_->path_,
-                                     caption, fileDesc, std::move(fullMessage.thumbnail), transceiver, account);
+            showDownloadedFileInline(chatId, fullMessage.messageInfo, file.local_->path_,
+                                     caption, fileDesc, std::move(fullMessage.thumbnail),
+                                     transceiver, account, pendingContent);
         else if (autoDownload && fullMessage.inlineDownloadComplete)
-            showDownloadedFileInline(getId(chat), fullMessage.messageInfo, fullMessage.inlineDownloadedFilePath,
-                                     caption, fileDesc, std::move(fullMessage.thumbnail), transceiver, account);
+            showDownloadedFileInline(chatId, fullMessage.messageInfo, fullMessage.inlineDownloadedFilePath,
+                                     caption, fileDesc, std::move(fullMessage.thumbnail),
+                                     transceiver, account, pendingContent);
         else if (autoDownload) {
             // When download takes too long, message will leave PendingMessageQueue and be "shown".
             // However, nothing more should be done at that point except keep waiting for the download.
             if (!fullMessage.inlineDownloadTimeout) {
                 purple_debug_misc(config::pluginId, "Downloading %s (file id %d)\n", fileDesc.c_str(),
                                 (int)file.id_);
-                downloadFileInline(file.id_, getId(chat), fullMessage.messageInfo, fileDesc,
-                                std::move(fullMessage.thumbnail), transceiver, account);
+                downloadFileInline(file.id_, chatId, fullMessage.messageInfo, fileDesc,
+                                std::move(fullMessage.thumbnail), transceiver, account,
+                                pendingContent);
             }
         } else if (askDownload) {
-            std::string sender = getSenderDisplayName(chat, fullMessage.messageInfo,
-                                                      account.purpleAccount);
-            requestInlineDownload(sender.c_str(), file, fileDesc, chat, fullMessage.messageInfo,
-                                  transceiver, account);
+            requestInlineDownload(
+                file, fileDesc, *currentChat,
+                fullMessage.messageInfo, pendingContent,
+                transceiver, account);
         }
     }
 
@@ -1367,7 +1465,8 @@ static void showFileMessage(const td::td_api::chat &chat, IncomingMessage &fullM
                                       account.purpleAccount);
         showMessageText(account, chat, fullMessage.messageInfo, captionStr, notice.c_str());
     } else {
-        if ( !fullMessage.standardDownloadConfigured || !chat.type_ ||
+        if (fullMessage.forcedSyncDisplay ||
+             !fullMessage.standardDownloadConfigured || !chat.type_ ||
              ((chat.type_->get_id() != td::td_api::chatTypePrivate::ID) &&
               (chat.type_->get_id() != td::td_api::chatTypeSecret::ID)) )
         {
@@ -1393,10 +1492,16 @@ static void showStickerMessage(const td::td_api::chat &chat, IncomingMessage &fu
 }
 
 void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
+                 const PendingContentHandle &pendingContent,
                  TdTransceiver &transceiver, TdAccountData &account)
 {
-    if (!fullMessage.message) return;
+    if (!fullMessage.message ||
+        !pendingContent.currentAndNotCancelled()) {
+        return;
+    }
     td::td_api::message &message = *fullMessage.message;
+    const ChatId chatId = getChatId(message);
+    const td::td_api::chat *currentChat = &chat;
 
     if (!message.content_)
         return;
@@ -1409,17 +1514,22 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
         if (purple_account_get_bool(account.purpleAccount, AccountOptions::ShowSelfDestruct, AccountOptions::ShowSelfDestructDefault)) {
             // TRANSLATOR: In-chat warning message
             const char *text   = _("Received self-destructing message, displaying anyway");
-            std::string notice = makeNoticeWithSender(chat, messageInfo, text, account.purpleAccount);
+            std::string notice = makeNoticeWithSender(*currentChat, messageInfo, text, account.purpleAccount);
             if (!showMessageText(
-                    account, chat, messageInfo, NULL,
+                    account, *currentChat, messageInfo, NULL,
                     notice.c_str())) {
                 return;
             }
+            if (!pendingContent.currentAndNotCancelled())
+                return;
+            currentChat = account.getChat(chatId);
+            if (!currentChat)
+                return;
         } else {
             // TRANSLATOR: In-chat warning message
             const char *text   = _("Received self-destructing message, not displayed due to lack of support");
-            std::string notice = makeNoticeWithSender(chat, messageInfo, text, account.purpleAccount);
-            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            std::string notice = makeNoticeWithSender(*currentChat, messageInfo, text, account.purpleAccount);
+            showMessageText(account, *currentChat, messageInfo, NULL, notice.c_str());
             return;
         }
     }
@@ -1430,25 +1540,38 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
         if (purple_account_get_bool(account.purpleAccount, AccountOptions::ShowSelfDestruct, AccountOptions::ShowSelfDestructDefault)) {
             // TRANSLATOR: In-chat warning message
             std::string notice = formatMessage("Received secret file {}, displaying anyway", fileInfo.description);
-            notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
+            notice = makeNoticeWithSender(*currentChat, messageInfo, notice.c_str(), account.purpleAccount);
             if (!showMessageText(
-                    account, chat, messageInfo,
+                    account, *currentChat, messageInfo,
                     !fileInfo.caption.empty()
                         ? fileInfo.caption.c_str()
                         : nullptr,
                     notice.c_str())) {
                 return;
             }
+            if (!pendingContent.currentAndNotCancelled())
+                return;
+            currentChat = account.getChat(chatId);
+            if (!currentChat)
+                return;
         } else {
             // TRANSLATOR: In-chat warning message
             std::string notice = formatMessage("Ignoring secret file ({})", fileInfo.description);
-            notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
-            showMessageText(account, chat, messageInfo, !fileInfo.caption.empty() ? fileInfo.caption.c_str() : nullptr,
+            notice = makeNoticeWithSender(*currentChat, messageInfo, notice.c_str(), account.purpleAccount);
+            showMessageText(account, *currentChat, messageInfo, !fileInfo.caption.empty() ? fileInfo.caption.c_str() : nullptr,
                             notice.c_str());
             return;
         }
     }
 
+    if (!pendingContent.currentAndNotCancelled())
+        return;
+    currentChat = account.getChat(chatId);
+    if (!currentChat)
+        return;
+
+    {
+    const td::td_api::chat &chat = *currentChat;
     switch (message.content_->get_id()) {
         case td::td_api::messageText::ID:
             showTextMessage(chat, messageInfo, static_cast<const td::td_api::messageText &>(*message.content_),
@@ -1730,6 +1853,7 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
             showMessageText(account, chat, messageInfo, NULL, notice.c_str());
         }
     }
+    }
 
     // Put it back - may be needed if long download is in progress
     fullMessage.repliedMessage = std::move(messageInfo.repliedMessage);
@@ -1741,11 +1865,17 @@ void showMessages(std::vector<IncomingMessage>& messages, TdAccountData &account
     PurpleTdClient *client = getTdClient(purpleAccount);
     account.beginReadReceiptBatch();
     for (IncomingMessage &readyMessage: messages) {
-        if (!readyMessage.message) continue;
+        const PendingContentHandle pendingContent =
+            readyMessage.pendingContent;
+        if (!readyMessage.message ||
+            !pendingContent.currentAndNotCancelled()) {
+            continue;
+        }
         const td::td_api::chat *chat = account.getChat(getChatId(*readyMessage.message));
         if (chat)
             showMessage(
-                *chat, readyMessage, account.transceiver, account);
+                *chat, readyMessage, pendingContent,
+                account.transceiver, account);
         if (client && getTdClient(purpleAccount) != client)
             return;
     }
@@ -1798,6 +1928,41 @@ const td::td_api::file *selectPhotoSize(PurpleAccount *account, const td::td_api
     return selectedSize ? selectedSize->photo_.get() : nullptr;
 }
 
+static PreparedMessageContent prepareMessageContent(
+    td::td_api::object_ptr<td::td_api::MessageContent> content,
+    PurpleAccount *account)
+{
+    PreparedMessageContent prepared;
+    prepared.content = std::move(content);
+    if (!prepared.content)
+        return prepared;
+
+    if (prepared.content->get_id() ==
+        td::td_api::messagePhoto::ID) {
+        prepared.type = TgMessageInfo::Type::Photo;
+        const auto &photo =
+            static_cast<const td::td_api::messagePhoto &>(
+                *prepared.content);
+        const td::td_api::file *file =
+            selectPhotoSize(account, photo);
+        if (file)
+            prepared.selectedPhotoSizeId = file->id_;
+    } else if (
+        prepared.content->get_id() ==
+        td::td_api::messageSticker::ID) {
+        prepared.type = TgMessageInfo::Type::Sticker;
+        auto &sticker =
+            static_cast<td::td_api::messageSticker &>(
+                *prepared.content);
+        if (sticker.sticker_ &&
+            sticker.sticker_->thumbnail_) {
+            prepared.thumbnail = std::move(
+                sticker.sticker_->thumbnail_->file_);
+        }
+    }
+    return prepared;
+}
+
 void makeFullMessage(const td::td_api::chat &chat, td::td_api::object_ptr<td::td_api::message> message,
                      IncomingMessage &fullMessage, const TdAccountData &account)
 {
@@ -1814,6 +1979,9 @@ void makeFullMessage(const td::td_api::chat &chat, td::td_api::object_ptr<td::td
     fullMessage.animatedStickerConverted = false;
     fullMessage.animatedStickerConvertSuccess = false;
     fullMessage.animatedStickerImageId = 0;
+    fullMessage.forcedSyncDisplay = false;
+    fullMessage.pendingMessage = PendingMessageHandle();
+    fullMessage.pendingContent = PendingContentHandle();
 
     const char *option = purple_account_get_string(account.purpleAccount, AccountOptions::DownloadBehaviour,
                                                    AccountOptions::DownloadBehaviourDefault());
@@ -1833,21 +2001,15 @@ void makeFullMessage(const td::td_api::chat &chat, td::td_api::object_ptr<td::td
     if (message->forward_info_)
         messageInfo.forwardedFrom = getForwardSource(*message->forward_info_, account);
 
-    if (message && message->content_) {
-        if (message->content_->get_id() == td::td_api::messagePhoto::ID) {
-            messageInfo.type = TgMessageInfo::Type::Photo;
-            const td::td_api::messagePhoto &photo = static_cast<const td::td_api::messagePhoto &>(*message->content_);
-            const td::td_api::file *file = selectPhotoSize(account.purpleAccount, photo);
-            if (file)
-                fullMessage.selectedPhotoSizeId = file->id_;
-        } else if (message->content_->get_id() == td::td_api::messageSticker::ID) {
-            messageInfo.type = TgMessageInfo::Type::Sticker;
-            td::td_api::messageSticker &sticker = static_cast<td::td_api::messageSticker &>(*message->content_);
-            if (sticker.sticker_ && sticker.sticker_->thumbnail_) {
-                fullMessage.thumbnail = std::move(sticker.sticker_->thumbnail_->file_);
-            }
-        }
-    }
+    PreparedMessageContent prepared =
+        prepareMessageContent(
+            std::move(message->content_),
+            account.purpleAccount);
+    message->content_ = std::move(prepared.content);
+    fullMessage.thumbnail = std::move(prepared.thumbnail);
+    fullMessage.selectedPhotoSizeId =
+        prepared.selectedPhotoSizeId;
+    messageInfo.type = prepared.type;
 
     fullMessage.message = std::move(message);
 }
@@ -2020,15 +2182,25 @@ bool isMessageReady(const IncomingMessage &fullMessage, const TdAccountData &acc
     return true;
 }
 
-void fetchExtras(IncomingMessage &fullMessage, TdTransceiver &transceiver, TdAccountData &account,
-                 TdTransceiver::ResponseCb2 onFetchReply)
+static void findMessageResponse(
+    TdAccountData &account,
+    const PendingMessageHandle &pendingMessage,
+    td::td_api::object_ptr<td::td_api::Object> object);
+
+static void fetchReplyExtra(
+    const PendingMessageHandle &handle,
+    TdTransceiver &transceiver, TdAccountData &account)
 {
-    if (!fullMessage.message) return;
-    const td::td_api::message &message = *fullMessage.message;
+    const IncomingMessage *fullMessage =
+        account.pendingMessages.findPendingMessage(handle);
+    if (!fullMessage || !fullMessage->message)
+        return;
+
+    const td::td_api::message &message =
+        *fullMessage->message;
     MessageId messageId      = getId(message);
     MessageId replyMessageId = getReplyMessageId(message);
     ChatId    chatId         = getChatId(message);
-    const td::td_api::chat *chat = account.getChat(chatId);
 
     if (replyMessageId.valid()) {
         purple_debug_misc(config::pluginId, "Fetching message %" G_GINT64_FORMAT " which message %" G_GINT64_FORMAT " replies to\n",
@@ -2036,52 +2208,88 @@ void fetchExtras(IncomingMessage &fullMessage, TdTransceiver &transceiver, TdAcc
         auto getMessageReq = td::td_api::make_object<td::td_api::getMessage>();
         getMessageReq->chat_id_    = chatId.value();
         getMessageReq->message_id_ = replyMessageId.value();
-        transceiver.sendQueryWithTimeout(std::move(getMessageReq), onFetchReply, 1);
+        transceiver.sendQueryWithTimeout(
+            std::move(getMessageReq),
+            [&account, handle](
+                uint64_t,
+                td::td_api::object_ptr<
+                    td::td_api::Object> object) {
+                findMessageResponse(
+                    account, handle, std::move(object));
+            },
+            1);
     }
+}
+
+static void fetchContentExtra(
+    const PendingContentHandle &handle,
+    TdTransceiver &transceiver, TdAccountData &account)
+{
+    IncomingMessage *fullMessage =
+        account.pendingMessages.findPendingMessage(handle);
+    if (!fullMessage || !fullMessage->message)
+        return;
 
     FileInfo fileInfo;
-    getFileFromMessage(fullMessage, fileInfo);
-    if (fileInfo.file && message.content_ && chat && isInlineDownload(fullMessage, *message.content_, *chat)) {
+    getFileFromMessage(*fullMessage, fileInfo);
+    const td::td_api::message &message =
+        *fullMessage->message;
+    const ChatId chatId = getChatId(message);
+    const td::td_api::chat *chat = account.getChat(chatId);
+    if (fileInfo.file && message.content_ && chat &&
+        isInlineDownload(
+            *fullMessage, *message.content_, *chat)) {
         if (fileInfo.file->local_ && fileInfo.file->local_->is_downloading_completed_ &&
             (message.content_->get_id() == td::td_api::messageSticker::ID) &&
             isStickerAnimated(fileInfo.file->local_->path_))
         {
-            if (shouldConvertAnimatedSticker(fullMessage.messageInfo, account.purpleAccount)) {
+            if (shouldConvertAnimatedSticker(fullMessage->messageInfo, account.purpleAccount)) {
                 StickerConversionThread *thread;
                 thread = new StickerConversionThread(account.purpleAccount, fileInfo.file->local_->path_,
-                                                     chatId, &fullMessage.messageInfo);
+                                                     chatId, &fullMessage->messageInfo,
+                                                     handle);
                 thread->startThread();
             }
             // TODO: if animated stickers are disabled, fetch thumbnail instead
-        } else if (inlineDownloadNeedAutoDl(fullMessage, *fileInfo.file)) {
+        } else if (
+            inlineDownloadNeedAutoDl(
+                *fullMessage, *fileInfo.file)) {
             // TgMessageInfo on fullMessage has replyMessage=NULL which will be copied onto DownloadRequest.
             // If message leaves PendingMessageQueue while download is still active, there's probably
             // a replyMessage on IncomingMessage by then, and it needs to be moved over to DownloadRequest.
             // Thumbnail also needs moving onto DownloadRequest.
-            downloadFileInline(fileInfo.file->id_, chatId, fullMessage.messageInfo, fileInfo.description,
-                               nullptr, transceiver, account);
+            downloadFileInline(
+                fileInfo.file->id_, chatId,
+                fullMessage->messageInfo,
+                fileInfo.description, nullptr,
+                transceiver, account, handle);
         }
     }
 }
 
-void checkMessageReady(const IncomingMessage *message, TdTransceiver &transceiver,
+void checkMessageReady(const PendingMessageHandle &handle, TdTransceiver &transceiver,
                        TdAccountData &account, std::vector<IncomingMessage> *rvReadyMessages)
 {
+    const IncomingMessage *message =
+        account.pendingMessages.findPendingMessage(handle);
     if (!message || !message->message) return;
 
     if (isMessageReady(*message, account)) {
         std::vector<IncomingMessage> readyMessages;
-        account.pendingMessages.setMessageReady(getChatId(*message->message), getId(*message->message),
+        account.pendingMessages.setMessageReady(handle,
                                                rvReadyMessages ? *rvReadyMessages : readyMessages);
         message = nullptr;
         showMessages(rvReadyMessages ? *rvReadyMessages : readyMessages, account);
     }
 }
 
-static void findMessageResponse(TdAccountData &account, ChatId chatId, MessageId pendingMessageId,
-                                td::td_api::object_ptr<td::td_api::Object> object)
+static void findMessageResponse(
+    TdAccountData &account,
+    const PendingMessageHandle &handle,
+    td::td_api::object_ptr<td::td_api::Object> object)
 {
-    IncomingMessage *pendingMessage = account.pendingMessages.findPendingMessage(chatId, pendingMessageId);
+    IncomingMessage *pendingMessage =
+        account.pendingMessages.findPendingMessage(handle);
     if (!pendingMessage) return;
 
     pendingMessage->repliedMessageFetchDoneOrFailed = true;
@@ -2089,9 +2297,37 @@ static void findMessageResponse(TdAccountData &account, ChatId chatId, MessageId
         pendingMessage->repliedMessage = td::move_tl_object_as<td::td_api::message>(object);
     else
         purple_debug_misc(config::pluginId, "Failed to fetch reply source for message %" G_GINT64_FORMAT "\n",
-                          pendingMessageId.value());
+                          handle.messageId().value());
 
-    checkMessageReady(pendingMessage, account.transceiver, account);
+    checkMessageReady(handle, account.transceiver, account);
+}
+
+bool replaceQueuedMessageContent(
+    TdAccountData &account, ChatId chatId,
+    MessageId messageId,
+    td::td_api::object_ptr<td::td_api::MessageContent> content,
+    std::vector<IncomingMessage> &readyMessages)
+{
+    readyMessages.clear();
+    PreparedMessageContent prepared =
+        prepareMessageContent(
+            std::move(content), account.purpleAccount);
+    const PendingContentHandle handle =
+        account.pendingMessages.replaceMessageContent(
+            chatId, messageId, std::move(prepared));
+    if (!handle.valid())
+        return false;
+
+    const IncomingMessage *message =
+        account.pendingMessages.findPendingMessage(handle);
+    if (message && isMessageReady(*message, account)) {
+        account.pendingMessages.setMessageReady(
+            handle.message, readyMessages);
+    } else {
+        fetchContentExtra(
+            handle, account.transceiver, account);
+    }
+    return true;
 }
 
 bool handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
@@ -2166,15 +2402,20 @@ bool handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
     if (isMessageReady(fullMessage, account)) {
         IncomingMessage readyMessage = account.pendingMessages.addReadyMessage(std::move(fullMessage), action);
         if (readyMessage.message)
-            showMessage(chat, readyMessage, account.transceiver, account);
+            showMessage(
+                chat, readyMessage,
+                readyMessage.pendingContent,
+                account.transceiver, account);
     } else {
-        MessageId messageId = getId(*fullMessage.message);
-        IncomingMessage &addedMessage = account.pendingMessages.addPendingMessage(std::move(fullMessage), action);
-        fetchExtras(addedMessage, account.transceiver, account,
-            [&account, chatId, messageId](uint64_t, td::td_api::object_ptr<td::td_api::Object> object) {
-                findMessageResponse(account, chatId, messageId, std::move(object));
-            }
-        );
+        const PendingMessageHandle handle =
+            account.pendingMessages.addPendingMessage(
+                std::move(fullMessage), action);
+        fetchReplyExtra(
+            handle, account.transceiver, account);
+        fetchContentExtra(
+            account.pendingMessages.currentContentHandle(
+                handle),
+            account.transceiver, account);
     }
     return true;
 }

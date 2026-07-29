@@ -2640,3 +2640,146 @@ TEST_F(
     prpl.verifyEvents(ConvSetTitleEvent(
         purpleName, topicDisplayTitle(TopicId, "Support")));
 }
+
+TEST_F(
+    ForumTopicReceivingTest,
+    DeletedDelayedChildIgnoresLateDownloadWithoutGeneralFallback)
+{
+    constexpr int32_t TopicId = 42;
+    constexpr int64_t MessageId = 10000;
+    constexpr int32_t FileId = 1234;
+    const std::string childName =
+        topicPurpleName(TopicId);
+
+    loginWithForumSupergroup();
+    cacheTopic(TopicId, "Support");
+    purple_account_set_bool(
+        account, AccountOptions::ReadReceipts, FALSE);
+
+    serv_got_joined_chat(
+        connection, 1, groupChatPurpleName.c_str());
+    prpl.discardEvents();
+    ASSERT_NE(nullptr, findRoom(groupChatPurpleName));
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        MessageId, userIds[0], groupChatId, false, 12345,
+        makeMessagePhoto(
+            makePhotoRemote(FileId, 10000, 640, 480),
+            make_object<formattedText>(
+                "photo",
+                std::vector<object_ptr<textEntity>>()),
+            false),
+        make_object<messageTopicForum>(TopicId))));
+    const uint64_t downloadRequest = tgl.verifyRequest(
+        downloadFile(FileId, 1, 0, 0, true));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_EQ(nullptr, findRoom(childName));
+
+    tgl.update(make_object<updateDeleteMessages>(
+        groupChatId, std::vector<int64_t>{MessageId},
+        true, false));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_EQ(nullptr, findRoom(childName));
+    EXPECT_NE(nullptr, findRoom(groupChatPurpleName));
+
+    tgl.reply(
+        downloadRequest,
+        make_object<file>(
+            FileId, 10000, 10000,
+            make_object<localFile>(
+                "/late", true, true, false, true,
+                0, 10000, 10000),
+            make_object<remoteFile>(
+                "remote", "unique", false, true,
+                10000)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_EQ(nullptr, findRoom(childName));
+    EXPECT_NE(nullptr, findRoom(groupChatPurpleName));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    DeletedReleasedChildIgnoresLateDownloadWithoutReopening)
+{
+    constexpr int32_t TopicId = 42;
+    constexpr int64_t MessageId = 10000;
+    constexpr int32_t FileId = 1234;
+    constexpr int32_t Date = 12345;
+    const std::string childName =
+        topicPurpleName(TopicId);
+
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourStandard);
+    loginWithForumSupergroup();
+    cacheTopic(TopicId, "Support");
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        MessageId, userIds[0], groupChatId, false, Date,
+        makeMessagePhoto(
+            makePhotoRemote(FileId, 10000, 640, 480),
+            make_object<formattedText>(
+                "photo",
+                std::vector<object_ptr<textEntity>>()),
+            false),
+        make_object<messageTopicForum>(TopicId))));
+    const uint64_t downloadRequest = tgl.verifyRequest(
+        downloadFile(FileId, 1, 0, 0, true));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.runTimeouts();
+    verifyForumTopicReadReceipt(MessageId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 2, childName, childName),
+        ConvSetTitleEvent(
+            childName,
+            topicDisplayTitle(TopicId, "Support")),
+        ServGotChatEvent(
+            connection, 2,
+            userFirstNames[0] + " " +
+                userLastNames[0],
+            "photo", PURPLE_MESSAGE_RECV, Date),
+        ConversationWriteEvent(
+            childName, " ",
+            userFirstNames[0] + " " +
+                userLastNames[0] +
+                ": Downloading photo",
+            PURPLE_MESSAGE_SYSTEM, Date));
+    ASSERT_NE(nullptr, findRoom(childName));
+    expectNoGeneralConversation();
+
+    purple_conversation_destroy(
+        findRoom(childName));
+    prpl.verifyNoEvents();
+    EXPECT_EQ(nullptr, findRoom(childName));
+
+    tgl.update(make_object<updateDeleteMessages>(
+        groupChatId,
+        std::vector<int64_t>{MessageId},
+        true, false));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_EQ(nullptr, findRoom(childName));
+    expectNoGeneralConversation();
+
+    tgl.reply(
+        downloadRequest,
+        make_object<file>(
+            FileId, 10000, 10000,
+            make_object<localFile>(
+                "/late-released", true, true,
+                false, true, 0, 10000, 10000),
+            make_object<remoteFile>(
+                "remote", "unique", false, true,
+                10000)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_EQ(nullptr, findRoom(childName));
+    expectNoGeneralConversation();
+}

@@ -1,10 +1,139 @@
 #include "fixture.h"
 #include "libpurple-mock.h"
 #include "buildopt.h"
+#include "purple-info.h"
 #include <td/telegram/td_api.h>
 using namespace td::td_api;
 
-class FileTransferTest: public CommTest {};
+class FileTransferTest: public CommTest {
+protected:
+    struct InlineReceive {
+        uint64_t requestId;
+        PurpleXfer *xfer;
+        std::string tempFileName;
+    };
+
+    struct StandardReceive {
+        uint64_t requestId;
+        PurpleXfer *xfer;
+    };
+
+    object_ptr<messagePhoto> remotePhoto(
+        int32_t fileId, const std::string &caption)
+    {
+        return makeMessagePhoto(
+            makePhotoRemote(fileId, 10000, 640, 480),
+            make_object<formattedText>(
+                caption,
+                std::vector<object_ptr<textEntity>>()),
+            false);
+    }
+
+    object_ptr<messageDocument> remoteDocument(
+        int32_t fileId, const std::string &caption)
+    {
+        return make_object<messageDocument>(
+            make_object<document>(
+                "shared.file", "mime/type", nullptr, nullptr,
+                make_object<file>(
+                    fileId, 10000, 10000,
+                    make_object<localFile>(
+                        "", true, true, false, false,
+                        0, 0, 0),
+                    make_object<remoteFile>(
+                        "remote", "unique", false, true,
+                        10000))),
+            make_object<formattedText>(
+                caption,
+                std::vector<object_ptr<textEntity>>()));
+    }
+
+    object_ptr<file> activeDownload(
+        int32_t fileId, int32_t downloadedSize)
+    {
+        return make_object<file>(
+            fileId, 10000, 10000,
+            make_object<localFile>(
+                "/partial", true, true, true, false,
+                0, 0, downloadedSize),
+            make_object<remoteFile>(
+                "remote", "unique", false, true, 10000));
+    }
+
+    object_ptr<file> completedDownload(
+        int32_t fileId, const std::string &path)
+    {
+        return make_object<file>(
+            fileId, 10000, 10000,
+            make_object<localFile>(
+                path, true, true, false, true,
+                0, 10000, 10000),
+            make_object<remoteFile>(
+                "remote", "unique", false, true, 10000));
+    }
+
+    InlineReceive beginTimedOutInlineReceive(
+        int64_t messageId, int32_t fileId,
+        int32_t date, const std::string &caption)
+    {
+        tgl.update(make_object<updateNewMessage>(makeMessage(
+            messageId, userIds[0], chatIds[0], false, date,
+            remotePhoto(fileId, caption))));
+        const uint64_t requestId = tgl.verifyRequest(
+            downloadFile(fileId, 1, 0, 0, true));
+        prpl.verifyNoEvents();
+
+        runTimeouts();
+        std::string tempFileName;
+        prpl.verifyEvents(
+            XferAcceptedEvent(
+                purpleUserName(0), &tempFileName),
+            ServGotImEvent(
+                connection, purpleUserName(0), caption,
+                PURPLE_MESSAGE_RECV, date),
+            ConversationWriteEvent(
+                purpleUserName(0), purpleUserName(0),
+                userFirstNames[0] + " " +
+                    userLastNames[0] +
+                    ": Downloading photo",
+                PURPLE_MESSAGE_SYSTEM, date));
+        tgl.verifyRequest(*Mock_ViewMessages(
+            chatIds[0], {messageId}, true));
+
+        PurpleXfer *xfer = prpl.getLastXfer();
+        if (!xfer)
+            ADD_FAILURE() << "Timed out inline download has no transfer";
+        return InlineReceive{
+            requestId, xfer, std::move(tempFileName)};
+    }
+
+    StandardReceive beginStandardReceive(
+        int64_t messageId, int32_t fileId,
+        int32_t date, const std::string &caption,
+        const char *outputFileName)
+    {
+        tgl.update(make_object<updateNewMessage>(makeMessage(
+            messageId, userIds[0], chatIds[0], false, date,
+            remoteDocument(fileId, caption))));
+        prpl.verifyEvents(XferRequestEvent(
+            PURPLE_XFER_RECEIVE, purpleUserName(0).c_str(),
+            "shared.file"));
+        PurpleXfer *xfer = prpl.getLastXfer();
+        if (!xfer)
+            ADD_FAILURE() << "Standard download has no transfer";
+        tgl.verifyNoRequests();
+
+        purple_xfer_request_accepted(xfer, outputFileName);
+        prpl.verifyEvents(
+            XferAcceptedEvent(
+                purpleUserName(0), outputFileName),
+            XferStartEvent(outputFileName));
+        const uint64_t requestId =
+            tgl.verifyRequest(
+                downloadFile(fileId, 1, 0, 0, true));
+        return StandardReceive{requestId, xfer};
+    }
+};
 
 TEST_F(FileTransferTest, Document_AlreadyDownloaded)
 {
@@ -1343,6 +1472,618 @@ TEST_F(FileTransferTest, ReceiveDocument_StandardTransfer_Progress)
 
     remove(tdlibFileName);
     g_free(tdlibFileName);
+}
+
+TEST_F(
+    FileTransferTest,
+    DuplicateInlineDownloadsCompleteTheirExactTransfers)
+{
+    constexpr int32_t FileId = 1234;
+    constexpr int32_t FirstDate = 10001;
+    constexpr int32_t SecondDate = 10002;
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourHyperlink);
+    loginWithOneContact();
+
+    const InlineReceive first =
+        beginTimedOutInlineReceive(
+            1, FileId, FirstDate, "first photo");
+    const InlineReceive second =
+        beginTimedOutInlineReceive(
+            2, FileId, SecondDate, "second photo");
+
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 2000)));
+    prpl.verifyEvents(
+        XferStartEvent(first.tempFileName),
+        XferProgressEvent(first.tempFileName, 2000),
+        XferStartEvent(second.tempFileName),
+        XferProgressEvent(second.tempFileName, 2000));
+    ASSERT_TRUE(g_file_test(
+        first.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+    ASSERT_TRUE(g_file_test(
+        second.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+
+    tgl.reply(
+        second.requestId,
+        completedDownload(FileId, "/second-inline"));
+    prpl.verifyEvents(
+        XferCompletedEvent(
+            second.tempFileName, TRUE, 10000),
+        XferEndEvent(second.tempFileName),
+        ServGotImEvent(
+            connection, purpleUserName(0),
+            "<img src=\"file:///second-inline\">",
+            (PurpleMessageFlags)(
+                PURPLE_MESSAGE_RECV |
+                PURPLE_MESSAGE_IMAGES),
+            SecondDate));
+    EXPECT_TRUE(g_file_test(
+        first.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+    EXPECT_FALSE(g_file_test(
+        second.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+    tgl.verifyNoRequests();
+
+    tgl.reply(
+        first.requestId,
+        completedDownload(FileId, "/first-inline"));
+    prpl.verifyEvents(
+        XferCompletedEvent(
+            first.tempFileName, TRUE, 10000),
+        XferEndEvent(first.tempFileName),
+        ServGotImEvent(
+            connection, purpleUserName(0),
+            "<img src=\"file:///first-inline\">",
+            (PurpleMessageFlags)(
+                PURPLE_MESSAGE_RECV |
+                PURPLE_MESSAGE_IMAGES),
+            FirstDate));
+    EXPECT_FALSE(g_file_test(
+        first.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    FileTransferTest,
+    CancelOneDuplicateInlineDownloadKeepsSiblingActive)
+{
+    constexpr int32_t FileId = 1234;
+    constexpr int32_t SecondDate = 10002;
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourHyperlink);
+    loginWithOneContact();
+
+    const InlineReceive first =
+        beginTimedOutInlineReceive(
+            1, FileId, 10001, "first photo");
+    const InlineReceive second =
+        beginTimedOutInlineReceive(
+            2, FileId, SecondDate, "second photo");
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 2000)));
+    prpl.verifyEvents(
+        XferStartEvent(first.tempFileName),
+        XferProgressEvent(first.tempFileName, 2000),
+        XferStartEvent(second.tempFileName),
+        XferProgressEvent(second.tempFileName, 2000));
+
+    purple_xfer_cancel_local(first.xfer);
+    prpl.verifyEvents(
+        XferLocalCancelEvent(first.tempFileName));
+    tgl.verifyNoRequests();
+    EXPECT_FALSE(g_file_test(
+        first.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+    EXPECT_TRUE(g_file_test(
+        second.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+    EXPECT_EQ(
+        PURPLE_XFER_STATUS_STARTED,
+        purple_xfer_get_status(second.xfer));
+
+    tgl.reply(
+        first.requestId,
+        completedDownload(FileId, "/canceled-inline"));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    tgl.reply(
+        second.requestId,
+        completedDownload(FileId, "/surviving-inline"));
+    prpl.verifyEvents(
+        XferCompletedEvent(
+            second.tempFileName, TRUE, 10000),
+        XferEndEvent(second.tempFileName),
+        ServGotImEvent(
+            connection, purpleUserName(0),
+            "<img src=\"file:///surviving-inline\">",
+            (PurpleMessageFlags)(
+                PURPLE_MESSAGE_RECV |
+                PURPLE_MESSAGE_IMAGES),
+            SecondDate));
+    EXPECT_FALSE(g_file_test(
+        second.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    FileTransferTest,
+    MixedInlineAndStandardDownloadsKeepExactOwnership)
+{
+    constexpr int32_t FileId = 1234;
+    constexpr int32_t InlineDate = 10001;
+    constexpr int32_t StandardDate = 10002;
+    const char *const OutputFileName =
+        ".test_mixed_receive_download";
+    const uint8_t contents[] = {1, 2, 3, 4, 5};
+
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourHyperlink);
+    loginWithOneContact();
+
+    const InlineReceive inlineReceive =
+        beginTimedOutInlineReceive(
+            1, FileId, InlineDate, "inline photo");
+
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourStandard);
+    const StandardReceive standardReceive =
+        beginStandardReceive(
+            2, FileId, StandardDate,
+            "standard document", OutputFileName);
+
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 2000)));
+    prpl.verifyEvents(
+        XferStartEvent(inlineReceive.tempFileName),
+        XferProgressEvent(
+            inlineReceive.tempFileName, 2000),
+        XferProgressEvent(OutputFileName, 2000));
+
+    char *tdlibFileName = nullptr;
+    const int fd = g_file_open_tmp(
+        "tdlib_mixed_receive_XXXXXX",
+        &tdlibFileName, nullptr);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(
+        static_cast<ssize_t>(sizeof(contents)),
+        write(fd, contents, sizeof(contents)));
+    ::close(fd);
+
+    tgl.reply(
+        standardReceive.requestId,
+        completedDownload(FileId, tdlibFileName));
+    prpl.verifyEvents(
+        XferWriteFileEvent(
+            OutputFileName, contents,
+            sizeof(contents)),
+        XferCompletedEvent(
+            OutputFileName, TRUE,
+            sizeof(contents)),
+        XferEndEvent(OutputFileName));
+    EXPECT_TRUE(g_file_test(
+        inlineReceive.tempFileName.c_str(),
+        G_FILE_TEST_EXISTS));
+
+    tgl.reply(
+        inlineReceive.requestId,
+        completedDownload(FileId, "/mixed-inline"));
+    prpl.verifyEvents(
+        XferCompletedEvent(
+            inlineReceive.tempFileName, TRUE, 10000),
+        XferEndEvent(inlineReceive.tempFileName),
+        ServGotImEvent(
+            connection, purpleUserName(0),
+            "<img src=\"file:///mixed-inline\">",
+            (PurpleMessageFlags)(
+                PURPLE_MESSAGE_RECV |
+                PURPLE_MESSAGE_IMAGES),
+            InlineDate));
+    EXPECT_FALSE(g_file_test(
+        inlineReceive.tempFileName.c_str(),
+        G_FILE_TEST_EXISTS));
+    tgl.verifyNoRequests();
+
+    remove(tdlibFileName);
+    g_free(tdlibFileName);
+}
+
+TEST_F(
+    FileTransferTest,
+    CancelStandardDownloadKeepsSharedInlineActive)
+{
+    constexpr int32_t FileId = 1234;
+    constexpr int32_t InlineDate = 10001;
+    const char *const OutputFileName =
+        ".test_canceled_shared_standard";
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourHyperlink);
+    loginWithOneContact();
+
+    const InlineReceive inlineReceive =
+        beginTimedOutInlineReceive(
+            1, FileId, InlineDate, "inline photo");
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourStandard);
+    const StandardReceive standardReceive =
+        beginStandardReceive(
+            2, FileId, 10002, "standard document",
+            OutputFileName);
+
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 2000)));
+    prpl.verifyEvents(
+        XferStartEvent(inlineReceive.tempFileName),
+        XferProgressEvent(
+            inlineReceive.tempFileName, 2000),
+        XferProgressEvent(OutputFileName, 2000));
+
+    purple_xfer_cancel_local(standardReceive.xfer);
+    prpl.verifyEvents(
+        XferLocalCancelEvent(OutputFileName));
+    tgl.verifyNoRequests();
+    EXPECT_TRUE(g_file_test(
+        inlineReceive.tempFileName.c_str(),
+        G_FILE_TEST_EXISTS));
+    EXPECT_EQ(
+        PURPLE_XFER_STATUS_STARTED,
+        purple_xfer_get_status(inlineReceive.xfer));
+
+    tgl.reply(
+        standardReceive.requestId,
+        completedDownload(FileId, "/canceled-standard"));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    tgl.reply(
+        inlineReceive.requestId,
+        completedDownload(FileId, "/surviving-mixed-inline"));
+    prpl.verifyEvents(
+        XferCompletedEvent(
+            inlineReceive.tempFileName, TRUE, 10000),
+        XferEndEvent(inlineReceive.tempFileName),
+        ServGotImEvent(
+            connection, purpleUserName(0),
+            "<img src=\"file:///surviving-mixed-inline\">",
+            (PurpleMessageFlags)(
+                PURPLE_MESSAGE_RECV |
+                PURPLE_MESSAGE_IMAGES),
+            InlineDate));
+    EXPECT_FALSE(g_file_test(
+        inlineReceive.tempFileName.c_str(),
+        G_FILE_TEST_EXISTS));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    FileTransferTest,
+    StandardCompletionCallbackMayEndTransferDirectly)
+{
+    constexpr int32_t FileId = 1234;
+    const char *const OutputFileName =
+        ".test_standard_direct_end";
+    const uint8_t contents[] = {1, 2, 3, 4, 5};
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourStandard);
+    loginWithOneContact();
+
+    const StandardReceive receive =
+        beginStandardReceive(
+            1, FileId, 10001, "standard document",
+            OutputFileName);
+
+    char *tdlibFileName = nullptr;
+    const int fd = g_file_open_tmp(
+        "tdlib_standard_direct_end_XXXXXX",
+        &tdlibFileName, nullptr);
+    ASSERT_GE(fd, 0);
+    ASSERT_EQ(
+        static_cast<ssize_t>(sizeof(contents)),
+        write(fd, contents, sizeof(contents)));
+    ::close(fd);
+
+    bool endedDirectly = false;
+    prpl.onNextEvent(
+        [this, &receive, &endedDirectly](
+            PurpleEventType type) {
+            EXPECT_EQ(
+                PurpleEventType::XferWriteFile, type);
+            prpl.onNextEvent(
+                [&receive, &endedDirectly](
+                    PurpleEventType nestedType) {
+                    EXPECT_EQ(
+                        PurpleEventType::XferCompleted,
+                        nestedType);
+                    endedDirectly = true;
+                    purple_xfer_end(receive.xfer);
+                });
+        });
+    tgl.reply(
+        receive.requestId,
+        completedDownload(FileId, tdlibFileName));
+
+    EXPECT_TRUE(endedDirectly);
+    prpl.verifyEvents(
+        XferWriteFileEvent(
+            OutputFileName, contents,
+            sizeof(contents)),
+        XferCompletedEvent(
+            OutputFileName, TRUE,
+            sizeof(contents)),
+        XferEndEvent(OutputFileName));
+    tgl.verifyNoRequests();
+
+    remove(tdlibFileName);
+    g_free(tdlibFileName);
+}
+
+TEST_F(
+    FileTransferTest,
+    DuplicateInlineProgressPinsSecondTransferAcrossDisconnect)
+{
+    constexpr int32_t FileId = 1234;
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourHyperlink);
+    loginWithOneContact();
+
+    const InlineReceive first =
+        beginTimedOutInlineReceive(
+            1, FileId, 10001, "first photo");
+    const InlineReceive second =
+        beginTimedOutInlineReceive(
+            2, FileId, 10002, "second photo");
+
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 2000)));
+    prpl.verifyEvents(
+        XferStartEvent(first.tempFileName),
+        XferProgressEvent(first.tempFileName, 2000),
+        XferStartEvent(second.tempFileName),
+        XferProgressEvent(second.tempFileName, 2000));
+
+    bool progressed = false;
+    bool completed = false;
+    prpl.onNextEvent(
+        [this, &first, FileId,
+         &progressed, &completed](
+            PurpleEventType type) {
+            EXPECT_EQ(
+                PurpleEventType::XferProgress, type);
+            progressed = true;
+            prpl.onNextEvent(
+                [this, &completed](
+                    PurpleEventType nestedType) {
+                    EXPECT_EQ(
+                        PurpleEventType::XferCompleted,
+                        nestedType);
+                    completed = true;
+                    pluginInfo().close(connection);
+                });
+            tgl.reply(
+                first.requestId,
+                completedDownload(
+                    FileId, "/first-completed"));
+        });
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 5000)));
+
+    EXPECT_TRUE(progressed);
+    EXPECT_TRUE(completed);
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    prpl.verifyEvents(
+        XferProgressEvent(first.tempFileName, 5000),
+        XferCompletedEvent(
+            first.tempFileName, TRUE, 10000),
+        XferLocalCancelEvent(second.tempFileName),
+        XferEndEvent(first.tempFileName));
+    EXPECT_FALSE(g_file_test(
+        first.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+    EXPECT_FALSE(g_file_test(
+        second.tempFileName.c_str(), G_FILE_TEST_EXISTS));
+    tgl.verifyNoRequests();
+
+    tgl.reply(
+        second.requestId,
+        completedDownload(FileId, "/second-late"));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    FileTransferTest,
+    InlineCompletionCallbackMayEndTransferDirectly)
+{
+    constexpr int32_t FileId = 1234;
+    constexpr int32_t Date = 10001;
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourHyperlink);
+    loginWithOneContact();
+
+    const InlineReceive receive =
+        beginTimedOutInlineReceive(
+            1, FileId, Date, "photo");
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 2000)));
+    prpl.verifyEvents(
+        XferStartEvent(receive.tempFileName),
+        XferProgressEvent(receive.tempFileName, 2000));
+
+    bool endedDirectly = false;
+    prpl.onNextEvent(
+        [&receive, &endedDirectly](
+            PurpleEventType type) {
+            EXPECT_EQ(
+                PurpleEventType::XferCompleted, type);
+            endedDirectly = true;
+            purple_xfer_end(receive.xfer);
+        });
+    tgl.reply(
+        receive.requestId,
+        completedDownload(FileId, "/direct-end"));
+
+    EXPECT_TRUE(endedDirectly);
+    prpl.verifyEvents(
+        XferCompletedEvent(
+            receive.tempFileName, TRUE, 10000),
+        XferEndEvent(receive.tempFileName),
+        ServGotImEvent(
+            connection, purpleUserName(0),
+            "<img src=\"file:///direct-end\">",
+            (PurpleMessageFlags)(
+                PURPLE_MESSAGE_RECV |
+                PURPLE_MESSAGE_IMAGES),
+            Date));
+    EXPECT_FALSE(g_file_test(
+        receive.tempFileName.c_str(),
+        G_FILE_TEST_EXISTS));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    FileTransferTest,
+    InlineDownloadErrorRemoteCancelsExactProgressTransfer)
+{
+    constexpr int32_t FileId = 1234;
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourHyperlink);
+    loginWithOneContact();
+
+    const InlineReceive receive =
+        beginTimedOutInlineReceive(
+            1, FileId, 10001, "photo");
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 2000)));
+    prpl.verifyEvents(
+        XferStartEvent(receive.tempFileName),
+        XferProgressEvent(receive.tempFileName, 2000));
+
+    tgl.reply(
+        receive.requestId,
+        make_object<error>(400, "download failed"));
+    prpl.verifyEvents(
+        XferRemoteCancelEvent(receive.tempFileName));
+    EXPECT_FALSE(g_file_test(
+        receive.tempFileName.c_str(),
+        G_FILE_TEST_EXISTS));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    FileTransferTest,
+    InlineFailureBeforeTimeoutReleasesReadyFollower)
+{
+    constexpr int32_t FileId = 1234;
+    constexpr int32_t PhotoDate = 10001;
+    constexpr int32_t FollowerDate = 10002;
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourHyperlink);
+    loginWithOneContact();
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        1, userIds[0], chatIds[0], false, PhotoDate,
+        remotePhoto(FileId, "failed photo"))));
+    const uint64_t requestId =
+        tgl.verifyRequest(
+            downloadFile(FileId, 1, 0, 0, true));
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        2, userIds[0], chatIds[0], false, FollowerDate,
+        makeTextMessage("ready follower"))));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    tgl.reply(
+        requestId,
+        make_object<error>(400, "download failed"));
+    prpl.verifyEvents(
+        ServGotImEvent(
+            connection, purpleUserName(0), "failed photo",
+            PURPLE_MESSAGE_RECV, PhotoDate),
+        ConversationWriteEvent(
+            purpleUserName(0), purpleUserName(0),
+            userFirstNames[0] + " " +
+                userLastNames[0] +
+                ": Downloading photo",
+            PURPLE_MESSAGE_SYSTEM, PhotoDate),
+        ServGotImEvent(
+            connection, purpleUserName(0),
+            "ready follower",
+            PURPLE_MESSAGE_RECV, FollowerDate));
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[0], {1, 2}, true));
+
+    runTimeouts();
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    FileTransferTest,
+    CancelInlineFromStartCallbackCleansReopenedDestination)
+{
+    constexpr int32_t FileId = 1234;
+    purple_account_set_string(
+        account, AccountOptions::DownloadBehaviour,
+        AccountOptions::DownloadBehaviourHyperlink);
+    loginWithOneContact();
+
+    const InlineReceive receive =
+        beginTimedOutInlineReceive(
+            1, FileId, 10001, "photo");
+    ASSERT_TRUE(g_file_test(
+        receive.tempFileName.c_str(),
+        G_FILE_TEST_EXISTS));
+
+    bool canceled = false;
+    prpl.onNextEvent(
+        [this, &receive, &canceled](
+            PurpleEventType type) {
+            EXPECT_EQ(PurpleEventType::XferStart, type);
+            prpl.onNextEvent(
+                [&canceled](
+                    PurpleEventType nestedType) {
+                    EXPECT_EQ(
+                        PurpleEventType::XferLocalCancel,
+                        nestedType);
+                    canceled = true;
+                });
+            purple_xfer_cancel_local(receive.xfer);
+        });
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 2000)));
+
+    EXPECT_TRUE(canceled);
+    prpl.verifyEvents(
+        XferStartEvent(receive.tempFileName),
+        XferLocalCancelEvent(receive.tempFileName));
+    EXPECT_FALSE(g_file_test(
+        receive.tempFileName.c_str(),
+        G_FILE_TEST_EXISTS));
+    tgl.verifyRequest(
+        cancelDownloadFile(FileId, false));
+
+    tgl.update(make_object<updateFile>(
+        activeDownload(FileId, 5000)));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    tgl.reply(
+        receive.requestId,
+        completedDownload(FileId, "/late-start-cancel"));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
 }
 
 TEST_F(FileTransferTest, Photo_LongDownload_StartandDownloadsConfigured)

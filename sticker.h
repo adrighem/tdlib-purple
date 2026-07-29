@@ -16,16 +16,22 @@ private:
     static Callback g_callback;
     void callback(PurpleTdClient *tdClient) override;
     TgMessageInfo m_message;
+    PendingContentHandle m_pendingContent;
 public:
     const std::string inputFileName;
     const ChatId chatId;
     StickerConversionThread(PurpleAccount *purpleAccount, const std::string &filename,
-                            ChatId chatId, TgMessageInfo &&message)
-    : AccountThread(purpleAccount), m_message(std::move(message)), inputFileName(filename),
-        chatId(chatId) {}
+                            ChatId chatId, TgMessageInfo &&message,
+                            PendingContentHandle pendingContent)
+    : AccountThread(purpleAccount), m_message(std::move(message)),
+      m_pendingContent(std::move(pendingContent)),
+      inputFileName(filename), chatId(chatId) {}
     StickerConversionThread(PurpleAccount *purpleAccount, const std::string &filename,
-                            ChatId chatId, const TgMessageInfo *message)
-    : AccountThread(purpleAccount), inputFileName(filename), chatId(chatId)
+                            ChatId chatId, const TgMessageInfo *message,
+                            PendingContentHandle pendingContent)
+    : AccountThread(purpleAccount),
+      m_pendingContent(std::move(pendingContent)),
+      inputFileName(filename), chatId(chatId)
     {
         if (message)
             m_message.assign(*message);
@@ -34,6 +40,9 @@ public:
     const std::string &getOutputFileName() const { return m_outputFileName; }
     const std::string &getErrorMessage()   const { return m_errorMessage; }
     const TgMessageInfo &message()         const { return m_message; }
+    const PendingContentHandle &pendingContent() const {
+        return m_pendingContent;
+    }
 
     static void setCallback(Callback callback);
 };
