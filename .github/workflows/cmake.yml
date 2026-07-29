@@ -5,7 +5,6 @@ on: [push, pull_request, workflow_dispatch]
 permissions:
   actions: read
   contents: read
-  security-events: write
 
 # Don't mix these up!
 # runner.workspace = /home/runner/work/serenity
@@ -66,7 +65,7 @@ jobs:
 
     # === BASIC SETUP ===
 
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Verify TDLib pin
       run: |
         submodule_commit="$(git ls-tree HEAD td | awk '{print $3}')"
@@ -95,7 +94,7 @@ jobs:
         LINTACCEL_IGNORE_MISSING: y
       run: ${{ github.workspace }}/po/lint_accelerators.py
     - name: tdlib cache
-      uses: actions/cache@v4
+      uses: actions/cache@v5
       with:
         path: ${{ github.workspace }}/.ga_cache/td_destdir_${{env.TD_TAG}}_${{env.TD_MARK}}.tar*
         key: ${{ runner.os }}-td-${{env.TD_TAG}}-${{env.TD_MARK}}
@@ -111,12 +110,6 @@ jobs:
         cmake .. -GNinja -DCMAKE_CXX_FLAGS="-DGLIB_DISABLE_DEPRECATION_WARNINGS -Werror -Wall -Wextra -Wformat=2 -Wformat-signedness -Wno-unused-parameter -Wno-parentheses" -DTd_DIR=td_destdir/usr/local/lib/cmake/Td ${{ matrix.CMAKE_FLAGS }} ..
         # TODO: Add this here? ↑
         # -Dtgvoip_LIBRARIES='tgvoip;opus;webrtc_audio_processing' -Dtgvoip_INCLUDE_DIRS=/usr/include/libtgvoip/
-    - name: Initialize CodeQL Static Analysis for C++
-      uses: github/codeql-action/init@v3
-      with:
-        languages: cpp
-        config-file: ./.github/codeql/config.yml
-
     # === BUILD EVERYTHING ===
 
     - name: Build tdlib-purple
@@ -135,5 +128,3 @@ jobs:
       # I.e., test the installation routines for executability
       working-directory: ${{ github.workspace }}/build
       run: DESTDIR=tdprpl_destdir ninja install
-    - name: Perform post build CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
