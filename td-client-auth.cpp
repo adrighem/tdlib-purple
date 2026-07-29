@@ -329,7 +329,7 @@ void PurpleTdClient::requestAuthEmailCodeCancelled(PurpleTdClient *self)
 
 void PurpleTdClient::requestCodeEntered(PurpleTdClient *self, const gchar *code)
 {
-    purple_debug_misc(config::pluginId, "Authentication code entered: '%s'\n", code);
+    purple_debug_misc(config::pluginId, "Authentication code entered\n");
     auto checkCode = td::td_api::make_object<td::td_api::checkAuthenticationCode>();
     if (code)
         checkCode->code_ = code;
