@@ -189,6 +189,7 @@ std::string getForumTopicDisplayTitle(
     const std::string topicName =
         !topic.metadataKnown || topic.name.empty()
         ? formatMessage(
+              // TRANSLATOR: Fallback room title; {} is a numeric forum topic ID.
               _("Topic {}"), topic.target.forumTopicId().value())
         : topic.name;
     return parent.title_ + " / " + topicName;
@@ -265,6 +266,12 @@ bool areEquivalentConversationTargets(
             !first.isForumTopic());
 }
 
+static bool projectCachedChatState(
+    TdAccountData &account,
+    const td::td_api::chat &chat,
+    ChatTarget target,
+    const ContinuationGuard &canContinue);
+
 PurpleConvChat *getChatConversation(
     TdAccountData &account, const td::td_api::chat &chat,
     ChatTarget target, int chatPurpleId, const std::string &displayTitle,
@@ -275,9 +282,6 @@ PurpleConvChat *getChatConversation(
 
     std::string chatName       = getPurpleChatName(target);
     bool        newChatCreated = false;
-    const bool isChildTopic =
-        target.isForumTopic() &&
-        target.forumTopicId() != ForumTopicId::general();
 
     // If account logged off with chats open, these chats will be purple_conv_chat_left()'d but not
     // purple_conversation_destroy()'d by purple_connection_destroy. So when logging back in,
@@ -330,21 +334,17 @@ PurpleConvChat *getChatConversation(
     if (conv) {
         PurpleConvChat *purpleChat = purple_conversation_get_chat_data(conv);
 
-        if (purpleChat && newChatCreated && !isChildTopic) {
-            BasicGroupId                          basicGroupId = getBasicGroupId(chat);
-            const td::td_api::basicGroupFullInfo *groupInfo    = basicGroupId.valid() ? account.getBasicGroupInfo(basicGroupId) : nullptr;
-            if (groupInfo)
-                updateChatConversation(purpleChat, *groupInfo, account);
-
-            SupergroupId supergroupId = getSupergroupId(chat);
-            if (supergroupId.valid()) {
-                const td::td_api::supergroupFullInfo *supergroupInfo = account.getSupergroupInfo(supergroupId);
-                const td::td_api::chatMembers        *members        = account.getSupergroupMembers(supergroupId);
-                if (supergroupInfo)
-                    updateChatConversation(purpleChat, *supergroupInfo, account);
-                if (members)
-                    updateSupergroupChatMembers(purpleChat, *members, account);
+        if (purpleChat && newChatCreated) {
+            if (!projectCachedChatState(
+                    account, chat, target, canContinue)) {
+                return NULL;
             }
+            conv = purple_find_conversation_with_account(
+                PURPLE_CONV_TYPE_CHAT, chatName.c_str(),
+                account.purpleAccount);
+            purpleChat = conv
+                ? purple_conversation_get_chat_data(conv)
+                : NULL;
         }
 
         return purpleChat;
@@ -355,11 +355,12 @@ PurpleConvChat *getChatConversation(
 
 PurpleConvChat *getChatConversation(TdAccountData &account,
                                     const td::td_api::chat &chat,
-                                    int chatPurpleId)
+                                    int chatPurpleId,
+                                    const ContinuationGuard &canContinue)
 {
     return getChatConversation(
         account, chat, ChatTarget::chat(getId(chat)), chatPurpleId,
-        chat.title_);
+        chat.title_, canContinue);
 }
 
 PurpleConvChat *findChatConversation(PurpleAccount *account, const td::td_api::chat &chat)
@@ -818,6 +819,618 @@ PurpleConvChatBuddyFlags getChatMemberFlags(const td::td_api::object_ptr<td::td_
     if (status->get_id() == td::td_api::chatMemberStatusAdministrator::ID)
         return PURPLE_CBFLAGS_OP;
     return PURPLE_CBFLAGS_NONE;
+}
+
+namespace {
+
+struct ProjectedChatMember {
+    std::string name;
+    PurpleConvChatBuddyFlags flags = PURPLE_CBFLAGS_NONE;
+};
+
+struct ProjectedChatState {
+    bool descriptionKnown = false;
+    std::string description;
+    bool membersKnown = false;
+    std::vector<ProjectedChatMember> members;
+    bool skipEmptyNoops = false;
+};
+
+struct ChatProjectionDestination {
+    ChatTarget target;
+    std::string name;
+    int32_t purpleId = 0;
+};
+
+static bool projectionCanContinue(
+    const ContinuationGuard &canContinue)
+{
+    return !canContinue || canContinue();
+}
+
+static PurpleConvChat *findProjectionChat(
+    PurpleAccount *account,
+    const ChatProjectionDestination &destination)
+{
+    if (!account || destination.name.empty() ||
+        destination.purpleId == 0) {
+        return NULL;
+    }
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            destination.name.c_str(), account);
+    PurpleConvChat *chat = conversation
+        ? purple_conversation_get_chat_data(conversation)
+        : NULL;
+    if (!chat || purple_conv_chat_has_left(chat) ||
+        purple_conv_chat_get_id(chat) != destination.purpleId) {
+        return NULL;
+    }
+
+    const ChatTarget conversationTarget =
+        parsePurpleChatName(
+            purple_conversation_get_name(conversation));
+    if (!areEquivalentConversationTargets(
+            conversationTarget, destination.target)) {
+        return NULL;
+    }
+    return chat;
+}
+
+static std::vector<ProjectedChatMember> snapshotChatMembers(
+    const std::vector<
+        td::td_api::object_ptr<td::td_api::chatMember>> &members,
+    const TdAccountData &account)
+{
+    std::vector<ProjectedChatMember> result;
+    result.reserve(members.size());
+    for (const auto &member : members) {
+        if (!member || !isGroupMember(member->status_))
+            continue;
+
+        ProjectedChatMember projected;
+        projected.name =
+            getChatMemberPurpleName(getUserId(*member), account);
+        if (projected.name.empty())
+            continue;
+        projected.flags = getChatMemberFlags(member->status_);
+        result.push_back(std::move(projected));
+    }
+    return result;
+}
+
+static ProjectedChatMember snapshotChatMember(
+    UserId userId,
+    const td::td_api::object_ptr<
+        td::td_api::ChatMemberStatus> &status,
+    const TdAccountData &account)
+{
+    ProjectedChatMember result;
+    if (!userId.valid() || !isGroupMember(status))
+        return result;
+
+    result.name = getChatMemberPurpleName(userId, account);
+    result.flags = getChatMemberFlags(status);
+    return result;
+}
+
+static ChatProjectionDestination snapshotDestination(
+    const TdAccountData &account, ChatTarget target)
+{
+    ChatProjectionDestination destination;
+    destination.target = target;
+    destination.name = getPurpleChatName(target);
+    destination.purpleId = account.getPurpleChatId(target);
+    return destination;
+}
+
+static std::vector<ChatProjectionDestination>
+snapshotActiveForumDestinations(
+    const TdAccountData &account,
+    const td::td_api::chat &chat)
+{
+    std::vector<ChatProjectionDestination> destinations;
+    if (!isEligibleForumParent(account, chat))
+        return destinations;
+
+    const ChatId chatId = getId(chat);
+    destinations.push_back(snapshotDestination(
+        account, ChatTarget::chat(chatId)));
+
+    std::vector<const TdAccountData::ForumTopicState *> topics;
+    account.getForumTopics(chatId, topics);
+    for (const TdAccountData::ForumTopicState *topic : topics) {
+        if (!topic || topic->isGeneral() || topic->deleted ||
+            !topic->active) {
+            continue;
+        }
+
+        // Copy every value needed after this point. Purple callbacks can
+        // synchronously destroy the account data that owns topic.
+        destinations.push_back(snapshotDestination(
+            account, topic->target));
+    }
+    return destinations;
+}
+
+static bool applyProjectedMembers(
+    PurpleAccount *account,
+    const ChatProjectionDestination &destination,
+    const std::vector<ProjectedChatMember> &members,
+    const ContinuationGuard &canContinue)
+{
+    PurpleConvChat *chat =
+        findProjectionChat(account, destination);
+    if (!chat)
+        return projectionCanContinue(canContinue);
+
+    purple_conv_chat_clear_users(chat);
+    if (!projectionCanContinue(canContinue))
+        return false;
+
+    for (const ProjectedChatMember &member : members) {
+        chat = findProjectionChat(account, destination);
+        if (!chat)
+            return projectionCanContinue(canContinue);
+        purple_conv_chat_add_user(
+            chat, member.name.c_str(), NULL, member.flags, false);
+        if (!projectionCanContinue(canContinue))
+            return false;
+    }
+    return true;
+}
+
+static bool applyProjectedState(
+    PurpleAccount *account,
+    const ChatProjectionDestination &destination,
+    const ProjectedChatState &state,
+    const ContinuationGuard &canContinue)
+{
+    if (!projectionCanContinue(canContinue))
+        return false;
+
+    PurpleConvChat *chat =
+        findProjectionChat(account, destination);
+    if (!chat)
+        return true;
+
+    if (state.descriptionKnown) {
+        const char *currentTopic =
+            purple_conv_chat_get_topic(chat);
+        if (!state.skipEmptyNoops ||
+            !state.description.empty() ||
+            (currentTopic && *currentTopic)) {
+            purple_conv_chat_set_topic(
+                chat, NULL, state.description.c_str());
+            if (!projectionCanContinue(canContinue))
+                return false;
+            chat = findProjectionChat(account, destination);
+            if (!chat)
+                return true;
+        }
+    }
+
+    if (state.membersKnown) {
+        if (state.skipEmptyNoops && state.members.empty() &&
+            !purple_conv_chat_get_users(chat)) {
+            return true;
+        }
+        return applyProjectedMembers(
+            account, destination, state.members,
+            canContinue);
+    }
+    return true;
+}
+
+static std::vector<ProjectedChatMember>
+snapshotVisibleChatMembers(PurpleConvChat *chat)
+{
+    std::vector<ProjectedChatMember> members;
+    if (!chat)
+        return members;
+
+    for (GList *item = purple_conv_chat_get_users(chat);
+         item; item = item->next) {
+        PurpleConvChatBuddy *buddy =
+            static_cast<PurpleConvChatBuddy *>(item->data);
+        const char *name = buddy
+            ? purple_conv_chat_cb_get_name(buddy)
+            : NULL;
+        if (!name || !*name)
+            continue;
+
+        ProjectedChatMember member;
+        member.name = name;
+        member.flags =
+            purple_conv_chat_user_get_flags(chat, name);
+        members.push_back(std::move(member));
+    }
+    return members;
+}
+
+static bool applyProjectedMemberDelta(
+    PurpleAccount *account,
+    const ChatProjectionDestination &destination,
+    const ProjectedChatMember *oldMember,
+    const ProjectedChatMember *newMember,
+    const ContinuationGuard &canContinue)
+{
+    PurpleConvChat *chat =
+        findProjectionChat(account, destination);
+    if (!chat)
+        return projectionCanContinue(canContinue);
+
+    const bool replaceName =
+        oldMember && !oldMember->name.empty() &&
+        (!newMember || oldMember->name != newMember->name);
+    if (replaceName &&
+        purple_conv_chat_find_user(
+            chat, oldMember->name.c_str())) {
+        std::vector<ProjectedChatMember> members =
+            snapshotVisibleChatMembers(chat);
+        members.erase(
+            std::remove_if(
+                members.begin(), members.end(),
+                [oldMember](const ProjectedChatMember &member) {
+                    return member.name == oldMember->name;
+                }),
+            members.end());
+        if (!applyProjectedMembers(
+                account, destination, members,
+                canContinue)) {
+            return false;
+        }
+    }
+
+    if (!newMember || newMember->name.empty())
+        return projectionCanContinue(canContinue);
+
+    chat = findProjectionChat(account, destination);
+    if (!chat)
+        return projectionCanContinue(canContinue);
+    if (purple_conv_chat_find_user(
+            chat, newMember->name.c_str())) {
+        purple_conv_chat_user_set_flags(
+            chat, newMember->name.c_str(),
+            newMember->flags);
+    } else {
+        purple_conv_chat_add_user(
+            chat, newMember->name.c_str(), NULL,
+            newMember->flags, false);
+    }
+    return projectionCanContinue(canContinue);
+}
+
+static bool projectStateToActiveForumChats(
+    TdAccountData &account,
+    const td::td_api::chat &chat,
+    const ProjectedChatState &state,
+    const ContinuationGuard &canContinue)
+{
+    const std::vector<ChatProjectionDestination> destinations =
+        snapshotActiveForumDestinations(account, chat);
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    for (const ChatProjectionDestination &destination :
+         destinations) {
+        if (!applyProjectedState(
+                purpleAccount, destination, state,
+                canContinue)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool projectMemberDeltaToActiveForumChats(
+    TdAccountData &account,
+    const td::td_api::chat &chat,
+    const ProjectedChatMember *oldMember,
+    const ProjectedChatMember *newMember,
+    const ContinuationGuard &canContinue)
+{
+    const std::vector<ChatProjectionDestination> destinations =
+        snapshotActiveForumDestinations(account, chat);
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    for (const ChatProjectionDestination &destination :
+         destinations) {
+        if (!applyProjectedMemberDelta(
+                purpleAccount, destination, oldMember,
+                newMember, canContinue)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool projectCurrentForumStateToActiveChats(
+    TdAccountData &account, SupergroupId groupId,
+    const ContinuationGuard &canContinue)
+{
+    const td::td_api::chat *chat =
+        account.getSupergroupChatByGroup(groupId);
+    if (!chat ||
+        !isEligibleForumParent(account, *chat)) {
+        return projectionCanContinue(canContinue);
+    }
+
+    ProjectedChatState state;
+    const td::td_api::supergroupFullInfo *groupInfo =
+        account.getSupergroupInfo(groupId);
+    const td::td_api::chatMembers *members =
+        account.getSupergroupMembers(groupId);
+    if (groupInfo) {
+        state.descriptionKnown = true;
+        state.description = groupInfo->description_;
+    }
+    if (members) {
+        state.membersKnown = true;
+        state.members =
+            snapshotChatMembers(members->members_, account);
+    }
+    return projectStateToActiveForumChats(
+        account, *chat, state, canContinue);
+}
+
+static bool runForumProjectionTransaction(
+    TdAccountData &account, SupergroupId groupId,
+    const ContinuationGuard &canContinue,
+    const std::function<bool(
+        const ContinuationGuard &)> &initialProjection)
+{
+    if (!projectionCanContinue(canContinue))
+        return false;
+    if (!account.beginSupergroupProjection(groupId))
+        return true;
+
+    // Reentrant calls only mark the active transaction stale. Retrying here
+    // avoids recursive Purple callback chains and repairs a room that may
+    // have been left partially cleared by the interrupted attempt.
+    constexpr unsigned MaxAttempts = 3;
+    for (unsigned attempt = 0;
+         attempt < MaxAttempts; ++attempt) {
+        if (!projectionCanContinue(canContinue))
+            return false;
+
+        const uint64_t epoch =
+            account.prepareSupergroupProjectionAttempt(
+                groupId);
+        const ContinuationGuard attemptCanContinue =
+            [&account, groupId, epoch, canContinue]() {
+                if (!projectionCanContinue(canContinue))
+                    return false;
+                return account
+                    .isSupergroupProjectionAttemptCurrent(
+                        groupId, epoch);
+            };
+
+        const bool complete = attempt == 0
+            ? initialProjection(attemptCanContinue)
+            : projectCurrentForumStateToActiveChats(
+                  account, groupId,
+                  attemptCanContinue);
+        if (complete) {
+            account.endSupergroupProjection(groupId);
+            return true;
+        }
+        if (!projectionCanContinue(canContinue))
+            return false;
+        if (account.isSupergroupProjectionAttemptCurrent(
+                groupId, epoch)) {
+            account.endSupergroupProjection(groupId);
+            return false;
+        }
+    }
+
+    account.endSupergroupProjection(groupId);
+    purple_debug_warning(
+        config::pluginId,
+        "Forum state projection did not stabilize after %u attempts\n",
+        MaxAttempts);
+    return true;
+}
+
+static bool projectForumStateTransaction(
+    TdAccountData &account, SupergroupId groupId,
+    const ProjectedChatState &state,
+    const ContinuationGuard &canContinue)
+{
+    return runForumProjectionTransaction(
+        account, groupId, canContinue,
+        [&account, groupId, state](
+            const ContinuationGuard &attemptCanContinue) {
+            const td::td_api::chat *chat =
+                account.getSupergroupChatByGroup(groupId);
+            if (!chat ||
+                !isEligibleForumParent(account, *chat)) {
+                return projectionCanContinue(
+                    attemptCanContinue);
+            }
+            return projectStateToActiveForumChats(
+                account, *chat, state,
+                attemptCanContinue);
+        });
+}
+
+static bool projectForumMemberDeltaTransaction(
+    TdAccountData &account, SupergroupId groupId,
+    const ProjectedChatMember *oldMember,
+    const ProjectedChatMember *newMember,
+    const ContinuationGuard &canContinue)
+{
+    const ProjectedChatMember oldSnapshot =
+        oldMember ? *oldMember : ProjectedChatMember();
+    const ProjectedChatMember newSnapshot =
+        newMember ? *newMember : ProjectedChatMember();
+    const bool hasOldMember = oldMember != NULL;
+    const bool hasNewMember = newMember != NULL;
+    return runForumProjectionTransaction(
+        account, groupId, canContinue,
+        [&account, groupId, oldSnapshot, newSnapshot,
+         hasOldMember, hasNewMember](
+            const ContinuationGuard &attemptCanContinue) {
+            const td::td_api::chat *chat =
+                account.getSupergroupChatByGroup(groupId);
+            if (!chat ||
+                !isEligibleForumParent(account, *chat)) {
+                return projectionCanContinue(
+                    attemptCanContinue);
+            }
+            return projectMemberDeltaToActiveForumChats(
+                account, *chat,
+                hasOldMember ? &oldSnapshot : NULL,
+                hasNewMember ? &newSnapshot : NULL,
+                attemptCanContinue);
+        });
+}
+
+} // namespace
+
+static bool projectCachedChatState(
+    TdAccountData &account, const td::td_api::chat &chat,
+    ChatTarget target,
+    const ContinuationGuard &canContinue)
+{
+    ProjectedChatState state;
+    state.skipEmptyNoops =
+        target.isForumTopic() &&
+        target.forumTopicId() != ForumTopicId::general();
+
+    const BasicGroupId basicGroupId = getBasicGroupId(chat);
+    const td::td_api::basicGroupFullInfo *basicGroupInfo =
+        basicGroupId.valid()
+            ? account.getBasicGroupInfo(basicGroupId)
+            : NULL;
+    if (basicGroupInfo) {
+        state.descriptionKnown = true;
+        state.description = basicGroupInfo->description_;
+        state.members = snapshotChatMembers(
+            basicGroupInfo->members_, account);
+        state.membersKnown = true;
+    }
+
+    const SupergroupId supergroupId = getSupergroupId(chat);
+    if (supergroupId.valid()) {
+        const td::td_api::supergroupFullInfo *groupInfo =
+            account.getSupergroupInfo(supergroupId);
+        const td::td_api::chatMembers *members =
+            account.getSupergroupMembers(supergroupId);
+        if (groupInfo) {
+            state.descriptionKnown = true;
+            state.description = groupInfo->description_;
+        }
+        if (members) {
+            state.members =
+                snapshotChatMembers(members->members_, account);
+            state.membersKnown = true;
+        }
+    }
+
+    const ChatProjectionDestination destination =
+        snapshotDestination(account, target);
+    if (supergroupId.valid() &&
+        isEligibleForumParent(account, chat)) {
+        return runForumProjectionTransaction(
+            account, supergroupId, canContinue,
+            [purpleAccount = account.purpleAccount,
+             destination, state](
+                const ContinuationGuard
+                    &attemptCanContinue) {
+                return applyProjectedState(
+                    purpleAccount, destination, state,
+                    attemptCanContinue);
+            });
+    }
+    return applyProjectedState(
+        account.purpleAccount, destination, state,
+        canContinue);
+}
+
+bool projectForumChatDescription(
+    TdAccountData &account, const td::td_api::chat &chat,
+    const std::string &description,
+    const ContinuationGuard &canContinue)
+{
+    ProjectedChatState state;
+    state.descriptionKnown = true;
+    state.description = description;
+    return projectForumStateTransaction(
+        account, getSupergroupId(chat), state,
+        canContinue);
+}
+
+bool projectForumChatMembers(
+    TdAccountData &account, const td::td_api::chat &chat,
+    const td::td_api::chatMembers &members,
+    const ContinuationGuard &canContinue)
+{
+    ProjectedChatState state;
+    state.membersKnown = true;
+    state.members =
+        snapshotChatMembers(members.members_, account);
+    return projectForumStateTransaction(
+        account, getSupergroupId(chat), state,
+        canContinue);
+}
+
+bool projectForumChatMemberUpdate(
+    TdAccountData &account, const td::td_api::chat &chat,
+    const td::td_api::chatMember *oldMember,
+    const td::td_api::chatMember *newMember,
+    const ContinuationGuard &canContinue)
+{
+    const bool oldMemberActive =
+        oldMember && isGroupMember(oldMember->status_);
+    const bool newMemberActive =
+        newMember && isGroupMember(newMember->status_);
+    const ProjectedChatMember oldProjection =
+        oldMemberActive
+            ? snapshotChatMember(
+                  getUserId(*oldMember),
+                  oldMember->status_, account)
+            : ProjectedChatMember();
+    const ProjectedChatMember newProjection =
+        newMemberActive
+            ? snapshotChatMember(
+                  getUserId(*newMember),
+                  newMember->status_, account)
+            : ProjectedChatMember();
+    return projectForumMemberDeltaTransaction(
+        account, getSupergroupId(chat),
+        oldMemberActive ? &oldProjection : NULL,
+        newMemberActive ? &newProjection : NULL,
+        canContinue);
+}
+
+bool projectForumChatMemberAdded(
+    TdAccountData &account, const td::td_api::chat &chat,
+    UserId userId,
+    const td::td_api::object_ptr<
+        td::td_api::ChatMemberStatus> &status,
+    const ContinuationGuard &canContinue)
+{
+    const ProjectedChatMember member =
+        snapshotChatMember(userId, status, account);
+    if (member.name.empty())
+        return projectionCanContinue(canContinue);
+    return projectForumMemberDeltaTransaction(
+        account, getSupergroupId(chat), NULL, &member,
+        canContinue);
+}
+
+bool projectForumChatMemberRemoved(
+    TdAccountData &account, const td::td_api::chat &chat,
+    UserId userId,
+    const ContinuationGuard &canContinue)
+{
+    ProjectedChatMember member;
+    member.name = getChatMemberPurpleName(userId, account);
+    if (member.name.empty())
+        return projectionCanContinue(canContinue);
+    return projectForumMemberDeltaTransaction(
+        account, getSupergroupId(chat), &member, NULL,
+        canContinue);
 }
 
 void addChatMember(PurpleConvChat *purpleChat, UserId userId,

@@ -209,7 +209,8 @@ protected:
 
     void openChildTopic(
         int32_t topicId, const std::string &topicName,
-        int64_t messageId = 9000)
+        int64_t messageId = 9000,
+        int32_t purpleId = 2)
     {
         const std::string purpleName = topicPurpleName(topicId);
         cacheTopic(topicId, topicName);
@@ -220,12 +221,12 @@ protected:
         tgl.verifyNoRequests();
         prpl.verifyEvents(
             ServGotJoinedChatEvent(
-                connection, 2, purpleName, purpleName),
+                connection, purpleId, purpleName, purpleName),
             ConvSetTitleEvent(
                 purpleName,
                 topicDisplayTitle(topicId, topicName)),
             ServGotChatEvent(
-                connection, 2,
+                connection, purpleId,
                 userFirstNames[0] + " " + userLastNames[0],
                 "Open child", PURPLE_MESSAGE_RECV, 9000));
     }
@@ -298,6 +299,714 @@ TEST_F(
         purpleName, 2,
         topicDisplayTitle(TopicId, topicName));
     expectNoGeneralConversation();
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    LiveMemberChangesFanOutQuietlyToActiveRoomsOnly)
+{
+    constexpr int32_t FirstTopicId = 42;
+    constexpr int32_t SecondTopicId = 43;
+    constexpr int32_t InactiveTopicId = 44;
+    const int32_t GeneralTopicId =
+        ForumTopicId::general().value();
+    const std::string memberName =
+        userFirstNames[1] + " " + userLastNames[1];
+
+    loginWithForumSupergroup();
+    serv_got_joined_chat(
+        connection, 1, groupChatPurpleName.c_str());
+    prpl.discardEvents();
+    openChildTopic(FirstTopicId, "First", 9000, 2);
+    openChildTopic(SecondTopicId, "Second", 9001, 3);
+    cacheTopic(InactiveTopicId, "Inactive");
+
+    receiveForumTopicServiceMessage(
+        10000, 12345,
+        make_object<messageChatAddMembers>(
+            std::vector<int53>{userIds[1]}),
+        GeneralTopicId);
+
+    verifyForumTopicReadReceipt(10000);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ConversationWriteEvent(
+            groupChatPurpleName, " ",
+            senderNotice("Added " + memberName),
+            PURPLE_MESSAGE_SYSTEM, 12345),
+        ChatAddUserEvent(
+            groupChatPurpleName, memberName, "",
+            PURPLE_CBFLAGS_NONE, false),
+        ChatAddUserEvent(
+            topicPurpleName(FirstTopicId), memberName, "",
+            PURPLE_CBFLAGS_NONE, false),
+        ChatAddUserEvent(
+            topicPurpleName(SecondTopicId), memberName, "",
+            PURPLE_CBFLAGS_NONE, false));
+    EXPECT_EQ(nullptr, findRoom(
+        topicPurpleName(InactiveTopicId)));
+
+    tgl.update(make_object<td::td_api::updateChatMember>(
+        groupChatId, userIds[0], 12346, nullptr,
+        false, false,
+        makeChatMember(
+            userIds[1], userIds[0], 0,
+            make_object<chatMemberStatusMember>(),
+            nullptr),
+        makeChatMember(
+            userIds[1], userIds[0], 0,
+            make_object<chatMemberStatusAdministrator>(),
+            nullptr)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    for (const std::string &roomName :
+         std::vector<std::string>{
+             groupChatPurpleName,
+             topicPurpleName(FirstTopicId),
+             topicPurpleName(SecondTopicId)}) {
+        PurpleConversation *room = findRoom(roomName);
+        ASSERT_NE(nullptr, room);
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(room);
+        ASSERT_NE(nullptr, chat);
+        EXPECT_EQ(
+            PURPLE_CBFLAGS_OP,
+            purple_conv_chat_user_get_flags(
+                chat, memberName.c_str()));
+    }
+    EXPECT_EQ(nullptr, findRoom(
+        topicPurpleName(InactiveTopicId)));
+
+    GHashTable *components =
+        getChatComponents(topicTarget(InactiveTopicId));
+    pluginInfo().join_chat(connection, components);
+    g_hash_table_destroy(components);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 4,
+            topicPurpleName(InactiveTopicId),
+            topicPurpleName(InactiveTopicId)),
+        ConvSetTitleEvent(
+            topicPurpleName(InactiveTopicId),
+            topicDisplayTitle(
+                InactiveTopicId, "Inactive")),
+        ChatClearUsersEvent(
+            topicPurpleName(InactiveTopicId)),
+        ChatAddUserEvent(
+            topicPurpleName(InactiveTopicId),
+            memberName, "", PURPLE_CBFLAGS_OP, false),
+        PresentConversationEvent(
+            topicPurpleName(InactiveTopicId)));
+
+    receiveForumTopicServiceMessage(
+        10001, 12347,
+        make_object<messageChatDeleteMember>(userIds[1]),
+        GeneralTopicId);
+
+    verifyForumTopicReadReceipt(10001);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ConversationWriteEvent(
+            groupChatPurpleName, " ",
+            senderNotice("Removed " + memberName),
+            PURPLE_MESSAGE_SYSTEM, 12347),
+        ChatClearUsersEvent(groupChatPurpleName),
+        ChatClearUsersEvent(
+            topicPurpleName(FirstTopicId)),
+        ChatClearUsersEvent(
+            topicPurpleName(SecondTopicId)),
+        ChatClearUsersEvent(
+            topicPurpleName(InactiveTopicId)));
+    for (const std::string &roomName :
+         std::vector<std::string>{
+             groupChatPurpleName,
+             topicPurpleName(FirstTopicId),
+             topicPurpleName(SecondTopicId),
+             topicPurpleName(InactiveTopicId)}) {
+        PurpleConversation *room = findRoom(roomName);
+        ASSERT_NE(nullptr, room);
+        EXPECT_FALSE(purple_conv_chat_find_user(
+            purple_conversation_get_chat_data(room),
+            memberName.c_str()));
+    }
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    DelayedLiveMemberNoticeProjectsNewerCachedState)
+{
+    constexpr int64_t BlockingMessageId = 10000;
+    constexpr int64_t MemberMessageId = 10001;
+    constexpr int64_t ReplyMessageId = 9999;
+    const int32_t generalTopicId =
+        ForumTopicId::general().value();
+    const std::string memberName =
+        userFirstNames[1] + " " + userLastNames[1];
+
+    loginWithForumSupergroup();
+    serv_got_joined_chat(
+        connection, 1, groupChatPurpleName.c_str());
+    prpl.discardEvents();
+
+    object_ptr<message> blockingMessage = makeMessage(
+        BlockingMessageId, userIds[0], groupChatId,
+        false, 12345, makeTextMessage("Blocking"),
+        make_object<messageTopicForum>(generalTopicId));
+    blockingMessage->reply_to_ =
+        makeMessageReplyTo(groupChatId, ReplyMessageId);
+    tgl.update(make_object<updateNewMessage>(
+        std::move(blockingMessage)));
+    const uint64_t replyRequest = tgl.verifyRequest(
+        getMessage(groupChatId, ReplyMessageId));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    receiveForumTopicServiceMessage(
+        MemberMessageId, 12346,
+        make_object<messageChatAddMembers>(
+            std::vector<int53>{userIds[1]}),
+        generalTopicId);
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<td::td_api::updateChatMember>(
+        groupChatId, userIds[0], 12347, nullptr,
+        false, false,
+        makeChatMember(
+            userIds[1], userIds[0], 0,
+            make_object<chatMemberStatusMember>(),
+            nullptr),
+        makeChatMember(
+            userIds[1], userIds[0], 0,
+            make_object<chatMemberStatusLeft>(),
+            nullptr)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.reply(replyRequest, makeMessage(
+        ReplyMessageId, userIds[0], groupChatId,
+        false, 12344, makeTextMessage("Original"),
+        make_object<messageTopicForum>(generalTopicId)));
+
+    tgl.verifyRequest(*Mock_ViewMessages(
+        groupChatId,
+        {BlockingMessageId, MemberMessageId}, true,
+        make_object<messageSourceForumTopicHistory>()));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotChatEvent(
+            connection, 1,
+            userFirstNames[0] + " " + userLastNames[0],
+            fmt::format(
+                replyPattern,
+                userFirstNames[0] + " " +
+                    userLastNames[0],
+                "Original", "Blocking"),
+            PURPLE_MESSAGE_RECV, 12345),
+        ConversationWriteEvent(
+            groupChatPurpleName, " ",
+            senderNotice("Added " + memberName),
+            PURPLE_MESSAGE_SYSTEM, 12346));
+
+    PurpleConversation *general =
+        findRoom(groupChatPurpleName);
+    ASSERT_NE(nullptr, general);
+    EXPECT_FALSE(purple_conv_chat_find_user(
+        purple_conversation_get_chat_data(general),
+        memberName.c_str()));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    MemberFetchRebasesDeltasAcrossBothResponses)
+{
+    const std::string administratorName =
+        userFirstNames[0] + " " + userLastNames[0];
+    const std::string removedName =
+        userFirstNames[1] + " " + userLastNames[1];
+
+    login();
+    tgl.update(make_object<updateUser>(makeUser(
+        userIds[0], userFirstNames[0], userLastNames[0],
+        "", make_object<userStatusOffline>())));
+    tgl.update(make_object<updateUser>(makeUser(
+        userIds[1], userFirstNames[1], userLastNames[1],
+        "", make_object<userStatusOffline>())));
+    tgl.update(make_object<updateSupergroup>(
+        makeForumSupergroup(
+            groupId, make_object<chatMemberStatusMember>(),
+            2)));
+    object_ptr<chat> parent = makeChat(
+        groupChatId,
+        make_object<chatTypeSupergroup>(groupId, false),
+        groupChatTitle);
+    addChatPosition(parent, make_object<chatListMain>());
+    tgl.update(make_object<updateNewChat>(
+        std::move(parent)));
+    prpl.verifyEvents(AddChatEvent(
+        groupChatPurpleName, groupChatTitle,
+        account, nullptr, nullptr));
+
+    const std::vector<uint64_t> discoveryRequests =
+        tgl.verifyRequestsV(
+            make_object<getSupergroupFullInfo>(groupId),
+            make_object<getSupergroupMembers>(
+                groupId,
+                make_object<
+                    supergroupMembersFilterRecent>(),
+                0, 200));
+    ASSERT_EQ(2U, discoveryRequests.size());
+
+    tgl.update(make_object<td::td_api::updateChatMember>(
+        groupChatId, userIds[1], 12345, nullptr,
+        false, false,
+        makeChatMember(
+            userIds[0], userIds[1], 0,
+            make_object<chatMemberStatusLeft>(),
+            nullptr),
+        makeChatMember(
+            userIds[0], userIds[1], 0,
+            make_object<
+                chatMemberStatusAdministrator>(),
+            nullptr)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.reply(
+        discoveryRequests[0],
+        make_object<supergroupFullInfo>());
+    auto staleRecent = make_object<chatMembers>();
+    staleRecent->members_.push_back(makeChatMember(
+        userIds[0], userIds[1], 0,
+        make_object<chatMemberStatusMember>(),
+        nullptr));
+    staleRecent->members_.push_back(makeChatMember(
+        userIds[1], userIds[0], 0,
+        make_object<chatMemberStatusMember>(),
+        nullptr));
+    tgl.reply(
+        discoveryRequests[1],
+        std::move(staleRecent));
+    const uint64_t administratorsRequest =
+        tgl.verifyRequest(make_object<getSupergroupMembers>(
+            groupId,
+            make_object<
+                supergroupMembersFilterAdministrators>(),
+            0, 200));
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<td::td_api::updateChatMember>(
+        groupChatId, userIds[0], 12346, nullptr,
+        false, false,
+        makeChatMember(
+            userIds[1], userIds[0], 0,
+            make_object<chatMemberStatusMember>(),
+            nullptr),
+        makeChatMember(
+            userIds[1], userIds[0], 0,
+            make_object<chatMemberStatusLeft>(),
+            nullptr)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.reply(
+        administratorsRequest,
+        make_object<chatMembers>());
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    GHashTable *components =
+        getChatComponents(ChatTarget::chat(
+            ChatId::fromString(
+                std::to_string(groupChatId).c_str())));
+    pluginInfo().join_chat(connection, components);
+    g_hash_table_destroy(components);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 1, groupChatPurpleName,
+            groupChatTitle),
+        ChatSetTopicEvent(
+            groupChatPurpleName, "", ""),
+        ChatClearUsersEvent(groupChatPurpleName),
+        ChatAddUserEvent(
+            groupChatPurpleName,
+            administratorName, "",
+            PURPLE_CBFLAGS_OP, false),
+        PresentConversationEvent(
+            groupChatPurpleName));
+
+    PurpleConversation *general =
+        findRoom(groupChatPurpleName);
+    ASSERT_NE(nullptr, general);
+    PurpleConvChat *chatData =
+        purple_conversation_get_chat_data(general);
+    ASSERT_NE(nullptr, chatData);
+    EXPECT_EQ(
+        PURPLE_CBFLAGS_OP,
+        purple_conv_chat_user_get_flags(
+            chatData, administratorName.c_str()));
+    EXPECT_FALSE(purple_conv_chat_find_user(
+        chatData, removedName.c_str()));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    ParentDescriptionAndMemberRenameFanOutWithoutOpeningInactiveTopic)
+{
+    constexpr int32_t ActiveTopicId = 42;
+    constexpr int32_t InactiveTopicId = 43;
+    const std::string oldMemberName =
+        userFirstNames[1] + " " + userLastNames[1];
+    const std::string newMemberName = "Johannes Kepler";
+
+    auto fullInfo = make_object<supergroupFullInfo>();
+    fullInfo->description_ = "Old description";
+    auto members = make_object<chatMembers>();
+    members->members_.push_back(makeChatMember(
+        userIds[1], userIds[0], 0,
+        make_object<chatMemberStatusMember>(),
+        nullptr));
+
+    loginWithSupergroup(
+        std::move(fullInfo), std::move(members),
+        make_object<chatMembers>());
+    tgl.update(make_object<updateSupergroup>(
+        makeForumSupergroup(
+            groupId, make_object<chatMemberStatusMember>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    receiveText(
+        9000, 9000, "Open General",
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value()));
+    verifyForumTopicReadReceipt(9000);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+
+    cacheTopic(ActiveTopicId, "Active");
+    GHashTable *components =
+        getChatComponents(topicTarget(ActiveTopicId));
+    pluginInfo().join_chat(connection, components);
+    g_hash_table_destroy(components);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+    cacheTopic(InactiveTopicId, "Inactive");
+
+    auto updatedInfo = make_object<supergroupFullInfo>();
+    updatedInfo->description_ = "New description";
+    tgl.update(make_object<updateSupergroupFullInfo>(
+        groupId, std::move(updatedInfo)));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ChatSetTopicEvent(
+            groupChatPurpleName,
+            "New description", ""),
+        ChatSetTopicEvent(
+            topicPurpleName(ActiveTopicId),
+            "New description", ""));
+    EXPECT_EQ(nullptr, findRoom(
+        topicPurpleName(InactiveTopicId)));
+
+    tgl.update(make_object<updateUser>(makeUser(
+        userIds[1], "Johannes", "Kepler", "",
+        make_object<userStatusOffline>())));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ChatClearUsersEvent(groupChatPurpleName),
+        ChatAddUserEvent(
+            groupChatPurpleName, newMemberName, "",
+            PURPLE_CBFLAGS_NONE, false),
+        ChatClearUsersEvent(
+            topicPurpleName(ActiveTopicId)),
+        ChatAddUserEvent(
+            topicPurpleName(ActiveTopicId),
+            newMemberName, "",
+            PURPLE_CBFLAGS_NONE, false));
+    EXPECT_EQ(nullptr, findRoom(
+        topicPurpleName(InactiveTopicId)));
+
+    for (const std::string &roomName :
+         std::vector<std::string>{
+             groupChatPurpleName,
+             topicPurpleName(ActiveTopicId)}) {
+        PurpleConversation *room = findRoom(roomName);
+        ASSERT_NE(nullptr, room);
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(room);
+        ASSERT_NE(nullptr, chat);
+        EXPECT_FALSE(purple_conv_chat_find_user(
+            chat, oldMemberName.c_str()));
+        EXPECT_TRUE(purple_conv_chat_find_user(
+            chat, newMemberName.c_str()));
+    }
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    ParentStateProjectionStopsAfterSynchronousDisconnect)
+{
+    constexpr int32_t TopicId = 42;
+    loginWithForumSupergroup();
+    openChildTopic(TopicId, "Active");
+
+    prpl.onNextEvent(
+        [this](PurpleEventType type) {
+            EXPECT_EQ(
+                PurpleEventType::ChatSetTopic, type);
+            pluginInfo().close(connection);
+        });
+    auto fullInfo = make_object<supergroupFullInfo>();
+    fullInfo->description_ = "Updated description";
+    tgl.update(make_object<updateSupergroupFullInfo>(
+        groupId, std::move(fullInfo)));
+
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ChatSetTopicEvent(
+        topicPurpleName(TopicId),
+        "Updated description", ""));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    ReentrantMemberUpdateRepairsInterruptedRosterProjection)
+{
+    constexpr int32_t TopicId = 42;
+    const std::string oldMemberName =
+        userFirstNames[1] + " " + userLastNames[1];
+    const std::string renamedMemberName =
+        "Galileo Updated";
+    auto members = make_object<chatMembers>();
+    members->members_.push_back(makeChatMember(
+        userIds[1], userIds[0], 0,
+        make_object<chatMemberStatusMember>(),
+        nullptr));
+
+    loginWithSupergroup(
+        make_object<supergroupFullInfo>(),
+        std::move(members), make_object<chatMembers>());
+    tgl.update(make_object<updateSupergroup>(
+        makeForumSupergroup(
+            groupId, make_object<chatMemberStatusMember>(),
+            2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    receiveText(
+        9000, 9000, "Open General",
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value()));
+    verifyForumTopicReadReceipt(9000);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+    cacheTopic(TopicId, "Active");
+    receiveText(
+        9001, 9001, "Open child",
+        make_object<messageTopicForum>(TopicId));
+    verifyForumTopicReadReceipt(9001);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+
+    bool injectedRemoval = false;
+    prpl.onNextEvent(
+        [this, &injectedRemoval](
+            PurpleEventType type) {
+            EXPECT_EQ(
+                PurpleEventType::ChatClearUsers, type);
+            injectedRemoval = true;
+            tgl.update(make_object<
+                td::td_api::updateChatMember>(
+                groupChatId, userIds[0], 12345,
+                nullptr, false, false,
+                makeChatMember(
+                    userIds[1], userIds[0], 0,
+                    make_object<
+                        chatMemberStatusMember>(),
+                    nullptr),
+                makeChatMember(
+                    userIds[1], userIds[0], 0,
+                    make_object<
+                        chatMemberStatusLeft>(),
+                    nullptr)));
+        });
+    tgl.update(make_object<updateUser>(makeUser(
+        userIds[1], "Galileo", "Updated", "",
+        make_object<userStatusOffline>())));
+
+    EXPECT_TRUE(injectedRemoval);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+    for (const std::string &roomName :
+         std::vector<std::string>{
+             groupChatPurpleName,
+             topicPurpleName(TopicId)}) {
+        PurpleConversation *room = findRoom(roomName);
+        ASSERT_NE(nullptr, room);
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(room);
+        ASSERT_NE(nullptr, chat);
+        EXPECT_FALSE(purple_conv_chat_find_user(
+            chat, oldMemberName.c_str()));
+        EXPECT_FALSE(purple_conv_chat_find_user(
+            chat, renamedMemberName.c_str()));
+    }
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    ReentrantDescriptionUpdateRepairsInterruptedFanout)
+{
+    constexpr int32_t TopicId = 42;
+    loginWithForumSupergroup();
+    receiveText(
+        9000, 9000, "Open General",
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value()));
+    verifyForumTopicReadReceipt(9000);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+    cacheTopic(TopicId, "Active");
+    receiveText(
+        9001, 9001, "Open child",
+        make_object<messageTopicForum>(TopicId));
+    verifyForumTopicReadReceipt(9001);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+
+    bool injectedDescription = false;
+    prpl.onNextEvent(
+        [this, &injectedDescription](
+            PurpleEventType type) {
+            EXPECT_EQ(
+                PurpleEventType::ChatSetTopic, type);
+            injectedDescription = true;
+            auto newest =
+                make_object<supergroupFullInfo>();
+            newest->description_ =
+                "Newest description";
+            tgl.update(make_object<
+                updateSupergroupFullInfo>(
+                groupId, std::move(newest)));
+        });
+    auto first = make_object<supergroupFullInfo>();
+    first->description_ = "Interrupted description";
+    tgl.update(make_object<updateSupergroupFullInfo>(
+        groupId, std::move(first)));
+
+    EXPECT_TRUE(injectedDescription);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+    for (const std::string &roomName :
+         std::vector<std::string>{
+             groupChatPurpleName,
+             topicPurpleName(TopicId)}) {
+        PurpleConversation *room = findRoom(roomName);
+        ASSERT_NE(nullptr, room);
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(room);
+        ASSERT_NE(nullptr, chat);
+        EXPECT_STREQ(
+            "Newest description",
+            purple_conv_chat_get_topic(chat));
+    }
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    OrdinarySupergroupMemberUpdateKeepsArrivalSemantics)
+{
+    const std::string memberName =
+        userFirstNames[1] + " " + userLastNames[1];
+    loginWithSupergroup();
+    serv_got_joined_chat(
+        connection, 1, groupChatPurpleName.c_str());
+    prpl.discardEvents();
+
+    tgl.update(make_object<td::td_api::updateChatMember>(
+        groupChatId, userIds[0], 12345, nullptr,
+        false, false,
+        makeChatMember(
+            userIds[1], userIds[0], 0,
+            make_object<chatMemberStatusLeft>(),
+            nullptr),
+        makeChatMember(
+            userIds[1], userIds[0], 0,
+            make_object<chatMemberStatusMember>(),
+            nullptr)));
+
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ChatAddUserEvent(
+        groupChatPurpleName, memberName, "",
+        PURPLE_CBFLAGS_NONE, true));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    GenericMemberNoticePreservesCachedAdministratorRole)
+{
+    constexpr int32_t TopicId = 42;
+    const std::string memberName =
+        userFirstNames[1] + " " + userLastNames[1];
+    auto members = make_object<chatMembers>();
+    members->members_.push_back(makeChatMember(
+        userIds[1], userIds[0], 0,
+        make_object<chatMemberStatusAdministrator>(),
+        nullptr));
+
+    loginWithSupergroup(
+        make_object<supergroupFullInfo>(),
+        std::move(members), make_object<chatMembers>());
+    tgl.update(make_object<updateSupergroup>(
+        makeForumSupergroup(
+            groupId, make_object<chatMemberStatusMember>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    receiveText(
+        9000, 9000, "Open General",
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value()));
+    verifyForumTopicReadReceipt(9000);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+    cacheTopic(TopicId, "Active");
+    GHashTable *components =
+        getChatComponents(topicTarget(TopicId));
+    pluginInfo().join_chat(connection, components);
+    g_hash_table_destroy(components);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+
+    receiveForumTopicServiceMessage(
+        10000, 12345,
+        make_object<messageChatAddMembers>(
+            std::vector<int53>{userIds[1]}),
+        ForumTopicId::general().value());
+
+    verifyForumTopicReadReceipt(10000);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ConversationWriteEvent(
+        groupChatPurpleName, " ",
+        senderNotice("Added " + memberName),
+        PURPLE_MESSAGE_SYSTEM, 12345));
+    for (const std::string &roomName :
+         std::vector<std::string>{
+             groupChatPurpleName,
+             topicPurpleName(TopicId)}) {
+        PurpleConversation *room = findRoom(roomName);
+        ASSERT_NE(nullptr, room);
+        EXPECT_EQ(
+            PURPLE_CBFLAGS_OP,
+            purple_conv_chat_user_get_flags(
+                purple_conversation_get_chat_data(room),
+                memberName.c_str()));
+    }
 }
 
 TEST_F(
@@ -807,6 +1516,74 @@ TEST_F(
             "Live General", PURPLE_MESSAGE_RECV, 6));
     EXPECT_TRUE(purple_conv_chat_has_left(
         purple_conversation_get_chat_data(child)));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    HistoricalMemberNoticeDoesNotMutateCurrentRoster)
+{
+    const std::string memberName =
+        userFirstNames[1] + " " + userLastNames[1];
+    purple_account_set_string(
+        account,
+        ("last-message-chat" +
+         std::to_string(groupChatId)).c_str(),
+        "1");
+    loginWithForumSupergroup();
+
+    tgl.update(make_object<updateChatLastMessage>(
+        groupChatId, nullptr,
+        std::vector<object_ptr<chatPosition>>()));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    receiveText(
+        6, 6, "Live General",
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value()));
+    tgl.verifyRequest(
+        getChatHistory(groupChatId, 6, 0, 30, false));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    std::vector<object_ptr<message>> history;
+    history.push_back(makeMessage(
+        5, userIds[0], groupChatId, false, 5,
+        make_object<messageChatAddMembers>(
+            std::vector<int53>{userIds[1]}),
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value())));
+    history.push_back(makeMessage(
+        1, userIds[0], groupChatId, false, 1,
+        makeTextMessage("Stop")));
+    tgl.reply(make_object<messages>(
+        history.size(), std::move(history)));
+
+    tgl.verifyRequest(*Mock_ViewMessages(
+        groupChatId, {5, 6}, true,
+        make_object<messageSourceForumTopicHistory>()));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 1, groupChatPurpleName,
+            groupChatTitle),
+        ChatSetTopicEvent(groupChatPurpleName, "", ""),
+        ChatClearUsersEvent(groupChatPurpleName),
+        ConversationWriteEvent(
+            groupChatPurpleName, " ",
+            senderNotice("Added " + memberName),
+            PURPLE_MESSAGE_SYSTEM, 5),
+        ServGotChatEvent(
+            connection, 1,
+            userFirstNames[0] + " " + userLastNames[0],
+            "Live General", PURPLE_MESSAGE_RECV, 6));
+
+    PurpleConversation *general =
+        findRoom(groupChatPurpleName);
+    ASSERT_NE(nullptr, general);
+    EXPECT_FALSE(purple_conv_chat_find_user(
+        purple_conversation_get_chat_data(general),
+        memberName.c_str()));
 }
 
 TEST_F(

@@ -37,8 +37,43 @@ PurpleConvChat *    getChatConversation(TdAccountData &account, const td::td_api
                                         const ContinuationGuard &canContinue =
                                             ContinuationGuard());
 PurpleConvChat *    getChatConversation(TdAccountData &account, const td::td_api::chat &chat,
-                                        int chatPurpleId);
+                                        int chatPurpleId,
+                                        const ContinuationGuard &canContinue =
+                                            ContinuationGuard());
 PurpleConvChat *    findChatConversation(PurpleAccount *account, const td::td_api::chat &chat);
+bool                projectForumChatDescription(
+                        TdAccountData &account,
+                        const td::td_api::chat &chat,
+                        const std::string &description,
+                        const ContinuationGuard &canContinue =
+                            ContinuationGuard());
+bool                projectForumChatMembers(
+                        TdAccountData &account,
+                        const td::td_api::chat &chat,
+                        const td::td_api::chatMembers &members,
+                        const ContinuationGuard &canContinue =
+                            ContinuationGuard());
+bool                projectForumChatMemberUpdate(
+                        TdAccountData &account,
+                        const td::td_api::chat &chat,
+                        const td::td_api::chatMember *oldMember,
+                        const td::td_api::chatMember *newMember,
+                        const ContinuationGuard &canContinue =
+                            ContinuationGuard());
+bool                projectForumChatMemberAdded(
+                        TdAccountData &account,
+                        const td::td_api::chat &chat,
+                        UserId userId,
+                        const td::td_api::object_ptr<
+                            td::td_api::ChatMemberStatus> &status,
+                        const ContinuationGuard &canContinue =
+                            ContinuationGuard());
+bool                projectForumChatMemberRemoved(
+                        TdAccountData &account,
+                        const td::td_api::chat &chat,
+                        UserId userId,
+                        const ContinuationGuard &canContinue =
+                            ContinuationGuard());
 bool                conversationHasFocus(PurpleConversation *conv);
 void                setBuddyServerAlias(PurpleBuddy *buddy, const char *alias);
 void                gotBuddyServerAlias(PurpleAccount *account, const char *buddyName, const char *alias);

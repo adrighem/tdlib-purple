@@ -355,6 +355,11 @@ void TdAccountData::updateUser(TdUserPtr userPtr)
                 break;
             }
         }
+
+        for (SupergroupId groupId :
+             getSupergroupsWithMember(userId)) {
+            ++m_supergroups[groupId].projectionEpoch;
+        }
     }
 }
 
@@ -411,6 +416,7 @@ void TdAccountData::updateSupergroup(TdSupergroupPtr group)
     info.hasEverBeenForum =
         info.hasEverBeenForum || group->is_forum_;
     info.group = std::move(group);
+    ++info.projectionEpoch;
 }
 
 void TdAccountData::setSupergroupInfoRequested(SupergroupId groupId)
@@ -430,14 +436,181 @@ bool TdAccountData::isSupergroupInfoRequested(SupergroupId groupId)
 
 void TdAccountData::updateSupergroupInfo(SupergroupId groupId, TdSupergroupInfoPtr groupInfo)
 {
-    if (groupInfo)
-        m_supergroups[groupId].fullInfo = std::move(groupInfo);
+    if (!groupInfo)
+        return;
+
+    SupergroupInfo &group = m_supergroups[groupId];
+    group.fullInfo = std::move(groupInfo);
+    ++group.projectionEpoch;
 }
 
-void TdAccountData::updateSupergroupMembers(SupergroupId groupId, TdChatMembersPtr members)
+uint64_t TdAccountData::getSupergroupMembersRevision(
+    SupergroupId groupId) const
 {
-    if (members)
-        m_supergroups[groupId].members = std::move(members);
+    auto group = m_supergroups.find(groupId);
+    return group != m_supergroups.end()
+        ? group->second.membersRevision
+        : 0;
+}
+
+void TdAccountData::reconcileSupergroupMembers(
+    SupergroupId groupId, TdChatMembersPtr members,
+    uint64_t snapshotRevision)
+{
+    if (!groupId.valid() || !members)
+        return;
+
+    SupergroupInfo &group = m_supergroups[groupId];
+    auto &fetchedMembers = members->members_;
+    for (const auto &revision : group.memberRevisions) {
+        if (revision.second <= snapshotRevision)
+            continue;
+
+        const UserId userId = revision.first;
+        fetchedMembers.erase(
+            std::remove_if(
+                fetchedMembers.begin(), fetchedMembers.end(),
+                [userId](
+                    const td::td_api::object_ptr<
+                        td::td_api::chatMember> &member) {
+                    return member &&
+                           getUserId(*member) == userId;
+                }),
+            fetchedMembers.end());
+
+        if (!group.members)
+            continue;
+        auto current = std::find_if(
+            group.members->members_.begin(),
+            group.members->members_.end(),
+            [userId](
+                const td::td_api::object_ptr<
+                    td::td_api::chatMember> &member) {
+                return member &&
+                       getUserId(*member) == userId &&
+                       isGroupMember(member->status_);
+            });
+        if (current != group.members->members_.end())
+            fetchedMembers.push_back(std::move(*current));
+    }
+
+    group.members = std::move(members);
+    ++group.projectionEpoch;
+}
+
+const td::td_api::chatMember *
+TdAccountData::updateSupergroupMember(
+    SupergroupId groupId, TdChatMemberPtr member)
+{
+    if (!groupId.valid() || !member)
+        return nullptr;
+
+    const UserId userId = getUserId(*member);
+    if (!userId.valid())
+        return nullptr;
+
+    SupergroupInfo &group = m_supergroups[groupId];
+    group.memberRevisions[userId] =
+        ++group.membersRevision;
+    ++group.projectionEpoch;
+    if (!group.members)
+        group.members = td::td_api::make_object<
+            td::td_api::chatMembers>();
+    auto &members = group.members->members_;
+    auto existing = std::find_if(
+        members.begin(), members.end(),
+        [userId](
+            const td::td_api::object_ptr<
+                td::td_api::chatMember> &candidate) {
+            return candidate &&
+                   getUserId(*candidate) == userId;
+        });
+
+    if (!isGroupMember(member->status_)) {
+        if (existing != members.end())
+            members.erase(existing);
+        return nullptr;
+    }
+
+    if (existing != members.end()) {
+        *existing = std::move(member);
+        return existing->get();
+    }
+
+    members.push_back(std::move(member));
+    return members.back().get();
+}
+
+void TdAccountData::removeSupergroupMember(
+    SupergroupId groupId, UserId userId)
+{
+    if (!groupId.valid() || !userId.valid())
+        return;
+
+    SupergroupInfo &group = m_supergroups[groupId];
+    group.memberRevisions[userId] =
+        ++group.membersRevision;
+    ++group.projectionEpoch;
+    if (!group.members)
+        return;
+
+    auto &members = group.members->members_;
+    members.erase(
+        std::remove_if(
+            members.begin(), members.end(),
+            [userId](
+                const td::td_api::object_ptr<
+                    td::td_api::chatMember> &member) {
+                return member &&
+                       getUserId(*member) == userId;
+            }),
+        members.end());
+}
+
+bool TdAccountData::beginSupergroupProjection(
+    SupergroupId groupId)
+{
+    if (!groupId.valid())
+        return false;
+
+    SupergroupInfo &group = m_supergroups[groupId];
+    if (group.projectionActive) {
+        group.projectionPending = true;
+        return false;
+    }
+
+    group.projectionActive = true;
+    group.projectionPending = false;
+    return true;
+}
+
+uint64_t TdAccountData::prepareSupergroupProjectionAttempt(
+    SupergroupId groupId)
+{
+    SupergroupInfo &group = m_supergroups[groupId];
+    group.projectionPending = false;
+    return group.projectionEpoch;
+}
+
+bool TdAccountData::isSupergroupProjectionAttemptCurrent(
+    SupergroupId groupId, uint64_t epoch) const
+{
+    auto group = m_supergroups.find(groupId);
+    return group != m_supergroups.end() &&
+           group->second.projectionActive &&
+           !group->second.projectionPending &&
+           group->second.projectionEpoch == epoch;
+}
+
+void TdAccountData::endSupergroupProjection(
+    SupergroupId groupId)
+{
+    auto group = m_supergroups.find(groupId);
+    if (group == m_supergroups.end())
+        return;
+
+    group->second.projectionActive = false;
+    group->second.projectionPending = false;
 }
 
 void TdAccountData::addChat(TdChatPtr chat)
@@ -1370,6 +1543,32 @@ TdAccountData::getBasicGroupsWithMember(UserId userId)
                 result.push_back(std::make_pair(getId(*item.second.group), item.second.fullInfo.get()));
             }
         }
+
+    return result;
+}
+
+std::vector<SupergroupId>
+TdAccountData::getSupergroupsWithMember(UserId userId) const
+{
+    std::vector<SupergroupId> result;
+
+    for (const auto &item : m_supergroups) {
+        const td::td_api::chatMembers *members =
+            item.second.members.get();
+        if (!members)
+            continue;
+        const bool found = std::any_of(
+            members->members_.begin(), members->members_.end(),
+            [userId](
+                const td::td_api::object_ptr<
+                    td::td_api::chatMember> &member) {
+                return member &&
+                       getUserId(*member) == userId &&
+                       isGroupMember(member->status_);
+            });
+        if (found)
+            result.push_back(item.first);
+    }
 
     return result;
 }

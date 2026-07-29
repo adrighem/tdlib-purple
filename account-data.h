@@ -64,13 +64,31 @@ public:
     : PendingRequest(requestId), groupId(groupId) {}
 };
 
+class SupergroupMembersRequest: public PendingRequest {
+public:
+    SupergroupId groupId;
+    uint64_t     membersRevision;
+
+    SupergroupMembersRequest(
+        uint64_t requestId, SupergroupId groupId,
+        uint64_t membersRevision)
+    : PendingRequest(requestId), groupId(groupId),
+      membersRevision(membersRevision) {}
+};
+
 class GroupMembersRequestCont: public PendingRequest {
 public:
     SupergroupId groupId;
+    uint64_t     membersRevision;
     td::td_api::object_ptr<td::td_api::chatMembers> members;
 
-    GroupMembersRequestCont(uint64_t requestId, SupergroupId groupId, td::td_api::chatMembers *members)
-    : PendingRequest(requestId), groupId(groupId), members(std::move(members)) {}
+    GroupMembersRequestCont(
+        uint64_t requestId, SupergroupId groupId,
+        uint64_t membersRevision,
+        td::td_api::chatMembers *members)
+    : PendingRequest(requestId), groupId(groupId),
+      membersRevision(membersRevision),
+      members(std::move(members)) {}
 };
 
 class ContactRequest: public PendingRequest {
@@ -142,6 +160,7 @@ struct TgMessageInfo {
     bool        sentLocally = false; // For outgoing messages, whether sent by this very client
     bool        forumTopicDisplayAccepted = false;
     bool        readReceiptEligible = false;
+    bool        isLiveUpdate = false;
     MessageId   repliedMessageId;
     td::td_api::object_ptr<td::td_api::message> repliedMessage;
     std::string forwardedFrom;
@@ -158,6 +177,7 @@ struct TgMessageInfo {
         forumTopicDisplayAccepted =
             other.forumTopicDisplayAccepted;
         readReceiptEligible = other.readReceiptEligible;
+        isLiveUpdate = other.isLiveUpdate;
         repliedMessageId = other.repliedMessageId;
         repliedMessage = nullptr;
         forwardedFrom = other.forwardedFrom;
@@ -331,6 +351,7 @@ public:
     using TdSupergroupPtr     = td::td_api::object_ptr<td::td_api::supergroup>;
     using TdSupergroupInfoPtr = td::td_api::object_ptr<td::td_api::supergroupFullInfo>;
     using TdChatMembersPtr    = td::td_api::object_ptr<td::td_api::chatMembers>;
+    using TdChatMemberPtr     = td::td_api::object_ptr<td::td_api::chatMember>;
     using SecretChatPtr       = td::td_api::object_ptr<td::td_api::secretChat>;
 
     struct ForumTopicState {
@@ -422,7 +443,23 @@ public:
     void setSupergroupInfoRequested(SupergroupId groupId);
     bool isSupergroupInfoRequested(SupergroupId groupId);
     void updateSupergroupInfo(SupergroupId groupId, TdSupergroupInfoPtr groupInfo);
-    void updateSupergroupMembers(SupergroupId groupId, TdChatMembersPtr members);
+    uint64_t getSupergroupMembersRevision(
+        SupergroupId groupId) const;
+    void reconcileSupergroupMembers(
+        SupergroupId groupId, TdChatMembersPtr members,
+        uint64_t snapshotRevision);
+    const td::td_api::chatMember *updateSupergroupMember(
+        SupergroupId groupId, TdChatMemberPtr member);
+    void removeSupergroupMember(
+        SupergroupId groupId, UserId userId);
+    bool beginSupergroupProjection(
+        SupergroupId groupId);
+    uint64_t prepareSupergroupProjectionAttempt(
+        SupergroupId groupId);
+    bool isSupergroupProjectionAttemptCurrent(
+        SupergroupId groupId, uint64_t epoch) const;
+    void endSupergroupProjection(
+        SupergroupId groupId);
 
     void addChat(TdChatPtr chat); // Updates existing chat if any
     void updateChatPosition(ChatId chatId, td::td_api::object_ptr<td::td_api::chatPosition> &&position);
@@ -572,6 +609,8 @@ public:
 
     auto                       getBasicGroupsWithMember(UserId userId) ->
                                std::vector<std::pair<BasicGroupId, const td::td_api::basicGroupFullInfo *>>;
+    std::vector<SupergroupId>  getSupergroupsWithMember(
+                               UserId userId) const;
 
     bool                       hasActiveCall();
     void                       setActiveCall(int32_t id);
@@ -659,6 +698,13 @@ private:
         TdChatMembersPtr    members;
         bool                fullInfoRequested = false;
         bool                hasEverBeenForum = false;
+        // Per-user revisions retain removals as tombstones so an in-flight
+        // member snapshot can be rebased onto newer live updates.
+        uint64_t            membersRevision = 0;
+        std::map<UserId, uint64_t> memberRevisions;
+        uint64_t            projectionEpoch = 0;
+        bool                projectionActive = false;
+        bool                projectionPending = false;
     };
 
     struct MessageRouteInfo {

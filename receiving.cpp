@@ -201,6 +201,7 @@ static std::string getForumTopicLifecycleNotice(
             if (created.name_.empty())
                 return _("Created a topic");
             return formatMessage(
+                // TRANSLATOR: In-chat update; {} is a forum topic name.
                 _("Created topic {}"),
                 escapeForumTopicName(created.name_));
         }
@@ -212,10 +213,12 @@ static std::string getForumTopicLifecycleNotice(
                 const std::string name = escapeForumTopicName(edited.name_);
                 if (edited.edit_icon_custom_emoji_id_) {
                     return formatMessage(
+                        // TRANSLATOR: In-chat update; {0} is a forum topic name.
                         _("Renamed the topic to {0} and changed its icon"),
                         {name});
                 }
                 return formatMessage(
+                    // TRANSLATOR: In-chat update; {} is a forum topic name.
                     _("Renamed the topic to {}"), name);
             }
             if (edited.edit_icon_custom_emoji_id_)
@@ -354,9 +357,140 @@ static PurpleConvChat *getVisibleChatConversation(TdAccountData &account, const 
     return findChatConversation(account.purpleAccount, chat);
 }
 
+static ContinuationGuard getReceivingContinuationGuard(
+    PurpleAccount *account)
+{
+    PurpleTdClient *client = getTdClient(account);
+    if (!client)
+        return ContinuationGuard();
+    return [account, client]() {
+        return getTdClient(account) == client;
+    };
+}
+
 static td::td_api::object_ptr<td::td_api::ChatMemberStatus> makeDefaultMemberStatus()
 {
     return td::td_api::make_object<td::td_api::chatMemberStatusMember>();
+}
+
+static const td::td_api::chatMember *
+findCachedForumChatMember(
+    const TdAccountData &account,
+    const td::td_api::chat &chat, UserId userId)
+{
+    const SupergroupId groupId = getSupergroupId(chat);
+    const td::td_api::chatMembers *members =
+        groupId.valid()
+            ? account.getSupergroupMembers(groupId)
+            : nullptr;
+    if (!members)
+        return nullptr;
+
+    auto member = std::find_if(
+        members->members_.begin(), members->members_.end(),
+        [userId](
+            const td::td_api::object_ptr<
+                td::td_api::chatMember> &candidate) {
+            return candidate &&
+                   getUserId(*candidate) == userId &&
+                   isGroupMember(candidate->status_);
+        });
+    return member == members->members_.end()
+        ? nullptr
+        : member->get();
+}
+
+static void cacheForumChatMember(
+    TdAccountData &account, const td::td_api::chat &chat,
+    UserId userId)
+{
+    const SupergroupId groupId = getSupergroupId(chat);
+    if (!groupId.valid() || !userId.valid())
+        return;
+    if (findCachedForumChatMember(
+            account, chat, userId)) {
+        // Generic service messages don't carry role information. Keep an
+        // authoritative creator/administrator status already in cache.
+        return;
+    }
+
+    auto member =
+        td::td_api::make_object<td::td_api::chatMember>();
+    member->member_id_ =
+        td::td_api::make_object<
+            td::td_api::messageSenderUser>(
+            userId.value());
+    member->status_ = makeDefaultMemberStatus();
+    account.updateSupergroupMember(
+        groupId, std::move(member));
+}
+
+static void removeCachedForumChatMember(
+    TdAccountData &account, const td::td_api::chat &chat,
+    UserId userId)
+{
+    const SupergroupId groupId = getSupergroupId(chat);
+    if (groupId.valid() && userId.valid())
+        account.removeSupergroupMember(groupId, userId);
+}
+
+static void cacheLiveForumMembershipMessage(
+    TdAccountData &account, const td::td_api::chat &chat,
+    const td::td_api::message &message)
+{
+    if (!message.content_ ||
+        !isEligibleForumParent(account, chat)) {
+        return;
+    }
+
+    switch (message.content_->get_id()) {
+    case td::td_api::messageChatAddMembers::ID: {
+        const auto &add =
+            static_cast<
+                const td::td_api::messageChatAddMembers &>(
+                *message.content_);
+        for (td::td_api::int53 rawUserId :
+             add.member_user_ids_) {
+            cacheForumChatMember(
+                account, chat,
+                userIdFromTdInt(rawUserId));
+        }
+        break;
+    }
+    case td::td_api::messageChatJoinByLink::ID:
+    case td::td_api::messageChatJoinByRequest::ID:
+        cacheForumChatMember(
+            account, chat, getSenderUserId(message));
+        break;
+    case td::td_api::messageChatDeleteMember::ID: {
+        const auto &removed =
+            static_cast<
+                const td::td_api::messageChatDeleteMember &>(
+                *message.content_);
+        removeCachedForumChatMember(
+            account, chat,
+            userIdFromTdInt(removed.user_id_));
+        break;
+    }
+    default:
+        break;
+    }
+}
+
+static bool projectCurrentCachedForumChatMember(
+    TdAccountData &account, const td::td_api::chat &chat,
+    UserId userId,
+    const ContinuationGuard &canContinue)
+{
+    const td::td_api::chatMember *member =
+        findCachedForumChatMember(account, chat, userId);
+    if (member) {
+        return projectForumChatMemberAdded(
+            account, chat, userId, member->status_,
+            canContinue);
+    }
+    return projectForumChatMemberRemoved(
+        account, chat, userId, canContinue);
 }
 
 std::string makeInlineImageText(int imgstoreId)
@@ -1348,12 +1482,17 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
         case td::td_api::messageBasicGroupChatCreate::ID: {
             const auto &create = static_cast<const td::td_api::messageBasicGroupChatCreate &>(*message.content_);
             std::vector<UserId> members;
-            PurpleConvChat *conv = getVisibleChatConversation(account, chat);
+            PurpleConvChat *conv = messageInfo.isLiveUpdate
+                ? getVisibleChatConversation(account, chat)
+                : NULL;
             for (td::td_api::int53 rawUserId: create.member_user_ids_) {
                 UserId userId = userIdFromTdInt(rawUserId);
                 members.push_back(userId);
-                auto status = makeDefaultMemberStatus();
-                addChatMember(conv, userId, status, account, false);
+                if (messageInfo.isLiveUpdate) {
+                    auto status = makeDefaultMemberStatus();
+                    addChatMember(
+                        conv, userId, status, account, false);
+                }
             }
             // TRANSLATOR: In-chat status update, first argument is a group name, second is a comma-separated member list.
             std::string notice = formatMessage(_("Created group {0} with {1}"),
@@ -1373,24 +1512,71 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
         case td::td_api::messageChatAddMembers::ID: {
             const auto &add = static_cast<const td::td_api::messageChatAddMembers &>(*message.content_);
             std::vector<UserId> members;
-            PurpleConvChat *conv = getVisibleChatConversation(account, chat);
+            const ChatId parentChatId = getId(chat);
+            const bool projectForumRoster =
+                messageInfo.isLiveUpdate &&
+                isEligibleForumParent(account, chat);
+            PurpleConvChat *conv =
+                messageInfo.isLiveUpdate && !projectForumRoster
+                    ? getVisibleChatConversation(account, chat)
+                    : NULL;
             for (td::td_api::int53 rawUserId: add.member_user_ids_) {
                 UserId userId = userIdFromTdInt(rawUserId);
                 members.push_back(userId);
-                auto status = makeDefaultMemberStatus();
-                addChatMember(conv, userId, status, account, true);
+                if (messageInfo.isLiveUpdate &&
+                    !projectForumRoster) {
+                    auto status = makeDefaultMemberStatus();
+                    addChatMember(
+                        conv, userId, status, account, true);
+                }
             }
             // TRANSLATOR: In-chat status update, argument is a comma-separated member list.
             std::string notice = formatMessage(_("Added {}"), joinMemberNames(members, account));
             notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
-            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            const ContinuationGuard canContinue =
+                getReceivingContinuationGuard(
+                    account.purpleAccount);
+            if (!showMessageText(
+                    account, chat, messageInfo, NULL,
+                    notice.c_str())) {
+                break;
+            }
+            if (projectForumRoster) {
+                for (UserId userId : members) {
+                    if (canContinue &&
+                        !canContinue()) {
+                        return;
+                    }
+                    const td::td_api::chat *currentChat =
+                        account.getChat(parentChatId);
+                    if (!currentChat ||
+                        !isEligibleForumParent(
+                            account, *currentChat)) {
+                        break;
+                    }
+                    if (!projectCurrentCachedForumChatMember(
+                            account, *currentChat, userId,
+                            canContinue)) {
+                        return;
+                    }
+                }
+            }
             break;
         }
         case td::td_api::messageChatJoinByLink::ID:
         case td::td_api::messageChatJoinByRequest::ID: {
             UserId userId = getSenderUserId(message);
-            PurpleConvChat *conv = getVisibleChatConversation(account, chat);
-            if (userId.valid()) {
+            const ChatId parentChatId = getId(chat);
+            const bool projectForumRoster =
+                messageInfo.isLiveUpdate &&
+                isEligibleForumParent(account, chat);
+            PurpleConvChat *conv =
+                messageInfo.isLiveUpdate && !projectForumRoster
+                    ? getVisibleChatConversation(account, chat)
+                    : NULL;
+            if (userId.valid() &&
+                messageInfo.isLiveUpdate &&
+                !projectForumRoster) {
                 auto status = makeDefaultMemberStatus();
                 addChatMember(conv, userId, status, account, true);
             }
@@ -1400,14 +1586,47 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
                                       // TRANSLATOR: In-chat status update.
                                       _("Joined after approval");
             std::string notice = makeNoticeWithSender(chat, messageInfo, messageText, account.purpleAccount);
-            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            const ContinuationGuard canContinue =
+                getReceivingContinuationGuard(
+                    account.purpleAccount);
+            if (!showMessageText(
+                    account, chat, messageInfo, NULL,
+                    notice.c_str())) {
+                break;
+            }
+            if (projectForumRoster && userId.valid()) {
+                if (canContinue &&
+                    !canContinue()) {
+                    return;
+                }
+                const td::td_api::chat *currentChat =
+                    account.getChat(parentChatId);
+                if (!currentChat ||
+                    !isEligibleForumParent(
+                        account, *currentChat)) {
+                    break;
+                }
+                if (!projectCurrentCachedForumChatMember(
+                        account, *currentChat, userId,
+                        canContinue)) {
+                    return;
+                }
+            }
             break;
         }
         case td::td_api::messageChatDeleteMember::ID: {
             const auto &del = static_cast<const td::td_api::messageChatDeleteMember &>(*message.content_);
             UserId userId = userIdFromTdInt(del.user_id_);
-            PurpleConvChat *conv = getVisibleChatConversation(account, chat);
-            removeChatMember(conv, userId, account);
+            const ChatId parentChatId = getId(chat);
+            const bool projectForumRoster =
+                messageInfo.isLiveUpdate &&
+                isEligibleForumParent(account, chat);
+            if (messageInfo.isLiveUpdate &&
+                !projectForumRoster) {
+                PurpleConvChat *conv =
+                    getVisibleChatConversation(account, chat);
+                removeChatMember(conv, userId, account);
+            }
 
             std::string notice;
             if (userId == getSenderUserId(message))
@@ -1417,7 +1636,30 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
                 // TRANSLATOR: In-chat status update, argument is a member name.
                 notice = formatMessage(_("Removed {}"), getMemberDisplayName(userId, account));
             notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
-            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            const ContinuationGuard canContinue =
+                getReceivingContinuationGuard(
+                    account.purpleAccount);
+            if (!showMessageText(
+                    account, chat, messageInfo, NULL,
+                    notice.c_str())) {
+                break;
+            }
+            if (projectForumRoster) {
+                if (canContinue &&
+                    !canContinue()) {
+                    return;
+                }
+                const td::td_api::chat *currentChat =
+                    account.getChat(parentChatId);
+                if (currentChat &&
+                    isEligibleForumParent(
+                        account, *currentChat) &&
+                    !projectCurrentCachedForumChatMember(
+                        account, *currentChat, userId,
+                        canContinue)) {
+                    return;
+                }
+            }
             break;
         }
         case td::td_api::messageChatUpgradeTo::ID: {
@@ -1852,6 +2094,9 @@ void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
             "Refusing incoming message with invalid room target\n");
         return;
     }
+    if (source == IncomingMessageSource::LiveUpdate)
+        cacheLiveForumMembershipMessage(
+            account, chat, *message);
     const bool readReceiptEligible =
         isReadReceiptsEnabled(account.purpleAccount);
     bool forumTopicDisplayAccepted = false;
@@ -1891,6 +2136,8 @@ void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
         forumTopicDisplayAccepted;
     fullMessage.messageInfo.readReceiptEligible =
         readReceiptEligible;
+    fullMessage.messageInfo.isLiveUpdate =
+        source == IncomingMessageSource::LiveUpdate;
 
     if (isMessageReady(fullMessage, account)) {
         IncomingMessage readyMessage = account.pendingMessages.addReadyMessage(std::move(fullMessage), action);

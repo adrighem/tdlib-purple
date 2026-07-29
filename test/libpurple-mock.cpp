@@ -510,9 +510,15 @@ static PurpleConversation *purple_conversation_new_impl(PurpleConversationType t
     if (conv->type == PURPLE_CONV_TYPE_CHAT) {
         conv->u.chat = new PurpleConvChat;
         conv->u.chat->conv = conv;
+        conv->u.chat->in_room = NULL;
+        conv->u.chat->who = NULL;
+        conv->u.chat->topic = NULL;
         conv->u.chat->left = FALSE;
         conv->u.chat->id = 0;
-        conv->u.chat->users = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+        conv->u.chat->users = g_hash_table_new_full(
+            g_str_hash, g_str_equal, g_free,
+            reinterpret_cast<GDestroyNotify>(
+                purple_conv_chat_cb_destroy));
     }
 
     if (pAccount != g_accounts.end())
@@ -555,7 +561,10 @@ void purple_conversation_destroy(PurpleConversation *conv)
         delete conv->u.im;
     if (conv->type == PURPLE_CONV_TYPE_CHAT)
     {
+        g_list_free(conv->u.chat->in_room);
         g_hash_table_destroy(conv->u.chat->users);
+        g_free(conv->u.chat->who);
+        g_free(conv->u.chat->topic);
         delete conv->u.chat;
     }
     delete conv;
@@ -652,7 +661,17 @@ void purple_conv_chat_write(PurpleConvChat *chat, const char *who,
 void purple_conv_chat_set_topic(PurpleConvChat *chat, const char *who,
 							  const char *topic)
 {
+    g_free(chat->who);
+    g_free(chat->topic);
+    chat->who = who ? g_strdup(who) : NULL;
+    chat->topic = topic ? g_strdup(topic) : NULL;
     EVENT(ChatSetTopicEvent, chat->conv->name, topic ? topic : "", who ? who : "");
+}
+
+const char *purple_conv_chat_get_topic(
+    const PurpleConvChat *chat)
+{
+    return chat ? chat->topic : NULL;
 }
 
 gboolean purple_debug_is_enabled(void)
@@ -1323,7 +1342,16 @@ void purple_conv_chat_add_user(PurpleConvChat *chat, const char *user,
 							 const char *extra_msg, PurpleConvChatBuddyFlags flags,
 							 gboolean new_arrival)
 {
-    g_hash_table_replace(chat->users, g_strdup(user), GINT_TO_POINTER(flags));
+    PurpleConvChatBuddy *buddy =
+        purple_conv_chat_cb_find(chat, user);
+    if (buddy) {
+        buddy->flags = flags;
+    } else {
+        buddy = purple_conv_chat_cb_new(user, NULL, flags);
+        chat->in_room = g_list_append(chat->in_room, buddy);
+        g_hash_table_insert(
+            chat->users, g_strdup(user), buddy);
+    }
     EVENT(ChatAddUserEvent, chat->conv->name, user, extra_msg ? extra_msg : "", flags, new_arrival);
 }
 
@@ -1338,6 +1366,8 @@ void purple_conv_chat_add_users(PurpleConvChat *chat, GList *users, GList *extra
 
 void purple_conv_chat_clear_users(PurpleConvChat *chat)
 {
+    g_list_free(chat->in_room);
+    chat->in_room = NULL;
     g_hash_table_remove_all(chat->users);
     EVENT(ChatClearUsersEvent, chat->conv->name);
 }
@@ -1345,6 +1375,11 @@ void purple_conv_chat_clear_users(PurpleConvChat *chat)
 void purple_conv_chat_remove_user(PurpleConvChat *chat, const char *user, const char *reason)
 {
     (void)reason;
+    PurpleConvChatBuddy *buddy =
+        purple_conv_chat_cb_find(chat, user);
+    if (buddy)
+        chat->in_room =
+            g_list_remove(chat->in_room, buddy);
     g_hash_table_remove(chat->users, user);
 }
 
@@ -1357,7 +1392,62 @@ void purple_conv_chat_user_set_flags(PurpleConvChat *chat, const char *user,
 								   PurpleConvChatBuddyFlags flags)
 {
     if (purple_conv_chat_find_user(chat, user))
-        g_hash_table_replace(chat->users, g_strdup(user), GINT_TO_POINTER(flags));
+        purple_conv_chat_cb_find(chat, user)->flags = flags;
+}
+
+PurpleConvChatBuddyFlags purple_conv_chat_user_get_flags(
+    PurpleConvChat *chat, const char *user)
+{
+    PurpleConvChatBuddy *buddy =
+        purple_conv_chat_cb_find(chat, user);
+    return buddy ? buddy->flags : PURPLE_CBFLAGS_NONE;
+}
+
+GList *purple_conv_chat_get_users(const PurpleConvChat *chat)
+{
+    return chat ? chat->in_room : NULL;
+}
+
+PurpleConvChatBuddy *purple_conv_chat_cb_new(
+    const char *name, const char *alias,
+    PurpleConvChatBuddyFlags flags)
+{
+    PurpleConvChatBuddy *buddy =
+        g_new0(PurpleConvChatBuddy, 1);
+    buddy->name = g_strdup(name);
+    buddy->alias = alias ? g_strdup(alias) : NULL;
+    buddy->flags = flags;
+    buddy->attributes = g_hash_table_new_full(
+        g_str_hash, g_str_equal, g_free, g_free);
+    return buddy;
+}
+
+PurpleConvChatBuddy *purple_conv_chat_cb_find(
+    PurpleConvChat *chat, const char *name)
+{
+    return chat
+        ? static_cast<PurpleConvChatBuddy *>(
+              g_hash_table_lookup(chat->users, name))
+        : NULL;
+}
+
+const char *purple_conv_chat_cb_get_name(
+    PurpleConvChatBuddy *buddy)
+{
+    return buddy ? buddy->name : NULL;
+}
+
+void purple_conv_chat_cb_destroy(
+    PurpleConvChatBuddy *buddy)
+{
+    if (!buddy)
+        return;
+    g_free(buddy->name);
+    g_free(buddy->alias);
+    g_free(buddy->alias_key);
+    if (buddy->attributes)
+        g_hash_table_destroy(buddy->attributes);
+    g_free(buddy);
 }
 
 PurpleBlistNode *purple_blist_get_root(void)

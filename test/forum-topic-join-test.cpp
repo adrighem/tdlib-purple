@@ -169,6 +169,65 @@ TEST_F(ForumTopicJoinTest, CachedTopicJoinsExactConversation)
             groupChatPurpleName.c_str(), account));
 }
 
+TEST_F(
+    ForumTopicJoinTest,
+    CachedParentDescriptionAndMembersHydrateNewChild)
+{
+    auto fullInfo = make_object<supergroupFullInfo>();
+    fullInfo->description_ = "Shared parent description";
+
+    auto members = make_object<chatMembers>();
+    members->members_.push_back(makeChatMember(
+        userIds[1], userIds[1], 0,
+        make_object<chatMemberStatusCreator>("", true),
+        nullptr));
+
+    auto administrators = make_object<chatMembers>();
+    administrators->members_.push_back(makeChatMember(
+        userIds[0], userIds[1], 0,
+        make_object<chatMemberStatusAdministrator>(),
+        nullptr));
+
+    loginWithSupergroup(
+        std::move(fullInfo), std::move(members),
+        std::move(administrators));
+    tgl.update(make_object<updateSupergroup>(
+        makeForumSupergroup(
+            groupId, make_object<chatMemberStatusMember>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    cacheTopic("Hydrated");
+
+    joinTopic();
+
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 2, topicPurpleName(),
+            topicPurpleName()),
+        ConvSetTitleEvent(
+            topicPurpleName(),
+            topicDisplayName("Hydrated")),
+        ChatSetTopicEvent(
+            topicPurpleName(),
+            "Shared parent description", ""),
+        ChatClearUsersEvent(topicPurpleName()),
+        ChatAddUserEvent(
+            topicPurpleName(),
+            userFirstNames[1] + " " + userLastNames[1],
+            "", PURPLE_CBFLAGS_FOUNDER, false),
+        ChatAddUserEvent(
+            topicPurpleName(),
+            userFirstNames[0] + " " + userLastNames[0],
+            "", PURPLE_CBFLAGS_OP, false),
+        PresentConversationEvent(topicPurpleName()));
+    EXPECT_EQ(
+        nullptr,
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            groupChatPurpleName.c_str(), account));
+}
+
 TEST_F(ForumTopicJoinTest, UnknownTopicFetchesExactMetadataAndJoinsTransiently)
 {
     loginWithForumSupergroup();

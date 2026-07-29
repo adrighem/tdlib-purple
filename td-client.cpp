@@ -815,7 +815,7 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
     }
 
     case td::td_api::updateChatMember::ID: {
-        const auto &memberUpdate = static_cast<const td::td_api::updateChatMember &>(update);
+        auto &memberUpdate = static_cast<td::td_api::updateChatMember &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: chat member for chat %" G_GINT64_FORMAT "\n",
                           memberUpdate.chat_id_);
         updateVisibleChatMemberList(memberUpdate);
@@ -1104,8 +1104,11 @@ void PurpleTdClient::requestSupergroupFullInfo(SupergroupId groupId)
         getMembersReq->supergroup_id_ = groupId.value();
         getMembersReq->filter_ = td::td_api::make_object<td::td_api::supergroupMembersFilterRecent>();
         getMembersReq->limit_ = SUPERGROUP_MEMBER_LIMIT;
+        const uint64_t membersRevision =
+            m_data.getSupergroupMembersRevision(groupId);
         requestId = m_transceiver.sendQuery(std::move(getMembersReq), &PurpleTdClient::supergroupMembersResponse);
-        m_data.addPendingRequest<SupergroupInfoRequest>(requestId, groupId);
+        m_data.addPendingRequest<SupergroupMembersRequest>(
+            requestId, groupId, membersRevision);
     }
 }
 
@@ -1133,7 +1136,9 @@ void PurpleTdClient::supergroupInfoResponse(uint64_t requestId, td::td_api::obje
 
 void PurpleTdClient::supergroupMembersResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
 {
-    std::unique_ptr<SupergroupInfoRequest> request = m_data.getPendingRequest<SupergroupInfoRequest>(requestId);
+    std::unique_ptr<SupergroupMembersRequest> request =
+        m_data.getPendingRequest<SupergroupMembersRequest>(
+            requestId);
 
     if (request && object && (object->get_id() == td::td_api::chatMembers::ID)) {
         td::td_api::object_ptr<td::td_api::chatMembers> members =
@@ -1144,7 +1149,9 @@ void PurpleTdClient::supergroupMembersResponse(uint64_t requestId, td::td_api::o
         getMembersReq->filter_ = td::td_api::make_object<td::td_api::supergroupMembersFilterAdministrators>();
         getMembersReq->limit_ = SUPERGROUP_MEMBER_LIMIT;
         uint64_t newRequestId = m_transceiver.sendQuery(std::move(getMembersReq), &PurpleTdClient::supergroupAdministratorsResponse);
-        m_data.addPendingRequest<GroupMembersRequestCont>(newRequestId, request->groupId, members.release());
+        m_data.addPendingRequest<GroupMembersRequestCont>(
+            newRequestId, request->groupId,
+            request->membersRevision, members.release());
     }
 }
 
@@ -1171,41 +1178,81 @@ void PurpleTdClient::supergroupAdministratorsResponse(uint64_t requestId, td::td
             }
         }
 
+        m_data.reconcileSupergroupMembers(
+            request->groupId, std::move(members),
+            request->membersRevision);
         const td::td_api::chat *chat = m_data.getSupergroupChatByGroup(request->groupId);
-        if (chat) {
+        const td::td_api::chatMembers *storedMembers =
+            m_data.getSupergroupMembers(request->groupId);
+        if (chat && storedMembers) {
+            const std::shared_ptr<LifetimeState> lifetime =
+                m_lifetime;
+            const ContinuationGuard canContinue =
+                [lifetime]() {
+                    return lifetime->alive;
+                };
+            if (isEligibleForumParent(m_data, *chat)) {
+                projectForumChatMembers(
+                    m_data, *chat, *storedMembers,
+                    canContinue);
+                return;
+            }
+
             PurpleConvChat *purpleChat = findChatConversation(m_account, *chat);
             if (purpleChat)
-                updateSupergroupChatMembers(purpleChat, *members, m_data);
+                updateSupergroupChatMembers(
+                    purpleChat, *storedMembers, m_data);
         }
-
-        m_data.updateSupergroupMembers(request->groupId, std::move(members));
     }
 }
 
 void PurpleTdClient::updateGroupFull(BasicGroupId groupId, td::td_api::object_ptr<td::td_api::basicGroupFullInfo> groupInfo)
 {
+    if (!groupInfo)
+        return;
+    m_data.updateBasicGroupInfo(
+        groupId, std::move(groupInfo));
     const td::td_api::chat *chat = m_data.getBasicGroupChatByGroup(groupId);
+    const td::td_api::basicGroupFullInfo *storedInfo =
+        m_data.getBasicGroupInfo(groupId);
 
-    if (chat) {
+    if (chat && storedInfo) {
         PurpleConvChat *purpleChat = findChatConversation(m_account, *chat);
         if (purpleChat)
-            updateChatConversation(purpleChat, *groupInfo, m_data);
+            updateChatConversation(
+                purpleChat, *storedInfo, m_data);
     }
-
-    m_data.updateBasicGroupInfo(groupId, std::move(groupInfo));
 }
 
 void PurpleTdClient::updateSupergroupFull(SupergroupId groupId, td::td_api::object_ptr<td::td_api::supergroupFullInfo> groupInfo)
 {
+    if (!groupInfo)
+        return;
+    m_data.updateSupergroupInfo(
+        groupId, std::move(groupInfo));
     const td::td_api::chat *chat = m_data.getSupergroupChatByGroup(groupId);
+    const td::td_api::supergroupFullInfo *storedInfo =
+        m_data.getSupergroupInfo(groupId);
 
-    if (chat) {
+    if (chat && storedInfo) {
+        const std::shared_ptr<LifetimeState> lifetime =
+            m_lifetime;
+        const ContinuationGuard canContinue =
+            [lifetime]() {
+                return lifetime->alive;
+            };
+        if (isEligibleForumParent(m_data, *chat)) {
+            projectForumChatDescription(
+                m_data, *chat, storedInfo->description_,
+                canContinue);
+            return;
+        }
+
         PurpleConvChat *purpleChat = findChatConversation(m_account, *chat);
         if (purpleChat)
-            updateChatConversation(purpleChat, *groupInfo, m_data);
+            updateChatConversation(
+                purpleChat, *storedInfo, m_data);
     }
-
-    m_data.updateSupergroupInfo(groupId, std::move(groupInfo));
 }
 
 void PurpleTdClient::onChatListReady()
@@ -1529,9 +1576,39 @@ void PurpleTdClient::updateChatLastMessage(td::td_api::updateChatLastMessage &la
     }
 }
 
-void PurpleTdClient::updateVisibleChatMemberList(const td::td_api::updateChatMember &memberUpdate)
+void PurpleTdClient::updateVisibleChatMemberList(td::td_api::updateChatMember &memberUpdate)
 {
     const td::td_api::chat *chat = m_data.getChat(chatIdFromTdInt(memberUpdate.chat_id_));
+    if (chat && isEligibleForumParent(m_data, *chat)) {
+        // Forum rooms share one roster. Keep every projection quiet so a
+        // Telegram service message remains the single user-facing notice.
+        // The non-forum path below retains libpurple's arrival semantics.
+        const td::td_api::chatMember *oldMember =
+            memberUpdate.old_chat_member_.get();
+        const SupergroupId groupId =
+            getSupergroupId(*chat);
+        const td::td_api::chatMember *newMember = nullptr;
+        if (memberUpdate.new_chat_member_) {
+            newMember = m_data.updateSupergroupMember(
+                groupId,
+                std::move(memberUpdate.new_chat_member_));
+        } else if (oldMember) {
+            m_data.removeSupergroupMember(
+                groupId, getUserId(*oldMember));
+        }
+
+        const std::shared_ptr<LifetimeState> lifetime =
+            m_lifetime;
+        const ContinuationGuard canContinue =
+            [lifetime]() {
+                return lifetime->alive;
+            };
+        projectForumChatMemberUpdate(
+            m_data, *chat, oldMember, newMember,
+            canContinue);
+        return;
+    }
+
     PurpleConvChat *purpleChat = chat ? findChatConversation(m_account, *chat) : nullptr;
     if (purpleChat)
         ::updateChatMember(purpleChat, memberUpdate.old_chat_member_.get(),
@@ -1941,23 +2018,54 @@ void PurpleTdClient::updateChat(const td::td_api::chat *chat)
 
 void PurpleTdClient::updateUserInfo(const td::td_api::user &user, const td::td_api::chat *privateChat)
 {
+    const UserId userId = getId(user);
+    const std::shared_ptr<LifetimeState> lifetime =
+        m_lifetime;
+    const ContinuationGuard canContinue =
+        [lifetime]() {
+            return lifetime->alive;
+        };
     if (privateChat) {
         if (isChatInContactList(*privateChat, &user)) {
             downloadProfilePhoto(user);
             updatePrivateChat(m_data, privateChat, user);
         } else
             removePrivateChat(m_data, *privateChat);
+        if (!lifetime->alive)
+            return;
+    }
+
+    // Forum topic rooms are projections of one parent membership list.
+    // Refresh every active projection when a cached member's display name
+    // changes, without creating conversations for inactive topics.
+    const std::vector<SupergroupId> supergroups =
+        m_data.getSupergroupsWithMember(userId);
+    for (SupergroupId groupId : supergroups) {
+        const td::td_api::chat *groupChat =
+            m_data.getSupergroupChatByGroup(groupId);
+        const td::td_api::chatMembers *members =
+            m_data.getSupergroupMembers(groupId);
+        if (groupChat && members &&
+            isEligibleForumParent(m_data, *groupChat)) {
+            if (!projectForumChatMembers(
+                    m_data, *groupChat, *members,
+                    canContinue)) {
+                return;
+            }
+        }
     }
 
     // User could have renamed, or they may have become, or ceased being, libpurple buddy.
     // Update member list in all chat conversation where this user is a member.
     std::vector<std::pair<BasicGroupId, const td::td_api::basicGroupFullInfo *>> groups;
-    groups = m_data.getBasicGroupsWithMember(getId(user));
+    groups = m_data.getBasicGroupsWithMember(userId);
     for (const auto &groupInfo: groups) {
         const td::td_api::chat *groupChat = m_data.getBasicGroupChatByGroup(groupInfo.first);
         PurpleConvChat *purpleChat = groupChat ? findChatConversation(m_account, *groupChat) : nullptr;
         if (purpleChat)
             updateChatConversation(purpleChat, *groupInfo.second, m_data);
+        if (!lifetime->alive)
+            return;
     }
 }
 
@@ -2265,6 +2373,12 @@ void PurpleTdClient::getUsers(const char *username, std::vector<const td::td_api
 
 bool PurpleTdClient::joinChat(const char *chatName)
 {
+    const std::shared_ptr<LifetimeState> lifetime =
+        m_lifetime;
+    const ContinuationGuard canContinue =
+        [lifetime]() {
+            return lifetime->alive;
+        };
     const ChatTarget target = parsePurpleChatName(chatName);
     if (!target.valid())
         return false;
@@ -2295,9 +2409,14 @@ bool PurpleTdClient::joinChat(const char *chatName)
         purple_debug_warning(config::pluginId, "Chat %s (%s) is not a group we a member of\n",
                              chatName, chat->title_.c_str());
     else if (purpleId) {
-        conv = getChatConversation(m_data, *chat, purpleId);
+        conv = getChatConversation(
+            m_data, *chat, purpleId, canContinue);
+        if (!lifetime->alive)
+            return false;
         if (conv)
             purple_conversation_present(purple_conv_chat_get_conversation(conv));
+        if (!lifetime->alive)
+            return true;
     }
 
     return conv || accepted;
@@ -2836,8 +2955,17 @@ void PurpleTdClient::joinChatResponse(uint64_t requestId, td::td_api::object_ptr
             if (request->type != GroupJoinRequest::Type::InviteLink) {
                 const td::td_api::chat *chat     = m_data.getChat(request->chatId);
                 int32_t                 purpleId = m_data.getPurpleChatId(request->chatId);
-                if (chat)
-                    getChatConversation(m_data, *chat, purpleId);
+                if (chat) {
+                    const std::shared_ptr<LifetimeState> lifetime =
+                        m_lifetime;
+                    const ContinuationGuard canContinue =
+                        [lifetime]() {
+                            return lifetime->alive;
+                        };
+                    getChatConversation(
+                        m_data, *chat, purpleId,
+                        canContinue);
+                }
             }
         }
     } else {
