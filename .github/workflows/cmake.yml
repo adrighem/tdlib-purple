@@ -12,9 +12,8 @@ permissions:
 # github.workspace = /home/runner/work/serenity/serenity
 
 env:
-  # Must be updated manually. Increment 'TD_MARK' to invalidate the cache.
-  # Must not contain spaces, minuses, or any special characters.
-  TD_TAG: "7f163d850abbebecf749e99fb412271cc1f4e805"
+  # Must match the td submodule commit. Increment 'TD_MARK' to invalidate the cache.
+  TD_TAG: "49b3bcbb6bfebf2ed44dd9f25102d2e1a94a58c4"
   TD_MARK: "m3"
 
 jobs:
@@ -68,6 +67,15 @@ jobs:
     # === BASIC SETUP ===
 
     - uses: actions/checkout@v4
+    - name: Verify TDLib pin
+      run: |
+        submodule_commit="$(git ls-tree HEAD td | awk '{print $3}')"
+        if [ "${submodule_commit}" != "${TD_TAG}" ]; then
+          echo "TD_TAG=${TD_TAG}"
+          echo "td submodule=${submodule_commit}"
+          echo "TDLib workflow pin must match the td submodule commit."
+          exit 1
+        fi
     - name: Dump config
       run: echo "install-local" ${{matrix.INSTALL_LOCAL_LOTTIE}} "cmakeflags" ${{matrix.CMAKE_FLAGS}} "end"
     - name: Install dependencies
