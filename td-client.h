@@ -53,8 +53,9 @@ public:
     void setTwoFactorAuth(const char *oldPassword, const char *newPassword, const char *hint,
                         const char *email);
 
-    void sendFileToChat(PurpleXfer *xfer, const char *purpleName, PurpleConversationType type,
-                        int purpleChatId);
+    ChatTarget resolveFileChatTarget(int purpleChatId) const;
+    void sendFileToChat(PurpleXfer *xfer, const char *purpleName,
+                        PurpleConversationType type, ChatTarget target);
     void cancelUpload(PurpleXfer *xfer);
     bool canSendFileToUser(const char *purpleName);
     bool canSendFileToChat(int purpleChatId);
@@ -198,6 +199,9 @@ private:
     void       onAnimatedStickerConverted(AccountThread *arg);
     void       sendMessageCreatePrivateChatResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       uploadResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
+    void       deferOrCancelUpload(int32_t fileId);
+    void       flushDeferredUploadCancels();
+    void       sendUploadCancel(int32_t fileId);
 
     void       sendMessageResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       removeTempFile(const std::string &path);
@@ -215,6 +219,7 @@ private:
     int32_t               m_lastAuthState = 0;
     std::vector<UserId>   m_usersForNewPrivateChats;
     std::set<ChatId>      m_deferredGroupChats;
+    std::set<int32_t>     m_deferredUploadCancels;
     std::map<ChatTarget, PendingForumTopicJoin> m_pendingForumTopicJoins;
     uint64_t              m_lastForumTopicJoinSerial = 0;
     bool                  m_chatListReady = false;

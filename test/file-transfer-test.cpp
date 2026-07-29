@@ -1092,6 +1092,43 @@ TEST_F(FileTransferTest, SendFileToNonContact_CreatePrivateChatFail)
     prpl.verifyEvents(XferLocalCancelEvent(PATH));
 }
 
+TEST_F(
+    FileTransferTest,
+    SendFileToNonContact_CreatePrivateChatFailDisconnectsSafely)
+{
+    const char *const PATH = "/path";
+    setFakeFileSize(PATH, 10000);
+
+    login();
+    tgl.update(standardUpdateUser(1));
+
+    pluginInfo().send_file(
+        connection,
+        (userFirstNames[1] + " " + userLastNames[1]).c_str(),
+        PATH);
+    prpl.verifyEvents(
+        XferAcceptedEvent(
+            userFirstNames[1] + " " + userLastNames[1],
+            PATH));
+    tgl.verifyRequest(
+        createPrivateChat(userIds[1], false));
+
+    prpl.onNextEvent(
+        [this](PurpleEventType type) {
+            EXPECT_EQ(
+                PurpleEventType::XferLocalCancel,
+                type);
+            pluginInfo().close(connection);
+        });
+    tgl.reply(make_object<error>(100, "error"));
+
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    prpl.verifyEvents(XferLocalCancelEvent(PATH));
+    tgl.verifyNoRequests();
+}
+
 TEST_F(FileTransferTest, SendFileToNonContact_TurboCancel)
 {
     const char *const PATH   = "/path";
@@ -1122,6 +1159,40 @@ TEST_F(FileTransferTest, SendFileToNonContact_TurboCancel)
         userFirstNames[0] + " " + userLastNames[0],
         nullptr, 0, 0, 0
     ));
+}
+
+TEST_F(
+    FileTransferTest,
+    SendFileToNonContact_CanceledPendingRequestDisconnectsSafely)
+{
+    const char *const PATH = "/path";
+    setFakeFileSize(PATH, 10000);
+
+    login();
+    tgl.update(standardUpdateUser(1));
+
+    pluginInfo().send_file(
+        connection,
+        (userFirstNames[1] + " " + userLastNames[1]).c_str(),
+        PATH);
+    prpl.verifyEvents(
+        XferAcceptedEvent(
+            userFirstNames[1] + " " + userLastNames[1],
+            PATH));
+    tgl.verifyRequest(
+        createPrivateChat(userIds[1], false));
+
+    PurpleXfer *upload = prpl.getLastXfer();
+    ASSERT_NE(nullptr, upload);
+    purple_xfer_cancel_local(upload);
+    prpl.verifyEvents(XferLocalCancelEvent(PATH));
+
+    pluginInfo().close(connection);
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
 }
 
 TEST_F(FileTransferTest, ReceiveDocument_StandardTransfer_TinyFile)

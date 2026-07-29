@@ -120,10 +120,11 @@ public:
 class UploadRequest: public PendingRequest {
 public:
     PurpleXfer *xfer;
-    ChatId      chatId;
+    ChatTarget  target;
 
-    UploadRequest(uint64_t requestId, PurpleXfer *xfer, ChatId chatId)
-    : PendingRequest(requestId), xfer(xfer), chatId(chatId) {}
+    UploadRequest(
+        uint64_t requestId, PurpleXfer *xfer, ChatTarget target)
+    : PendingRequest(requestId), xfer(xfer), target(target) {}
 };
 
 struct TgMessageInfo {
@@ -532,11 +533,36 @@ public:
     DownloadRequest *          findDownloadRequest(int32_t fileId);
     void                       extractFileTransferRequests(std::vector<PurpleXfer *> &transfers);
 
-    void                       addFileTransfer(int32_t fileId, PurpleXfer *xfer, ChatId chatId);
-    bool                       getFileTransfer(int32_t fileId, PurpleXfer *&xfer, ChatId &chatId);
+    struct FileTransferInfo {
+        int32_t     fileId = 0;
+        ChatTarget  target;
+        PurpleXfer *xfer = nullptr;
+    };
+
+    void                       addFileTransfer(
+                                      int32_t fileId,
+                                      PurpleXfer *xfer,
+                                      ChatTarget target);
+    bool                       getFileTransfer(
+                                      int32_t fileId,
+                                      PurpleXferType type,
+                                      PurpleXfer *&xfer,
+                                      ChatTarget &target);
+    std::vector<FileTransferInfo> getFileTransfers(
+                                      int32_t fileId,
+                                      PurpleXferType type) const;
+    std::vector<FileTransferInfo> extractFileTransfers(
+                                      int32_t fileId,
+                                      PurpleXferType type);
+    bool                       hasFileTransfer(
+                                      int32_t fileId,
+                                      PurpleXferType type) const;
     bool                       getFileIdForTransfer(PurpleXfer *xfer, int &fileId);
-    void                       removeFileTransfer(int32_t fileId);
+    void                       removeFileTransfer(
+                                      int32_t fileId,
+                                      PurpleXfer *xfer);
     void                       removeAllFileTransfers(std::vector<PurpleXfer *> &transfers);
+    bool                       hasPendingUploadRequests() const;
 
     void                       addSecretChat(td::td_api::object_ptr<td::td_api::secretChat> secretChat);
     const td::td_api::secretChat *getSecretChat(SecretChatId id);
@@ -614,12 +640,6 @@ private:
         TdChatMembersPtr    members;
         bool                fullInfoRequested = false;
         bool                hasEverBeenForum = false;
-    };
-
-    struct FileTransferInfo {
-        int32_t     fileId;
-        ChatId      chatId;
-        PurpleXfer *xfer;
     };
 
     struct MessageRouteInfo {

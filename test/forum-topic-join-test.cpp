@@ -1361,7 +1361,7 @@ TEST_F(ForumTopicJoinTest, ChildAdministrationOperationsFailClosed)
 
 #if PURPLE_VERSION_CHECK(2,14,0)
     ASSERT_NE(nullptr, pluginInfo().chat_can_receive_file);
-    EXPECT_FALSE(
+    EXPECT_TRUE(
         pluginInfo().chat_can_receive_file(connection, purpleId));
     EXPECT_TRUE(
         pluginInfo().chat_can_receive_file(connection, 1));

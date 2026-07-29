@@ -117,9 +117,58 @@ void compare(const inputMessagePhoto &actual, const inputMessagePhoto &expected)
     COMPARE(caption_ != nullptr);
 }
 
+static void compare(const InputFile &actual, const InputFile &expected)
+{
+    ASSERT_EQ(expected.get_id(), actual.get_id());
+    switch (expected.get_id()) {
+    case inputFileId::ID:
+        ASSERT_EQ(
+            static_cast<const inputFileId &>(expected).id_,
+            static_cast<const inputFileId &>(actual).id_);
+        break;
+    case inputFileRemote::ID:
+        ASSERT_EQ(
+            static_cast<const inputFileRemote &>(expected).id_,
+            static_cast<const inputFileRemote &>(actual).id_);
+        break;
+    case inputFileLocal::ID:
+        ASSERT_EQ(
+            static_cast<const inputFileLocal &>(expected).path_,
+            static_cast<const inputFileLocal &>(actual).path_);
+        break;
+    case inputFileGenerated::ID: {
+        const auto &actualGenerated =
+            static_cast<const inputFileGenerated &>(actual);
+        const auto &expectedGenerated =
+            static_cast<const inputFileGenerated &>(expected);
+        ASSERT_EQ(
+            expectedGenerated.original_path_,
+            actualGenerated.original_path_);
+        ASSERT_EQ(
+            expectedGenerated.conversion_,
+            actualGenerated.conversion_);
+        ASSERT_EQ(
+            expectedGenerated.expected_size_,
+            actualGenerated.expected_size_);
+        break;
+    }
+    default:
+        FAIL() << "Unsupported InputFile type "
+               << expected.get_id();
+    }
+}
+
 void compare(const inputMessageDocument &actual, const inputMessageDocument &expected)
 {
     COMPARE(document_ != nullptr);
+    if (actual.document_ != nullptr) {
+        COMPARE(document_->document_ != nullptr);
+        if (actual.document_->document_ != nullptr) {
+            compare(
+                *actual.document_->document_,
+                *expected.document_->document_);
+        }
+    }
     COMPARE(caption_ != nullptr);
 }
 
@@ -270,11 +319,21 @@ void compare(const downloadFile &actual, const downloadFile &expected)
 void compare(const preliminaryUploadFile &actual, const preliminaryUploadFile &expected)
 {
     COMPARE(file_ != nullptr);
+    if (actual.file_ != nullptr) {
+        compare(*actual.file_, *expected.file_);
+    }
     COMPARE(file_type_ != nullptr);
     if (actual.file_type_ != nullptr) {
         COMPARE(file_type_->get_id());
     }
     COMPARE(priority_);
+}
+
+void compare(
+    const cancelPreliminaryUploadFile &actual,
+    const cancelPreliminaryUploadFile &expected)
+{
+    COMPARE(file_id_);
 }
 
 
@@ -322,6 +381,7 @@ void compare_func(const td::td_api::Function &actual, const td::td_api::Function
         C(viewMessages)
         C(downloadFile)
         C(preliminaryUploadFile)
+        C(cancelPreliminaryUploadFile)
         case sendMessage::ID:
             compare(static_cast<const sendMessage &>(actual), static_cast<const sendMessage &>(expected));
             break;

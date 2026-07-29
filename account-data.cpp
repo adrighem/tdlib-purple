@@ -1195,30 +1195,87 @@ bool TdAccountData::extractPendingSend(
     return true;
 }
 
-void TdAccountData::addFileTransfer(int32_t fileId, PurpleXfer *xfer, ChatId chatId)
+void TdAccountData::addFileTransfer(
+    int32_t fileId, PurpleXfer *xfer, ChatTarget target)
 {
-    if (std::find_if(m_fileTransfers.begin(), m_fileTransfers.end(),
-                    [fileId](const FileTransferInfo &upload) {
-                        return (upload.fileId == fileId);
-                    }) == m_fileTransfers.end()) {
-        m_fileTransfers.emplace_back();
-        m_fileTransfers.back().fileId = fileId;
-        m_fileTransfers.back().xfer = xfer;
-        m_fileTransfers.back().chatId = chatId;
+    auto it = std::find_if(
+        m_fileTransfers.begin(), m_fileTransfers.end(),
+        [xfer](const FileTransferInfo &transfer) {
+            return transfer.xfer == xfer;
+        });
+    if (it != m_fileTransfers.end()) {
+        it->fileId = fileId;
+        it->target = target;
+    } else {
+        m_fileTransfers.push_back(
+            FileTransferInfo{fileId, target, xfer});
     }
 }
 
-bool TdAccountData::getFileTransfer(int32_t fileId, PurpleXfer *&xfer, ChatId &chatId)
+bool TdAccountData::getFileTransfer(
+    int32_t fileId, PurpleXferType type,
+    PurpleXfer *&xfer, ChatTarget &target)
 {
-    auto it = std::find_if(m_fileTransfers.begin(), m_fileTransfers.end(),
-                           [fileId](const FileTransferInfo &upload) { return (upload.fileId == fileId); });
+    auto it = std::find_if(
+        m_fileTransfers.begin(), m_fileTransfers.end(),
+        [fileId, type](const FileTransferInfo &transfer) {
+            return transfer.fileId == fileId &&
+                   transfer.xfer &&
+                   purple_xfer_get_type(transfer.xfer) == type;
+        });
     if (it != m_fileTransfers.end()) {
         xfer = it->xfer;
-        chatId = it->chatId;
+        target = it->target;
         return true;
     }
 
     return false;
+}
+
+std::vector<TdAccountData::FileTransferInfo>
+TdAccountData::getFileTransfers(
+    int32_t fileId, PurpleXferType type) const
+{
+    std::vector<FileTransferInfo> transfers;
+    for (const FileTransferInfo &transfer: m_fileTransfers) {
+        if (transfer.fileId == fileId &&
+            transfer.xfer &&
+            purple_xfer_get_type(transfer.xfer) == type) {
+            transfers.push_back(transfer);
+        }
+    }
+    return transfers;
+}
+
+std::vector<TdAccountData::FileTransferInfo>
+TdAccountData::extractFileTransfers(
+    int32_t fileId, PurpleXferType type)
+{
+    std::vector<FileTransferInfo> transfers;
+    for (auto it = m_fileTransfers.begin();
+         it != m_fileTransfers.end();) {
+        if (it->fileId == fileId &&
+            it->xfer &&
+            purple_xfer_get_type(it->xfer) == type) {
+            transfers.push_back(*it);
+            it = m_fileTransfers.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    return transfers;
+}
+
+bool TdAccountData::hasFileTransfer(
+    int32_t fileId, PurpleXferType type) const
+{
+    return std::any_of(
+        m_fileTransfers.begin(), m_fileTransfers.end(),
+        [fileId, type](const FileTransferInfo &transfer) {
+            return transfer.fileId == fileId &&
+                   transfer.xfer &&
+                   purple_xfer_get_type(transfer.xfer) == type;
+        });
 }
 
 bool TdAccountData::getFileIdForTransfer(PurpleXfer *xfer, int &fileId)
@@ -1232,10 +1289,15 @@ bool TdAccountData::getFileIdForTransfer(PurpleXfer *xfer, int &fileId)
         return false;
 }
 
-void TdAccountData::removeFileTransfer(int32_t fileId)
+void TdAccountData::removeFileTransfer(
+    int32_t fileId, PurpleXfer *xfer)
 {
-    auto it = std::find_if(m_fileTransfers.begin(), m_fileTransfers.end(),
-                           [fileId](const FileTransferInfo &upload) { return (upload.fileId == fileId); });
+    auto it = std::find_if(
+        m_fileTransfers.begin(), m_fileTransfers.end(),
+        [fileId, xfer](const FileTransferInfo &transfer) {
+            return transfer.fileId == fileId &&
+                   transfer.xfer == xfer;
+        });
     if (it != m_fileTransfers.end())
         m_fileTransfers.erase(it);
 }
@@ -1246,6 +1308,16 @@ void TdAccountData::removeAllFileTransfers(std::vector<PurpleXfer *>& transfers)
     for (size_t i = 0; i < m_fileTransfers.size(); i++)
         transfers[i] = m_fileTransfers[i].xfer;
     m_fileTransfers.clear();
+}
+
+bool TdAccountData::hasPendingUploadRequests() const
+{
+    return std::any_of(
+        m_requests.begin(), m_requests.end(),
+        [](const std::unique_ptr<PendingRequest> &request) {
+            return dynamic_cast<const UploadRequest *>(
+                       request.get()) != nullptr;
+        });
 }
 
 void TdAccountData::addSecretChat(td::td_api::object_ptr<td::td_api::secretChat> secretChat)

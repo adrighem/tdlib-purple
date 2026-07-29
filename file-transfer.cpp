@@ -39,7 +39,7 @@ bool saveImage(int id, char **fileName)
     return true;
 }
 
-void startDocumentUpload(ChatId chatId, const std::string &filename, PurpleXfer *xfer,
+void startDocumentUpload(ChatTarget target, const std::string &filename, PurpleXfer *xfer,
                          TdTransceiver &transceiver, TdAccountData &account,
                          TdTransceiver::ResponseCb response)
 {
@@ -49,78 +49,219 @@ void startDocumentUpload(ChatId chatId, const std::string &filename, PurpleXfer 
     uploadRequest->priority_ = FILE_UPLOAD_PRIORITY;
     purple_xfer_ref(xfer);
     uint64_t requestId = transceiver.sendQuery(std::move(uploadRequest), response);
-    account.addPendingRequest<UploadRequest>(requestId, xfer, chatId);
+    account.addPendingRequest<UploadRequest>(requestId, xfer, target);
 }
 
-static void updateDocumentUploadProgress(const td::td_api::file &file, PurpleXfer *xfer, ChatId chatId,
-                                         TdTransceiver &transceiver, TdAccountData &account,
-                                         TdTransceiver::ResponseCb sendMessageResponse);
+static void reportDocumentUploadProgress(
+    const td::td_api::file &file, PurpleXfer *xfer);
 
-void startDocumentUploadProgress(ChatId chatId, PurpleXfer *xfer, const td::td_api::file &file,
+void startDocumentUploadProgress(ChatTarget target, PurpleXfer *xfer, const td::td_api::file &file,
                                  TdTransceiver &transceiver, TdAccountData &account,
                                  TdTransceiver::ResponseCb sendMessageResponse)
 {
-    if (purple_xfer_is_canceled(xfer)) {
-        // Someone managed to cancel the upload REAL fast
-        auto cancelRequest = td::td_api::make_object<td::td_api::cancelPreliminaryUploadFile>(file.id_);
-        transceiver.sendQuery(std::move(cancelRequest), nullptr);
+    purple_debug_misc(config::pluginId, "Got file id %d for uploading %s\n", (int)file.id_,
+                      purple_xfer_get_local_filename(xfer));
+    account.addFileTransfer(file.id_, xfer, target);
+
+    if (file.remote_ && file.remote_->is_uploading_active_) {
+        // Transfer events can synchronously cancel the transfer or disconnect
+        // the account. The pending-upload reference keeps this transfer alive.
+        purple_xfer_ref(xfer);
+        reportDocumentUploadProgress(file, xfer);
         purple_xfer_unref(xfer);
     } else {
-        purple_debug_misc(config::pluginId, "Got file id %d for uploading %s\n", (int)file.id_,
-                            purple_xfer_get_local_filename(xfer));
-        account.addFileTransfer(file.id_, xfer, chatId);
-        updateDocumentUploadProgress(file, xfer, chatId, transceiver, account, sendMessageResponse);
+        updateFileTransferProgress(
+            file, transceiver, account,
+            sendMessageResponse);
     }
 }
 
 void uploadResponseError(PurpleXfer *xfer, const std::string &message, TdAccountData &account)
 {
-    purple_xfer_cancel_remote(xfer);
-    purple_xfer_error(purple_xfer_get_type(xfer), account.purpleAccount,
-                      purple_xfer_get_remote_user(xfer), message.c_str());
+    const PurpleXferType type = purple_xfer_get_type(xfer);
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    const char *remoteUser = purple_xfer_get_remote_user(xfer);
+    const std::string who = remoteUser ? remoteUser : "";
+
+    // Error notification handlers can synchronously disconnect the account.
+    // Capture everything above and only touch the independently referenced
+    // transfer afterwards.
+    purple_xfer_error(
+        type, purpleAccount, who.c_str(), message.c_str());
+    if (xfer->data && !purple_xfer_is_canceled(xfer))
+        purple_xfer_cancel_remote(xfer);
     purple_xfer_unref(xfer);
 }
 
-static void updateDocumentUploadProgress(const td::td_api::file &file, PurpleXfer *upload, ChatId chatId,
-                                         TdTransceiver &transceiver, TdAccountData &account,
-                                         TdTransceiver::ResponseCb sendMessageResponse)
+static ChatTarget resolveDocumentUploadTarget(
+    ChatTarget target, const TdAccountData &account)
 {
-    size_t fileSize = purple_xfer_get_size(upload);
+    if (!target.valid())
+        return ChatTarget();
 
-    if (file.remote_) {
-        if (file.remote_->is_uploading_active_) {
-            if (purple_xfer_get_status(upload) != PURPLE_XFER_STATUS_STARTED) {
-                purple_debug_misc(config::pluginId, "Started uploading %s\n", purple_xfer_get_local_filename(upload));
-                purple_xfer_start(upload, -1, NULL, 0);
-            }
-            size_t bytesSent = std::max((td::td_api::int53)0, file.remote_->uploaded_size_);
-            purple_xfer_set_bytes_sent(upload, std::min(fileSize, bytesSent));
-            purple_xfer_update_progress(upload);
-        } else if (file.local_ && (file.remote_->uploaded_size_ == file.local_->downloaded_size_)) {
-            purple_debug_misc(config::pluginId, "Finishing uploading %s\n", purple_xfer_get_local_filename(upload));
-            purple_xfer_set_bytes_sent(upload, fileSize);
-            purple_xfer_set_completed(upload, TRUE);
-            purple_xfer_end(upload);
-            purple_xfer_unref(upload);
-            account.removeFileTransfer(file.id_);
-            auto sendMessageRequest = td::td_api::make_object<td::td_api::sendMessage>();
-            auto content = td::td_api::make_object<td::td_api::inputMessageDocument>();
-            content->caption_ = td::td_api::make_object<td::td_api::formattedText>();
-            content->document_ = td::td_api::make_object<td::td_api::inputDocument>(
-                td::td_api::make_object<td::td_api::inputFileId>(file.id_),
-                nullptr, false);
-            sendMessageRequest->input_message_content_ = std::move(content);
-            sendMessageRequest->chat_id_ = chatId.value();
+    const td::td_api::chat *chat =
+        account.getChat(target.chatId());
+    if (!chat || !chat->type_)
+        return ChatTarget();
 
-            uint64_t requestId = transceiver.sendQuery(std::move(sendMessageRequest), sendMessageResponse);
-            account.addPendingRequest<SendMessageRequest>(
-                requestId, ChatTarget::chat(chatId), nullptr);
+    if (target.isForumTopic()) {
+        if (target.forumTopicId() == ForumTopicId::general()) {
+            if (isEligibleForumParent(account, *chat))
+                return target;
+            if (account.isGroupChatWithMembership(*chat))
+                return ChatTarget::chat(target.chatId());
+            return ChatTarget();
         }
-    } else {
-        purple_xfer_cancel_remote(upload);
-        purple_xfer_unref(upload);
-        account.removeFileTransfer(file.id_);
+
+        if (!isEligibleForumParent(account, *chat))
+            return ChatTarget();
+
+        const TdAccountData::ForumTopicState *topic =
+            account.findForumTopic(target);
+        // A locally closed Purple room marks the topic inactive, but the
+        // immutable upload target remains valid. Only authoritative deletion
+        // or loss of the forum parent cancels the final send.
+        return (topic && !topic->deleted)
+                   ? target
+                   : ChatTarget();
     }
+
+    if (isEligibleForumParent(account, *chat)) {
+        return ChatTarget::forumTopic(
+            target.chatId(), ForumTopicId::general());
+    }
+
+    const int32_t chatType = chat->type_->get_id();
+    if (chatType == td::td_api::chatTypePrivate::ID ||
+        chatType == td::td_api::chatTypeSecret::ID) {
+        return target;
+    }
+    return account.isGroupChatWithMembership(*chat)
+               ? target
+               : ChatTarget();
+}
+
+static void reportDocumentUploadProgress(
+    const td::td_api::file &file, PurpleXfer *upload)
+{
+    if (!file.remote_ || !file.remote_->is_uploading_active_)
+        return;
+
+    if (purple_xfer_get_status(upload) != PURPLE_XFER_STATUS_STARTED) {
+        purple_debug_misc(
+            config::pluginId, "Started uploading %s\n",
+            purple_xfer_get_local_filename(upload));
+        purple_xfer_start(upload, -1, NULL, 0);
+    }
+    if (upload->data && !purple_xfer_is_canceled(upload)) {
+        const size_t fileSize = purple_xfer_get_size(upload);
+        const size_t bytesSent = std::max(
+            static_cast<td::td_api::int53>(0),
+            file.remote_->uploaded_size_);
+        purple_xfer_set_bytes_sent(
+            upload, std::min(fileSize, bytesSent));
+        if (upload->data && !purple_xfer_is_canceled(upload))
+            purple_xfer_update_progress(upload);
+    }
+}
+
+static void finishPurpleUpload(
+    PurpleXfer *upload, bool sent)
+{
+    if (!upload)
+        return;
+
+    // The upload registry owns one operation reference. Purple's terminal
+    // functions consume the original transfer reference, while callbacks may
+    // synchronously consume it first. Release the operation reference last.
+    if (!sent) {
+        if (upload->data &&
+            !purple_xfer_is_canceled(upload)) {
+            purple_xfer_cancel_remote(upload);
+        }
+        purple_xfer_unref(upload);
+        return;
+    }
+
+    if (!purple_xfer_is_canceled(upload) &&
+        upload->data) {
+        const size_t fileSize =
+            purple_xfer_get_size(upload);
+        purple_xfer_set_bytes_sent(
+            upload, fileSize);
+        purple_xfer_set_completed(upload, TRUE);
+
+        if (!purple_xfer_is_canceled(upload) &&
+            upload->data) {
+            // A handler for XferEnd may itself cancel the transfer. Keep one
+            // guard reference and account for that extra terminal unref.
+            purple_xfer_ref(upload);
+            purple_xfer_end(upload);
+            if (!purple_xfer_is_canceled(upload))
+                purple_xfer_unref(upload);
+        }
+    }
+    purple_xfer_unref(upload);
+}
+
+static void finishDocumentUploads(
+    const td::td_api::file &file,
+    std::vector<TdAccountData::FileTransferInfo> uploads,
+    TdTransceiver &transceiver, TdAccountData &account,
+    TdTransceiver::ResponseCb sendMessageResponse)
+{
+    std::vector<bool> sent(uploads.size(), false);
+
+    // Queue every Telegram send and register every response route before
+    // invoking terminal Purple callbacks. The first callback may disconnect
+    // the account, while all later transfers still need deterministic targets.
+    for (size_t i = 0; i < uploads.size(); ++i) {
+        const ChatTarget target =
+            resolveDocumentUploadTarget(
+                uploads[i].target, account);
+        if (!target.valid()) {
+            purple_debug_warning(
+                config::pluginId,
+                "Refusing document send because its chat target is no longer available\n");
+            continue;
+        }
+
+        auto sendMessageRequest =
+            td::td_api::make_object<td::td_api::sendMessage>();
+        auto content =
+            td::td_api::make_object<td::td_api::inputMessageDocument>();
+        content->caption_ =
+            td::td_api::make_object<td::td_api::formattedText>();
+        content->document_ =
+            td::td_api::make_object<td::td_api::inputDocument>(
+                td::td_api::make_object<td::td_api::inputFileId>(
+                    file.id_),
+                nullptr, false);
+        sendMessageRequest->input_message_content_ =
+            std::move(content);
+        sendMessageRequest->chat_id_ =
+            target.chatId().value();
+        sendMessageRequest->topic_id_ =
+            makeMessageTopic(target);
+
+        const uint64_t requestId = transceiver.sendQuery(
+            std::move(sendMessageRequest),
+            sendMessageResponse);
+        account.addPendingRequest<SendMessageRequest>(
+            requestId, target, nullptr);
+        sent[i] = true;
+    }
+
+    // No account or transceiver access is allowed below this point.
+    for (size_t i = 0; i < uploads.size(); ++i)
+        finishPurpleUpload(uploads[i].xfer, sent[i]);
+}
+
+static void cancelDocumentUploads(
+    std::vector<TdAccountData::FileTransferInfo> uploads)
+{
+    for (const TdAccountData::FileTransferInfo &transfer: uploads)
+        finishPurpleUpload(transfer.xfer, false);
 }
 
 struct DownloadData {
@@ -149,22 +290,24 @@ static void cancelDownload(PurpleXfer *xfer)
         cancelRequest->file_id_ = fileId;
         cancelRequest->only_if_pending_ = false;
         data->transceiver->sendQuery(std::move(cancelRequest), nullptr);
-        data->account->removeFileTransfer(fileId);
+        data->account->removeFileTransfer(fileId, xfer);
     }
 }
 
 static void finishInlineDownloadProgress(DownloadRequest &downloadReq, TdAccountData& account)
 {
     PurpleXfer *download;
-    ChatId      chatId;
+    ChatTarget  target;
 
-    if (account.getFileTransfer(downloadReq.fileId, download, chatId)) {
+    if (account.getFileTransfer(
+            downloadReq.fileId, PURPLE_XFER_RECEIVE,
+            download, target)) {
         std::unique_ptr<DownloadData> data(static_cast<DownloadData *>(download->data));
         download->data = NULL;
         purple_xfer_set_bytes_sent(download, downloadReq.fileSize);
         purple_xfer_set_completed(download, TRUE);
         purple_xfer_end(download);
-        account.removeFileTransfer(downloadReq.fileId);
+        account.removeFileTransfer(downloadReq.fileId, download);
     }
 
     if (downloadReq.tempFd >= 0) {
@@ -263,7 +406,7 @@ static void startInlineDownloadProgress(DownloadRequest &request, TdTransceiver 
         // the progress
         xfer->data = new DownloadData(account, transceiver);
         purple_xfer_set_cancel_recv_fnc(xfer, cancelDownload);
-        account.addFileTransfer(request.fileId, xfer, ChatId::invalid);
+        account.addFileTransfer(request.fileId, xfer, ChatTarget());
     } else
         remove(tempFileName);
 
@@ -372,12 +515,50 @@ static void updateDownloadProgress(const td::td_api::file &file, PurpleXfer *xfe
 void updateFileTransferProgress(const td::td_api::file &file, TdTransceiver &transceiver,
                                 TdAccountData &account, TdTransceiver::ResponseCb sendMessageResponse)
 {
-    PurpleXfer *xfer = NULL;
-    ChatId      chatId;
-    if (account.getFileTransfer(file.id_, xfer, chatId)) {
-        if (xfer && (purple_xfer_get_type(xfer) == PURPLE_XFER_SEND))
-            updateDocumentUploadProgress(file, xfer, chatId, transceiver, account, sendMessageResponse);
+    std::vector<TdAccountData::FileTransferInfo> uploads =
+        account.getFileTransfers(
+            file.id_, PURPLE_XFER_SEND);
+    if (!uploads.empty()) {
+        if (!file.remote_) {
+            cancelDocumentUploads(
+                account.extractFileTransfers(
+                    file.id_, PURPLE_XFER_SEND));
+        } else if (file.remote_->is_uploading_active_) {
+            // Pin every waiter before the first progress callback. A
+            // synchronous disconnect removes the registry references for all
+            // waiters, after which their cleared data markers suppress the
+            // remaining callbacks.
+            for (const auto &upload: uploads)
+                purple_xfer_ref(upload.xfer);
+            for (const auto &upload: uploads) {
+                if (upload.xfer->data)
+                    reportDocumentUploadProgress(
+                        file, upload.xfer);
+            }
+            for (const auto &upload: uploads)
+                purple_xfer_unref(upload.xfer);
+        } else if (file.local_ &&
+                   file.remote_->uploaded_size_ ==
+                       file.local_->downloaded_size_) {
+            purple_debug_misc(
+                config::pluginId,
+                "Finishing %zu document upload(s) for file id %d\n",
+                uploads.size(), static_cast<int>(file.id_));
+            finishDocumentUploads(
+                file,
+                account.extractFileTransfers(
+                    file.id_, PURPLE_XFER_SEND),
+                transceiver, account,
+                sendMessageResponse);
+        }
+        return;
     }
+
+    PurpleXfer *xfer = NULL;
+    ChatTarget  target;
+    account.getFileTransfer(
+        file.id_, PURPLE_XFER_RECEIVE,
+        xfer, target);
 
     updateDownloadProgress(file, xfer, account);
 }
@@ -459,12 +640,14 @@ static void standardDownloadResponse(TdAccountData *account, uint64_t requestId,
     if (!request) return;
 
     PurpleXfer *download;
-    ChatId      chatId;
+    ChatTarget  target;
 
-    if (account->getFileTransfer(request->fileId, download, chatId)) {
+    if (account->getFileTransfer(
+            request->fileId, PURPLE_XFER_RECEIVE,
+            download, target)) {
         std::unique_ptr<DownloadData> data(static_cast<DownloadData *>(download->data));
         download->data = NULL;
-        account->removeFileTransfer(request->fileId);
+        account->removeFileTransfer(request->fileId, download);
 
         FILE *f = NULL;
         if (!path.empty())
@@ -544,7 +727,7 @@ void requestStandardDownload(ChatId chatId, const TgMessageInfo &message, const 
     purple_xfer_set_filename(xfer, fileName.c_str());
     purple_xfer_set_size(xfer, getFileSize(file));
     xfer->data = new DownloadData(account, transceiver);
-    account.addFileTransfer(file.id_, xfer, ChatId::invalid);
+    account.addFileTransfer(file.id_, xfer, ChatTarget());
     purple_xfer_request(xfer);
 }
 

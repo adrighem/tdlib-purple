@@ -17,6 +17,7 @@ add_executable(tests EXCLUDE_FROM_ALL
     message-order-test.cpp
     message-history-test.cpp
     forum-topic-test.cpp
+    forum-topic-file-transfer-test.cpp
     forum-topic-join-test.cpp
     forum-topic-message-update-test.cpp
     forum-topic-receiving-test.cpp
