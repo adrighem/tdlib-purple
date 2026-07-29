@@ -264,6 +264,45 @@ TEST_F(ForumTopicReceivingTest, ChildMessageOpensOnlyItsExactRoom)
 
 TEST_F(
     ForumTopicReceivingTest,
+    LiveChildBeforeSupergroupMetadataUsesProvisionalExactRoom)
+{
+    constexpr int32_t TopicId = 42;
+    constexpr int64_t MessageId = 10000;
+    constexpr int32_t Date = 12345;
+    const std::string purpleName = topicPurpleName(TopicId);
+    const std::string displayTitle =
+        topicDisplayTitle(TopicId, "");
+
+    login();
+    tgl.update(standardUpdateUser(0));
+    tgl.update(make_object<updateNewChat>(makeChat(
+        groupChatId,
+        make_object<chatTypeSupergroup>(groupId, false),
+        groupChatTitle, nullptr, 0, 0, 0)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    receiveText(
+        MessageId, Date, "Before group metadata",
+        make_object<messageTopicForum>(TopicId));
+
+    verifyForumTopicReadReceipt(MessageId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 2, purpleName, purpleName),
+        ConvSetTitleEvent(purpleName, displayTitle),
+        ServGotChatEvent(
+            connection, 2,
+            userFirstNames[0] + " " + userLastNames[0],
+            "Before group metadata",
+            PURPLE_MESSAGE_RECV, Date));
+    expectConversation(purpleName, 2, displayTitle);
+    expectNoGeneralConversation();
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
     TopicCreationWritesOneEscapedNoticeInExactChild)
 {
     constexpr int32_t TopicId = 42;
@@ -1669,6 +1708,72 @@ TEST_F(
         purple_conversation_get_chat_data(child)));
 }
 
+TEST_F(
+    ForumTopicReceivingTest,
+    LiveChildDoesNotReopenWhenForumIsDisabled)
+{
+    constexpr int32_t TopicId = 42;
+    const std::string purpleName = topicPurpleName(TopicId);
+
+    loginWithForumSupergroup();
+    openChildTopic(TopicId, "Suspended");
+
+    PurpleConversation *child =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT, purpleName.c_str(), account);
+    ASSERT_NE(nullptr, child);
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(child));
+
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    ASSERT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(child)));
+
+    receiveText(
+        10000, 12345, "Late disabled child",
+        make_object<messageTopicForum>(TopicId));
+
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(child)));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    LiveChildDoesNotReopenAfterMembershipLoss)
+{
+    constexpr int32_t TopicId = 42;
+    const std::string purpleName = topicPurpleName(TopicId);
+
+    loginWithForumSupergroup();
+    openChildTopic(TopicId, "Suspended");
+
+    PurpleConversation *child =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT, purpleName.c_str(), account);
+    ASSERT_NE(nullptr, child);
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(child));
+
+    tgl.update(make_object<updateSupergroup>(makeForumSupergroup(
+        groupId, make_object<chatMemberStatusLeft>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    ASSERT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(child)));
+
+    receiveText(
+        10000, 12345, "Late nonmember child",
+        make_object<messageTopicForum>(TopicId));
+
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(child)));
+}
+
 TEST_F(ForumTopicReceivingTest, InterleavedChildTopicsStaySeparated)
 {
     constexpr int32_t FirstTopicId = 42;
@@ -2405,6 +2510,55 @@ TEST_F(
             userFirstNames[0] + " " + userLastNames[0],
             "Original", "First batch message"),
         PURPLE_MESSAGE_RECV, 12346));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    DelayedUnsolicitedPhotoRevalidatesMembershipBeforeDisplay)
+{
+    constexpr int32_t TopicId = 42;
+    constexpr int64_t MessageId = 10000;
+    constexpr int32_t FileId = 1234;
+    const std::string purpleName = topicPurpleName(TopicId);
+
+    loginWithForumSupergroup();
+    cacheTopic(TopicId, "Support");
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        MessageId, userIds[0], groupChatId, false, 12345,
+        makeMessagePhoto(
+            makePhotoRemote(FileId, 10000, 640, 480),
+            make_object<formattedText>(
+                "photo", std::vector<object_ptr<textEntity>>()),
+            false),
+        make_object<messageTopicForum>(TopicId))));
+    const uint64_t downloadRequest = tgl.verifyRequest(
+        downloadFile(FileId, 1, 0, 0, true));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<updateSupergroup>(
+        makeForumSupergroup(
+            groupId,
+            make_object<chatMemberStatusLeft>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.reply(downloadRequest, make_object<file>(
+        FileId, 10000, 10000,
+        make_object<localFile>(
+            "/path", true, true, false, true,
+            0, 10000, 10000),
+        make_object<remoteFile>(
+            "beh", "bleh", false, true, 10000)));
+
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_EQ(
+        nullptr,
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT, purpleName.c_str(), account));
+    expectNoGeneralConversation();
 }
 
 TEST_F(

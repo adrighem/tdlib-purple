@@ -394,9 +394,13 @@ void ForumTopicsAdapterCore::reconcileTopicLookups(
 {
     std::vector<std::pair<ChatTarget, uint64_t>> superseded;
     for (const auto &entry : m_topicLookups) {
+        const TdAccountData::ForumTopicState *topic =
+            m_account.findForumTopic(entry.first);
         if (entry.first.chatId() == chatId &&
             seenTargets.find(entry.first) == seenTargets.end() &&
-            generation > entry.second.metadataGeneration) {
+            generation > entry.second.metadataGeneration &&
+            (!topic ||
+             generation > topic->lastLiveMessageGeneration)) {
             superseded.emplace_back(
                 entry.first, entry.second.serial);
         }

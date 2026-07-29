@@ -364,6 +364,7 @@ public:
         bool saved = false;
         bool active = false;
         uint64_t metadataGeneration = 0;
+        uint64_t lastLiveMessageGeneration = 0;
         bool metadataKnown = false;
         MessageId creationMessageId;
 
@@ -530,7 +531,7 @@ public:
                                       std::vector<const ForumTopicState *> &topics) const;
     bool                          setForumTopicSaved(ChatTarget target, bool saved);
     int32_t                       activateForumTopic(ChatTarget target);
-    int32_t                       activateForumTopicForIncomingMessage(
+    int32_t                       prepareForumTopicForIncomingMessage(
                                       ChatTarget target);
     void                          deactivateForumTopic(ChatTarget target);
 

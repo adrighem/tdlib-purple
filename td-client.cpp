@@ -1469,10 +1469,15 @@ void PurpleTdClient::onIncomingMessage(td::td_api::object_ptr<td::td_api::messag
             return;
     }
 
-    handleIncomingMessage(
+    const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
+    const bool accepted = handleIncomingMessage(
         m_data, *chat, std::move(message),
         PendingMessageQueue::Append,
         IncomingMessageSource::LiveUpdate);
+    if (!lifetime->alive)
+        return;
+    if (accepted && isChildForumTopic(target))
+        openPreparedForumTopicForPendingJoin(target);
 }
 
 void PurpleTdClient::unreadReactionsMessageResponse(
@@ -2476,9 +2481,18 @@ bool PurpleTdClient::joinForumTopic(ChatTarget target)
     if (++m_lastForumTopicJoinSerial == 0)
         ++m_lastForumTopicJoinSerial;
     const uint64_t joinSerial = m_lastForumTopicJoinSerial;
+    const TdAccountData::ForumTopicState *topicAtStart =
+        m_data.findForumTopic(target);
+    const uint64_t liveMessageGenerationAtStart =
+        topicAtStart
+        ? topicAtStart->lastLiveMessageGeneration
+        : 0;
     auto pendingJoin =
         m_pendingForumTopicJoins.emplace(
-            target, PendingForumTopicJoin(intent, joinSerial));
+            target,
+            PendingForumTopicJoin(
+                intent, joinSerial,
+                liveMessageGenerationAtStart));
     if (!pendingJoin.second) {
         if (!persistentIntent) {
             pendingJoin.first->second.intent =
@@ -2493,6 +2507,81 @@ bool PurpleTdClient::joinForumTopic(ChatTarget target)
             completeForumTopicJoin(result, joinSerial);
         });
     return true;
+}
+
+bool PurpleTdClient::satisfyForumTopicJoinIfOpen(
+    ChatTarget target)
+{
+    if (!isChildForumTopic(target))
+        return false;
+
+    const TdAccountData::ForumTopicState *topic =
+        m_data.findForumTopic(target);
+    if (!topic || !topic->active || topic->purpleId == 0)
+        return false;
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            getPurpleChatName(target).c_str(), m_account);
+    PurpleConvChat *chat = conversation
+        ? purple_conversation_get_chat_data(conversation)
+        : nullptr;
+    if (!chat || purple_conv_chat_has_left(chat) ||
+        purple_conv_chat_get_id(chat) != topic->purpleId ||
+        m_data.getChatTargetByPurpleId(topic->purpleId) !=
+            target) {
+        return false;
+    }
+
+    m_pendingForumTopicJoins.erase(target);
+    m_data.removeExpectedChat(target);
+    return true;
+}
+
+void PurpleTdClient::openPreparedForumTopicForPendingJoin(
+    ChatTarget target)
+{
+    if (!isChildForumTopic(target) ||
+        (m_pendingForumTopicJoins.find(target) ==
+             m_pendingForumTopicJoins.end() &&
+         !m_data.isExpectedChat(target))) {
+        return;
+    }
+
+    const td::td_api::chat *parent =
+        m_data.getChat(target.chatId());
+    const TdAccountData::ForumTopicState *topic =
+        m_data.findForumTopic(target);
+    if (!parent || !isEligibleForumParent(m_data, *parent) ||
+        !topic || topic->deleted) {
+        return;
+    }
+
+    const bool wasActive = topic->active;
+    const int32_t purpleId =
+        m_data.activateForumTopic(target);
+    if (purpleId == 0)
+        return;
+
+    const std::string displayTitle =
+        getForumTopicDisplayTitle(*parent, *topic);
+    const std::shared_ptr<LifetimeState> lifetime =
+        m_lifetime;
+    const ContinuationGuard canContinue =
+        [lifetime]() {
+            return lifetime->alive;
+        };
+    PurpleConvChat *conversation = getChatConversation(
+        m_data, *parent, target, purpleId,
+        displayTitle, canContinue);
+    if (!lifetime->alive)
+        return;
+    if (!conversation ||
+        !satisfyForumTopicJoinIfOpen(target)) {
+        if (!wasActive)
+            m_data.deactivateForumTopic(target);
+    }
 }
 
 void PurpleTdClient::completeForumTopicJoin(
@@ -2513,8 +2602,8 @@ void PurpleTdClient::completeForumTopicJoin(
     const bool revalidatePersistentIntent =
         pending->second.intent ==
             ForumTopicJoinIntent::PersistentRejoin;
-    m_pendingForumTopicJoins.erase(pending);
-    m_data.removeExpectedChat(target);
+    const uint64_t liveMessageGenerationAtStart =
+        pending->second.liveMessageGenerationAtStart;
 
     const std::string purpleName = getPurpleChatName(target);
     PurpleChat *bookmark = purple_account_is_connected(m_account)
@@ -2526,6 +2615,8 @@ void PurpleTdClient::completeForumTopicJoin(
     m_data.setForumTopicSaved(target, bookmark != nullptr);
     if (revalidatePersistentIntent &&
         !bookmark && !existingConversation) {
+        m_pendingForumTopicJoins.erase(pending);
+        m_data.removeExpectedChat(target);
         return;
     }
 
@@ -2536,6 +2627,14 @@ void PurpleTdClient::completeForumTopicJoin(
     if (result.status != ForumTopicLookupStatus::Available ||
         !topic || !topic->metadataKnown || topic->deleted ||
         !parent || !isEligibleForumParent(m_data, *parent)) {
+        if (topic &&
+            topic->lastLiveMessageGeneration >
+                liveMessageGenerationAtStart &&
+            satisfyForumTopicJoinIfOpen(target)) {
+            return;
+        }
+        m_pendingForumTopicJoins.erase(pending);
+        m_data.removeExpectedChat(target);
         if (result.tdlibErrorCode != 0) {
             purple_debug_warning(
                 config::pluginId,
@@ -2548,6 +2647,9 @@ void PurpleTdClient::completeForumTopicJoin(
         failForumTopicJoin(target);
         return;
     }
+
+    m_pendingForumTopicJoins.erase(pending);
+    m_data.removeExpectedChat(target);
 
     const int32_t purpleId = m_data.activateForumTopic(target);
     if (purpleId == 0) {

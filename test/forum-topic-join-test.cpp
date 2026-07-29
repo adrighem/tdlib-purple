@@ -77,6 +77,51 @@ protected:
         return roomlist;
     }
 
+    void receiveTopicText(
+        int64_t messageId, int32_t date,
+        const std::string &text)
+    {
+        tgl.update(make_object<updateNewMessage>(makeMessage(
+            messageId, userIds[0], groupChatId, false, date,
+            makeTextMessage(text),
+            make_object<messageTopicForum>(TopicId))));
+    }
+
+    void verifyForumTopicReadReceipt(int64_t messageId)
+    {
+        tgl.verifyRequest(*Mock_ViewMessages(
+            groupChatId, {messageId}, true,
+            make_object<messageSourceForumTopicHistory>()));
+    }
+
+    uint64_t receiveDelayedTopicPhoto(
+        int64_t messageId, int32_t date, int32_t fileId)
+    {
+        tgl.update(make_object<updateNewMessage>(makeMessage(
+            messageId, userIds[0], groupChatId, false, date,
+            makeMessagePhoto(
+                makePhotoRemote(fileId, 10000, 640, 480),
+                make_object<formattedText>(
+                    "photo",
+                    std::vector<object_ptr<textEntity>>()),
+                false),
+            make_object<messageTopicForum>(TopicId))));
+        return tgl.verifyRequest(
+            downloadFile(fileId, 1, 0, 0, true));
+    }
+
+    void completeTopicPhotoDownload(
+        uint64_t requestId, int32_t fileId)
+    {
+        tgl.reply(requestId, make_object<file>(
+            fileId, 10000, 10000,
+            make_object<localFile>(
+                "/path", true, true, false, true,
+                0, 10000, 10000),
+            make_object<remoteFile>(
+                "beh", "bleh", false, true, 10000)));
+    }
+
     PurpleConversation *addSavedLeftTopic(
         const std::string &displayName, int32_t purpleId = 99)
     {
@@ -395,6 +440,77 @@ TEST_F(ForumTopicJoinTest, OlderCompleteListingDoesNotBeatExactLookup)
     tgl.reply(exactRequest, makeForumTopic(makeForumTopicInfo(
         groupChatId, TopicId, "Newer exact result")));
     expectTopicOpened("Newer exact result");
+    purple_roomlist_unref(roomlist);
+}
+
+TEST_F(
+    ForumTopicJoinTest,
+    LiveChildAfterListingSnapshotSurvivesAndLookupStillRefines)
+{
+    constexpr int64_t FirstMessageId = 10000;
+    constexpr int64_t SecondMessageId = 10001;
+    const std::string placeholderTitle =
+        groupChatTitle + " / Topic " +
+        std::to_string(TopicId);
+
+    loginWithForumSupergroup();
+
+    receiveTopicText(
+        FirstMessageId, 12345, "Before listing");
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+    verifyForumTopicReadReceipt(FirstMessageId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 2, topicPurpleName(),
+            topicPurpleName()),
+        ConvSetTitleEvent(
+            topicPurpleName(), placeholderTitle),
+        ServGotChatEvent(
+            connection, 2,
+            userFirstNames[0] + " " + userLastNames[0],
+            "Before listing", PURPLE_MESSAGE_RECV,
+            12345));
+
+    uint64_t listRequest = 0;
+    PurpleRoomlist *roomlist = startRoomList(listRequest);
+    ASSERT_NE(nullptr, roomlist);
+
+    receiveTopicText(
+        SecondMessageId, 12346, "After listing started");
+    verifyForumTopicReadReceipt(SecondMessageId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ServGotChatEvent(
+        connection, 2,
+        userFirstNames[0] + " " + userLastNames[0],
+        "After listing started", PURPLE_MESSAGE_RECV,
+        12346));
+
+    tgl.reply(listRequest, makeForumTopicsPage(
+        0, std::vector<object_ptr<forumTopic>>()));
+    prpl.verifyEvents(
+        RoomlistInProgressEvent(roomlist, FALSE));
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    ASSERT_NE(
+        nullptr,
+        purple_conversation_get_chat_data(conversation));
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+
+    tgl.reply(exactRequest, makeForumTopic(makeForumTopicInfo(
+        groupChatId, TopicId, "Refined")));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ConvSetTitleEvent(
+        topicPurpleName(), topicDisplayName("Refined")));
+    EXPECT_STREQ(
+        topicDisplayName("Refined").c_str(),
+        purple_conversation_get_title(conversation));
     purple_roomlist_unref(roomlist);
 }
 
@@ -772,6 +888,412 @@ TEST_F(ForumTopicJoinTest, ClosingPendingAutoRejoinCancelsItSilently)
 
     prpl.verifyNoEvents();
     expectNoTopicOrGeneralConversation();
+}
+
+TEST_F(
+    ForumTopicJoinTest,
+    LiveChildSatisfiesPendingAutoRejoinBeforeLookupError)
+{
+    constexpr int64_t MessageId = 10000;
+    const std::string savedTitle =
+        topicDisplayName("Saved");
+    PurpleConversation *conversation = nullptr;
+
+    loginWithForumSupergroup();
+    conversation = addSavedLeftTopic(savedTitle);
+    ASSERT_NE(nullptr, conversation);
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+
+    receiveTopicText(
+        MessageId, 12345, "Live child");
+    verifyForumTopicReadReceipt(MessageId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 2, topicPurpleName(),
+            savedTitle),
+        ServGotChatEvent(
+            connection, 2,
+            userFirstNames[0] + " " + userLastNames[0],
+            "Live child", PURPLE_MESSAGE_RECV,
+            12345));
+    ASSERT_NE(
+        nullptr,
+        purple_conversation_get_chat_data(conversation));
+    ASSERT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+
+    tgl.reply(
+        exactRequest,
+        make_object<error>(404, "Stale lookup failure"));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+}
+
+TEST_F(
+    ForumTopicJoinTest,
+    LiveChildOpeningReentrantlyPreventsJoinedThenFailedResult)
+{
+    constexpr int64_t MessageId = 10000;
+    const std::string savedTitle =
+        topicDisplayName("Saved");
+
+    loginWithForumSupergroup();
+    PurpleConversation *conversation =
+        addSavedLeftTopic(savedTitle);
+    ASSERT_NE(nullptr, conversation);
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+
+    bool injectedLookupFailure = false;
+    prpl.onNextEvent(
+        [this, exactRequest, &injectedLookupFailure](
+            PurpleEventType type) {
+            EXPECT_EQ(
+                PurpleEventType::ServGotJoinedChat, type);
+            injectedLookupFailure = true;
+            tgl.reply(
+                exactRequest,
+                make_object<error>(
+                    404, "Synchronous stale lookup failure"));
+        });
+
+    receiveTopicText(
+        MessageId, 12345, "Live child");
+
+    EXPECT_TRUE(injectedLookupFailure);
+    verifyForumTopicReadReceipt(MessageId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 2, topicPurpleName(),
+            savedTitle),
+        ServGotChatEvent(
+            connection, 2,
+            userFirstNames[0] + " " + userLastNames[0],
+            "Live child", PURPLE_MESSAGE_RECV,
+            12345));
+    ASSERT_NE(
+        nullptr,
+        purple_conversation_get_chat_data(conversation));
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+}
+
+TEST_F(
+    ForumTopicJoinTest,
+    HistoricalChildDisplayDoesNotSatisfyPendingExactJoin)
+{
+    constexpr int64_t HistoricalMessageId = 5;
+    constexpr int64_t LiveMessageId = 6;
+    const std::string placeholderTitle =
+        groupChatTitle + " / Topic " +
+        std::to_string(TopicId);
+
+    purple_account_set_string(
+        account,
+        ("last-message-chat" +
+         std::to_string(groupChatId)).c_str(),
+        "1");
+    loginWithForumSupergroup();
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+
+    tgl.update(make_object<updateChatLastMessage>(
+        groupChatId, nullptr,
+        std::vector<object_ptr<chatPosition>>()));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        LiveMessageId, userIds[0], groupChatId, false,
+        LiveMessageId, makeTextMessage("Live General"),
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value()))));
+    const uint64_t historyRequest = tgl.verifyRequest(
+        getChatHistory(
+            groupChatId, LiveMessageId,
+            0, 30, false));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    std::vector<object_ptr<message>> history;
+    history.push_back(makeMessage(
+        HistoricalMessageId, userIds[0], groupChatId,
+        false, HistoricalMessageId,
+        makeTextMessage("Historical child"),
+        make_object<messageTopicForum>(TopicId)));
+    history.push_back(makeMessage(
+        1, userIds[0], groupChatId, false, 1,
+        makeTextMessage("Stop")));
+    tgl.reply(historyRequest, make_object<messages>(
+        history.size(), std::move(history)));
+
+    tgl.verifyRequest(*Mock_ViewMessages(
+        groupChatId,
+        {HistoricalMessageId}, true,
+        make_object<messageSourceForumTopicHistory>()));
+    tgl.verifyRequest(*Mock_ViewMessages(
+        groupChatId,
+        {LiveMessageId}, true,
+        make_object<messageSourceForumTopicHistory>()));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 2, topicPurpleName(),
+            topicPurpleName()),
+        ConvSetTitleEvent(
+            topicPurpleName(), placeholderTitle),
+        ServGotChatEvent(
+            connection, 2,
+            userFirstNames[0] + " " + userLastNames[0],
+            "Historical child", PURPLE_MESSAGE_RECV,
+            HistoricalMessageId),
+        ServGotJoinedChatEvent(
+            connection, 1, groupChatPurpleName,
+            groupChatTitle),
+        ChatSetTopicEvent(
+            groupChatPurpleName, "", ""),
+        ChatClearUsersEvent(groupChatPurpleName),
+        ServGotChatEvent(
+            connection, 1,
+            userFirstNames[0] + " " + userLastNames[0],
+            "Live General", PURPLE_MESSAGE_RECV,
+            LiveMessageId));
+
+    tgl.reply(
+        exactRequest,
+        make_object<error>(
+            404, "Historical evidence is not a join result"));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        JoinChatFailedEvent(
+            connection, topicPurpleName()));
+}
+
+TEST_F(
+    ForumTopicJoinTest,
+    HistoricalChildCannotReuseLiveEvidenceFromBeforeJoin)
+{
+    constexpr int64_t PriorLiveMessageId = 2;
+    constexpr int64_t HistoricalMessageId = 5;
+    constexpr int64_t LiveGeneralMessageId = 6;
+
+    purple_account_set_string(
+        account,
+        ("last-message-chat" +
+         std::to_string(groupChatId)).c_str(),
+        "1");
+    loginWithForumSupergroup();
+    cacheTopic("Prior");
+
+    receiveTopicText(
+        PriorLiveMessageId, PriorLiveMessageId,
+        "Prior live child");
+    verifyForumTopicReadReceipt(PriorLiveMessageId);
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+
+    PurpleConversation *conversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account);
+    ASSERT_NE(nullptr, conversation);
+    ASSERT_NE(
+        nullptr,
+        purple_conversation_get_chat_data(conversation));
+
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    ASSERT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+
+    tgl.update(make_object<updateSupergroup>(
+        makeForumSupergroup(
+            groupId,
+            make_object<chatMemberStatusMember>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    addSavedTopicBookmark(topicDisplayName("Prior"));
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+
+    tgl.update(make_object<updateChatLastMessage>(
+        groupChatId, nullptr,
+        std::vector<object_ptr<chatPosition>>()));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        LiveGeneralMessageId, userIds[0], groupChatId,
+        false, LiveGeneralMessageId,
+        makeTextMessage("Live General"),
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value()))));
+    const uint64_t historyRequest = tgl.verifyRequest(
+        getChatHistory(
+            groupChatId, LiveGeneralMessageId,
+            0, 30, false));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    std::vector<object_ptr<message>> history;
+    history.push_back(makeMessage(
+        HistoricalMessageId, userIds[0], groupChatId,
+        false, HistoricalMessageId,
+        makeTextMessage("Historical child"),
+        make_object<messageTopicForum>(TopicId)));
+    history.push_back(makeMessage(
+        1, userIds[0], groupChatId, false, 1,
+        makeTextMessage("Stop")));
+    tgl.reply(historyRequest, make_object<messages>(
+        history.size(), std::move(history)));
+
+    tgl.verifyRequest(*Mock_ViewMessages(
+        groupChatId,
+        {HistoricalMessageId}, true,
+        make_object<messageSourceForumTopicHistory>()));
+    tgl.verifyRequest(*Mock_ViewMessages(
+        groupChatId,
+        {LiveGeneralMessageId}, true,
+        make_object<messageSourceForumTopicHistory>()));
+    tgl.verifyNoRequests();
+    prpl.discardEvents();
+    ASSERT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+
+    tgl.reply(
+        exactRequest,
+        make_object<error>(
+            404, "Historical evidence is not fresh"));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        JoinChatFailedEvent(
+            connection, topicPurpleName()));
+}
+
+TEST_F(
+    ForumTopicJoinTest,
+    LiveChildKeepsPendingMetadataLookupForTitleRefinement)
+{
+    constexpr int64_t MessageId = 10000;
+    const std::string savedTitle =
+        topicDisplayName("Saved");
+    const std::string refinedTitle =
+        topicDisplayName("Refined");
+    PurpleConversation *conversation = nullptr;
+
+    loginWithForumSupergroup();
+    conversation = addSavedLeftTopic(savedTitle);
+    ASSERT_NE(nullptr, conversation);
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+
+    receiveTopicText(
+        MessageId, 12345, "Live child");
+    verifyForumTopicReadReceipt(MessageId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 2, topicPurpleName(),
+            savedTitle),
+        ServGotChatEvent(
+            connection, 2,
+            userFirstNames[0] + " " + userLastNames[0],
+            "Live child", PURPLE_MESSAGE_RECV,
+            12345));
+
+    tgl.reply(exactRequest, makeForumTopic(makeForumTopicInfo(
+        groupChatId, TopicId, "Refined")));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        AliasChatEvent(topicPurpleName(), refinedTitle),
+        ConvSetTitleEvent(topicPurpleName(), refinedTitle));
+    ASSERT_NE(
+        nullptr,
+        purple_conversation_get_chat_data(conversation));
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+    EXPECT_STREQ(
+        refinedTitle.c_str(),
+        purple_conversation_get_title(conversation));
+}
+
+TEST_F(
+    ForumTopicJoinTest,
+    DelayedLiveChildProactivelyOpensAutoRejoinAndRefinesTitle)
+{
+    constexpr int64_t MessageId = 10000;
+    constexpr int32_t FileId = 1234;
+    const std::string savedTitle =
+        topicDisplayName("Saved");
+    const std::string refinedTitle =
+        topicDisplayName("Refined");
+
+    loginWithForumSupergroup();
+    PurpleConversation *conversation =
+        addSavedLeftTopic(savedTitle);
+    ASSERT_NE(nullptr, conversation);
+
+    joinTopic();
+    prpl.verifyNoEvents();
+    const uint64_t exactRequest = tgl.verifyRequest(
+        getForumTopic(groupChatId, TopicId));
+
+    const uint64_t downloadRequest =
+        receiveDelayedTopicPhoto(
+            MessageId, 12345, FileId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ServGotJoinedChatEvent(
+        connection, 2, topicPurpleName(),
+        savedTitle));
+    ASSERT_NE(
+        nullptr,
+        purple_conversation_get_chat_data(conversation));
+    ASSERT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+
+    tgl.reply(exactRequest, makeForumTopic(makeForumTopicInfo(
+        groupChatId, TopicId, "Refined")));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        AliasChatEvent(topicPurpleName(), refinedTitle),
+        ConvSetTitleEvent(topicPurpleName(), refinedTitle));
+
+    completeTopicPhotoDownload(
+        downloadRequest, FileId);
+    verifyForumTopicReadReceipt(MessageId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ServGotChatEvent(
+        connection, 2,
+        userFirstNames[0] + " " + userLastNames[0],
+        "<img src=\"file:///path\">\nphoto",
+        static_cast<PurpleMessageFlags>(
+            PURPLE_MESSAGE_RECV |
+            PURPLE_MESSAGE_IMAGES),
+        12345));
+    EXPECT_FALSE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
 }
 
 TEST_F(ForumTopicJoinTest, RemovedBookmarkCancelsDeferredAutoRejoinSilently)

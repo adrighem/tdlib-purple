@@ -1090,8 +1090,10 @@ uint64_t TdAccountData::reserveForumTopicGeneration()
 bool TdAccountData::tombstoneForumTopic(
     ForumTopicState &topic, uint64_t generation)
 {
-    if (generation <= topic.metadataGeneration)
+    if (generation <= topic.metadataGeneration ||
+        generation <= topic.lastLiveMessageGeneration) {
         return false;
+    }
 
     const bool changed = !topic.deleted || topic.active;
     topic.deleted = true;
@@ -1181,7 +1183,7 @@ int32_t TdAccountData::activateForumTopic(ChatTarget target)
     return allocateForumTopicPurpleId(*topic);
 }
 
-int32_t TdAccountData::activateForumTopicForIncomingMessage(
+int32_t TdAccountData::prepareForumTopicForIncomingMessage(
     ChatTarget target)
 {
     if (!target.valid() || !target.isForumTopic())
@@ -1196,7 +1198,8 @@ int32_t TdAccountData::activateForumTopicForIncomingMessage(
         topic.deleted = false;
         topic.metadataKnown = false;
     }
-    topic.active = true;
+    topic.lastLiveMessageGeneration =
+        reserveForumTopicGeneration();
     return allocateForumTopicPurpleId(topic);
 }
 

@@ -64,7 +64,7 @@ enum class IncomingMessageSource {
     History,
 };
 
-void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
+bool handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
                            td::td_api::object_ptr<td::td_api::message> message,
                            PendingMessageQueue::MessageAction action,
                            IncomingMessageSource source);

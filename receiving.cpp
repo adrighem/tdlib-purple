@@ -762,8 +762,14 @@ static PurpleConversation *showMessageTextChat(
             if (!topic || topic->deleted)
                 return NULL;
             if (!topic->active) {
+                const bool parentAcceptsDisplay =
+                    message.isLiveUpdate
+                    ? !isKnownIneligibleForumParent(
+                          account, chat)
+                    : isEligibleForumParent(
+                          account, chat);
                 if (!message.forumTopicDisplayAccepted ||
-                    !isEligibleForumParent(account, chat) ||
+                    !parentAcceptsDisplay ||
                     account.activateForumTopic(target) == 0) {
                     return NULL;
                 }
@@ -813,6 +819,14 @@ static PurpleConversation *showMessageTextChat(
         return NULL;
     if (!conv)
         return NULL;
+
+    if (client && message.isLiveUpdate &&
+        target.isForumTopic() &&
+        target.forumTopicId() != ForumTopicId::general()) {
+        client->satisfyForumTopicJoinIfOpen(target);
+        if (!canContinue())
+            return NULL;
+    }
 
     if (text) {
         if (flags & PURPLE_MESSAGE_SEND) {
@@ -2080,19 +2094,29 @@ static void findMessageResponse(TdAccountData &account, ChatId chatId, MessageId
     checkMessageReady(pendingMessage, account.transceiver, account);
 }
 
-void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
+bool handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
     td::td_api::object_ptr<td::td_api::message> message,
     PendingMessageQueue::MessageAction action,
     IncomingMessageSource source)
 {
-    if (!message) return;
+    if (!message)
+        return false;
     ChatId chatId = getId(chat);
     const ChatTarget target = getMessageRoomTarget(chat, *message);
     if (!target.valid() || target.chatId() != chatId) {
         purple_debug_warning(
             config::pluginId,
             "Refusing incoming message with invalid room target\n");
-        return;
+        return false;
+    }
+    if (source == IncomingMessageSource::LiveUpdate &&
+        target.isForumTopic() &&
+        target.forumTopicId() != ForumTopicId::general() &&
+        isKnownIneligibleForumParent(account, chat)) {
+        purple_debug_warning(
+            config::pluginId,
+            "Refusing incoming forum topic message for a known ineligible parent\n");
+        return false;
     }
     if (source == IncomingMessageSource::LiveUpdate)
         cacheLiveForumMembershipMessage(
@@ -2105,7 +2129,7 @@ void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
         int32_t purpleId = 0;
         if (source == IncomingMessageSource::LiveUpdate) {
             purpleId =
-                account.activateForumTopicForIncomingMessage(
+                account.prepareForumTopicForIncomingMessage(
                     target);
         } else if (isEligibleForumParent(account, chat)) {
             const TdAccountData::ForumTopicState *topic =
@@ -2122,7 +2146,7 @@ void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
                 config::pluginId,
                 "Could not allocate an exact room for incoming forum topic %d\n",
                 target.forumTopicId().value());
-            return;
+            return false;
         }
         forumTopicDisplayAccepted = true;
     }
@@ -2152,6 +2176,7 @@ void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
             }
         );
     }
+    return true;
 }
 
 static void fetchHistoryRequest(TdAccountData &account, ChatId chatId, unsigned messagesFetched,

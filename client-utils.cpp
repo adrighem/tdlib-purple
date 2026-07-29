@@ -220,6 +220,35 @@ bool isEligibleForumParent(
     return group && group->is_forum_;
 }
 
+bool isKnownIneligibleForumParent(
+    const TdAccountData &account,
+    const td::td_api::chat &chat)
+{
+    if (!chat.type_ ||
+        chat.type_->get_id() !=
+            td::td_api::chatTypeSupergroup::ID) {
+        return true;
+    }
+
+    const td::td_api::chatTypeSupergroup &supergroupType =
+        static_cast<const td::td_api::chatTypeSupergroup &>(
+            *chat.type_);
+    if (supergroupType.is_channel_)
+        return true;
+
+    const SupergroupId groupId = getSupergroupId(chat);
+    if (!groupId.valid())
+        return true;
+
+    const td::td_api::supergroup *group =
+        account.getSupergroup(groupId);
+    if (!group)
+        return false;
+
+    return !group->is_forum_ ||
+           !isGroupMember(group->status_);
+}
+
 ChatTarget getMessageRoomTarget(
     const td::td_api::chat &chat,
     const td::td_api::message &message)

@@ -298,7 +298,7 @@ TEST_F(ForumTopicRegistryTest, GeneralReusesParentPurpleId)
               accountData.getChatByPurpleId(parentPurpleId));
 }
 
-TEST_F(ForumTopicRegistryTest, IncomingUnknownChildAllocatesStableActiveRoom)
+TEST_F(ForumTopicRegistryTest, IncomingUnknownChildPreparesStableInactiveRoom)
 {
     const ChatId chatId = ChatId::fromString("-7000");
     const ChatTarget topic = ChatTarget::forumTopic(
@@ -306,7 +306,7 @@ TEST_F(ForumTopicRegistryTest, IncomingUnknownChildAllocatesStableActiveRoom)
     addSupergroupChat(chatId.value(), 700, "Group");
 
     const int32_t firstPurpleId =
-        accountData.activateForumTopicForIncomingMessage(topic);
+        accountData.prepareForumTopicForIncomingMessage(topic);
     const TdAccountData::ForumTopicState *firstState =
         accountData.findForumTopic(topic);
 
@@ -314,19 +314,70 @@ TEST_F(ForumTopicRegistryTest, IncomingUnknownChildAllocatesStableActiveRoom)
     ASSERT_NE(nullptr, firstState);
     EXPECT_NE(accountData.getPurpleChatId(chatId), firstPurpleId);
     EXPECT_EQ(firstPurpleId, firstState->purpleId);
-    EXPECT_TRUE(firstState->active);
+    EXPECT_FALSE(firstState->active);
     EXPECT_FALSE(firstState->saved);
     EXPECT_FALSE(firstState->deleted);
     EXPECT_FALSE(firstState->metadataKnown);
 
     const int32_t repeatedPurpleId =
-        accountData.activateForumTopicForIncomingMessage(topic);
+        accountData.prepareForumTopicForIncomingMessage(topic);
     const TdAccountData::ForumTopicState *repeatedState =
         accountData.findForumTopic(topic);
 
     EXPECT_EQ(firstPurpleId, repeatedPurpleId);
     EXPECT_EQ(firstState, repeatedState);
+    EXPECT_FALSE(repeatedState->active);
     EXPECT_EQ(topic, accountData.getChatTargetByPurpleId(firstPurpleId));
+
+    ASSERT_EQ(
+        firstPurpleId,
+        accountData.activateForumTopic(topic));
+    EXPECT_EQ(
+        firstPurpleId,
+        accountData.prepareForumTopicForIncomingMessage(topic));
+    EXPECT_TRUE(repeatedState->active);
+}
+
+TEST_F(
+    ForumTopicRegistryTest,
+    NewerLiveMessageProtectsTopicOnlyFromOlderListings)
+{
+    const ChatId chatId = ChatId::fromString("-7000");
+    const ChatTarget topic = ChatTarget::forumTopic(
+        chatId, ForumTopicId::fromValue(42));
+    addSupergroupChat(chatId.value(), 700, "Group");
+
+    const uint64_t olderListingGeneration =
+        accountData.reserveForumTopicGeneration();
+    ASSERT_GT(
+        accountData.prepareForumTopicForIncomingMessage(topic),
+        0);
+
+    const TdAccountData::ForumTopicState *state =
+        accountData.findForumTopic(topic);
+    ASSERT_NE(nullptr, state);
+    EXPECT_EQ(0U, state->metadataGeneration);
+    EXPECT_GT(
+        state->lastLiveMessageGeneration,
+        olderListingGeneration);
+
+    EXPECT_TRUE(
+        accountData.reconcileForumTopics(
+            chatId, std::set<ChatTarget>(),
+            olderListingGeneration)
+            .empty());
+    EXPECT_FALSE(state->active);
+    EXPECT_FALSE(state->deleted);
+
+    const uint64_t newerListingGeneration =
+        accountData.reserveForumTopicGeneration();
+    EXPECT_EQ(
+        std::vector<ChatTarget>{topic},
+        accountData.reconcileForumTopics(
+            chatId, std::set<ChatTarget>(),
+            newerListingGeneration));
+    EXPECT_FALSE(state->active);
+    EXPECT_TRUE(state->deleted);
 }
 
 TEST_F(ForumTopicRegistryTest,
@@ -350,7 +401,7 @@ TEST_F(ForumTopicRegistryTest,
     ASSERT_FALSE(discovered.state->active);
 
     const int32_t revivedPurpleId =
-        accountData.activateForumTopicForIncomingMessage(topic);
+        accountData.prepareForumTopicForIncomingMessage(topic);
     const TdAccountData::ForumTopicState *revived =
         accountData.findForumTopic(topic);
 
@@ -358,7 +409,7 @@ TEST_F(ForumTopicRegistryTest,
     EXPECT_EQ(originalPurpleId, revivedPurpleId);
     EXPECT_EQ(discovered.state, revived);
     EXPECT_FALSE(revived->deleted);
-    EXPECT_TRUE(revived->active);
+    EXPECT_FALSE(revived->active);
     EXPECT_FALSE(revived->metadataKnown);
     EXPECT_EQ(2U, revived->metadataGeneration);
     ASSERT_NE(nullptr, accountData.getChat(chatId));
@@ -378,7 +429,7 @@ TEST_F(ForumTopicRegistryTest, IncomingGeneralReusesParentPurpleId)
     const int32_t parentPurpleId = accountData.getPurpleChatId(chatId);
 
     const int32_t generalPurpleId =
-        accountData.activateForumTopicForIncomingMessage(general);
+        accountData.prepareForumTopicForIncomingMessage(general);
 
     ASSERT_GT(parentPurpleId, 0);
     EXPECT_EQ(parentPurpleId, generalPurpleId);
@@ -387,7 +438,7 @@ TEST_F(ForumTopicRegistryTest, IncomingGeneralReusesParentPurpleId)
 }
 
 TEST_F(ForumTopicRegistryTest,
-       IncomingActivationRejectsInvalidAndNonForumTargets)
+       IncomingPreparationRejectsInvalidAndNonForumTargets)
 {
     const ChatId chatId = ChatId::fromString("-7000");
     const ChatTarget ordinary = ChatTarget::chat(chatId);
@@ -395,11 +446,11 @@ TEST_F(ForumTopicRegistryTest,
         chatId, ForumTopicId::invalid);
     addSupergroupChat(chatId.value(), 700, "Group");
 
-    EXPECT_EQ(0, accountData.activateForumTopicForIncomingMessage(
+    EXPECT_EQ(0, accountData.prepareForumTopicForIncomingMessage(
                      ChatTarget()));
-    EXPECT_EQ(0, accountData.activateForumTopicForIncomingMessage(
+    EXPECT_EQ(0, accountData.prepareForumTopicForIncomingMessage(
                      ordinary));
-    EXPECT_EQ(0, accountData.activateForumTopicForIncomingMessage(
+    EXPECT_EQ(0, accountData.prepareForumTopicForIncomingMessage(
                      invalidForumTopic));
     EXPECT_EQ(nullptr, accountData.findForumTopic(ordinary));
     EXPECT_EQ(nullptr, accountData.findForumTopic(invalidForumTopic));

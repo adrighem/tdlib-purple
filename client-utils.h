@@ -26,6 +26,9 @@ std::string         getForumTopicDisplayTitle(
 bool                isEligibleForumParent(
                         const TdAccountData &account,
                         const td::td_api::chat &chat);
+bool                isKnownIneligibleForumParent(
+                        const TdAccountData &account,
+                        const td::td_api::chat &chat);
 ChatTarget          getMessageRoomTarget(
                         const td::td_api::chat &chat,
                         const td::td_api::message &message);

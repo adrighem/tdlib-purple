@@ -43,6 +43,7 @@ public:
     void leaveGroup(const std::string &purpleChatName, bool deleteSupergroup);
     void closeConversation(const char *conversationName);
     void ensureForumTopicMetadata(ChatTarget target);
+    bool satisfyForumTopicJoinIfOpen(ChatTarget target);
     int  sendGroupMessage(int purpleChatId, const char *message);
     void setGroupDescription(int purpleChatId, const char *description);
     void kickUserFromChat(PurpleConversation *conv, const char *name);
@@ -74,11 +75,15 @@ private:
     struct PendingForumTopicJoin {
         ForumTopicJoinIntent intent;
         uint64_t serial;
+        uint64_t liveMessageGenerationAtStart;
 
         PendingForumTopicJoin(
-            ForumTopicJoinIntent intent, uint64_t serial)
+            ForumTopicJoinIntent intent, uint64_t serial,
+            uint64_t liveMessageGenerationAtStart)
             : intent(intent),
-              serial(serial)
+              serial(serial),
+              liveMessageGenerationAtStart(
+                  liveMessageGenerationAtStart)
         {}
     };
     struct LifetimeState {
@@ -180,6 +185,8 @@ private:
                    MessageId oldMessageId,
                    ChatId oldChatId);
     bool       joinForumTopic(ChatTarget target);
+    void       openPreparedForumTopicForPendingJoin(
+                   ChatTarget target);
     void       completeForumTopicJoin(
                    const ForumTopicLookupResult &result,
                    uint64_t joinSerial);
