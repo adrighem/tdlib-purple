@@ -205,7 +205,10 @@ void ForumTopicsAdapterCore::configureFields(PurpleRoomlist *roomList)
         PURPLE_ROOMLIST_FIELD_STRING, "", getChatNameComponent(), TRUE);
     fields = g_list_append(fields, field);
     field = purple_roomlist_field_new(
-        PURPLE_ROOMLIST_FIELD_STRING, _("Description"), "description", FALSE);
+        PURPLE_ROOMLIST_FIELD_STRING,
+        // "description" is hard-coded in BitlBee as a possible chat topic field.
+        // TRANSLATOR: Group-chat information field label.
+        _("Description"), "description", FALSE);
     fields = g_list_append(fields, field);
     purple_roomlist_set_fields(roomList, fields);
 }

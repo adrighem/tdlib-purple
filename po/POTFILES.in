@@ -5,11 +5,13 @@ call.cpp
 client-utils.cpp
 file-transfer.cpp
 format.cpp
+forum-topics.cpp
 identifiers.cpp
 purple-info.cpp
 receiving.cpp
 secret-chat.cpp
 sticker.cpp
+td-client-auth.cpp
 td-client.cpp
 tdlib-purple.cpp
 transceiver.cpp
