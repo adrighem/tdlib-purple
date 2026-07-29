@@ -29,6 +29,18 @@ Rich text support intentionally uses a small libpurple-compatible HTML subset:
 
 Unsupported styling such as font face, size, color, arbitrary spans, lists, and tables is treated as plain text.
 
+## Telegram Forum Topics
+
+Forum-enabled supergroups use a compatibility-first room layout:
+
+- General retains the legacy libpurple room identity, preserving existing room entries and conversation logs.
+- Each non-General topic is exposed as a separate libpurple chat room.
+- Incoming messages, text sends and send failures, document uploads, and read receipts retain their exact topic routing.
+- If a child topic becomes unavailable, the plugin refuses the send instead of silently falling back to General.
+- When a group changes between ordinary and forum mode, its existing base room maps to or from General without changing identity.
+
+Topic-specific administration actions and notification or mute controls are intentionally deferred. Use an official Telegram client for those operations.
+
 Download packages from the latest GitHub Release:
 
 https://github.com/adrighem/tdlib-purple/releases/latest
@@ -51,9 +63,7 @@ To uninstall a local build installed this way:
 
 For manual CMake builds, use `sudo cmake --build build --target uninstall` from the repository root, or `sudo make uninstall` inside a Makefile-generated build directory.
 
-Manual CMake builds need CMake 3.16 or newer. CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for local builds.
-They also require TDLib 1.8.65 or an API-compatible newer release. The pinned
-submodule is the supported and tested schema.
+Manual CMake builds need CMake 3.16 or newer and TDLib 1.8.65 or an API-compatible newer release. CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for local builds. The pinned TDLib submodule is the supported and tested schema.
 
 ## Reporting Issues
 

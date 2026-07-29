@@ -14,6 +14,14 @@ cmake --build build --target run-tests
 
 If you use a different build directory, adjust the commands accordingly.
 
+For a focused check of Telegram forum-topic behavior:
+
+```sh
+./build/test/tests --gtest_filter='ForumTopic*.*'
+```
+
+Build and test against TDLib 1.8.65 or an API-compatible newer release. The pinned TDLib submodule is the supported baseline.
+
 When reporting bugs or proposing fixes, include:
 
 - what you tried
