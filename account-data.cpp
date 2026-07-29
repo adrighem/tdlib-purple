@@ -5,6 +5,7 @@
 #include <purple.h>
 #include <algorithm>
 #include <ctype.h>
+#include <limits>
 
 static bool isCanonicalPhoneNumber(const char *s)
 {
@@ -420,6 +421,8 @@ void TdAccountData::addChat(TdChatPtr chat)
     if (!chat)
         return;
 
+    const ChatId chatId = getId(*chat);
+
     if (chat->type_->get_id() == td::td_api::chatTypePrivate::ID) {
         const td::td_api::chatTypePrivate &privType = static_cast<const td::td_api::chatTypePrivate &>(*chat->type_);
         auto pContact = std::find(m_contactUserIdsNoChat.begin(), m_contactUserIdsNoChat.end(),
@@ -432,13 +435,19 @@ void TdAccountData::addChat(TdChatPtr chat)
         }
     }
 
-    auto it = m_chatInfo.find(getId(*chat));
+    auto it = m_chatInfo.find(chatId);
     if (it != m_chatInfo.end())
         it->second.chat = std::move(chat);
     else {
-        auto entry = m_chatInfo.emplace(getId(*chat), ChatInfo());
+        auto entry = m_chatInfo.emplace(chatId, ChatInfo());
         entry.first->second.chat     = std::move(chat);
-        entry.first->second.purpleId = ++m_lastChatPurpleId;
+        entry.first->second.purpleId = allocatePurpleChatId();
+    }
+
+    for (auto &entry : m_forumTopics) {
+        ForumTopicState &topic = entry.second;
+        if (topic.target.chatId() == chatId && (topic.saved || topic.active))
+            allocateForumTopicPurpleId(topic);
     }
 }
 
@@ -515,7 +524,7 @@ const td::td_api::chat *TdAccountData::getChat(ChatId chatId) const
         return pChatInfo->second.chat.get();
 }
 
-int TdAccountData::getPurpleChatId(ChatId tdChatId)
+int TdAccountData::getPurpleChatId(ChatId tdChatId) const
 {
     auto pChatInfo = m_chatInfo.find(tdChatId);
     if (pChatInfo == m_chatInfo.end())
@@ -524,17 +533,79 @@ int TdAccountData::getPurpleChatId(ChatId tdChatId)
         return pChatInfo->second.purpleId;
 }
 
+int TdAccountData::getPurpleChatId(ChatTarget target) const
+{
+    if (!target.valid())
+        return 0;
+    if (!target.isForumTopic() ||
+        target.forumTopicId() == ForumTopicId::general()) {
+        return getPurpleChatId(target.chatId());
+    }
+
+    const ForumTopicState *topic = findForumTopic(target);
+    return topic ? topic->purpleId : 0;
+}
+
+int32_t TdAccountData::allocatePurpleChatId()
+{
+    if (m_lastChatPurpleId == std::numeric_limits<int32_t>::max())
+        return 0;
+    return ++m_lastChatPurpleId;
+}
+
+int32_t TdAccountData::allocateForumTopicPurpleId(ForumTopicState &topic)
+{
+    if (topic.isGeneral())
+        return getPurpleChatId(topic.target.chatId());
+    if (topic.purpleId == 0 && getChat(topic.target.chatId()))
+        topic.purpleId = allocatePurpleChatId();
+    return topic.purpleId;
+}
+
+bool TdAccountData::isForumChat(ChatId chatId) const
+{
+    const td::td_api::chat *chat = getChat(chatId);
+    if (!chat)
+        return false;
+    const SupergroupId groupId = getSupergroupId(*chat);
+    const td::td_api::supergroup *group = getSupergroup(groupId);
+    return group && group->is_forum_;
+}
+
+ChatTarget TdAccountData::getChatTargetByPurpleId(int32_t purpleChatId) const
+{
+    if (purpleChatId <= 0)
+        return ChatTarget();
+
+    auto topic = std::find_if(
+        m_forumTopics.begin(), m_forumTopics.end(),
+        [purpleChatId](const std::map<ChatTarget, ForumTopicState>::value_type &entry) {
+            return !entry.second.isGeneral() &&
+                   entry.second.purpleId == purpleChatId;
+        });
+    if (topic != m_forumTopics.end())
+        return topic->first;
+
+    auto chat = std::find_if(
+        m_chatInfo.begin(), m_chatInfo.end(),
+        [purpleChatId](const ChatMap::value_type &entry) {
+            return entry.second.purpleId == purpleChatId;
+        });
+    if (chat != m_chatInfo.end()) {
+        if (isForumChat(chat->first)) {
+            return ChatTarget::forumTopic(
+                chat->first, ForumTopicId::general());
+        }
+        return ChatTarget::chat(chat->first);
+    }
+
+    return ChatTarget();
+}
+
 const td::td_api::chat *TdAccountData::getChatByPurpleId(int32_t purpleChatId) const
 {
-    auto pChatInfo = std::find_if(m_chatInfo.begin(), m_chatInfo.end(),
-                                  [purpleChatId](const ChatMap::value_type &entry) {
-                                      return (entry.second.purpleId == purpleChatId);
-                                  });
-
-    if (pChatInfo != m_chatInfo.end())
-        return pChatInfo->second.chat.get();
-    else
-        return nullptr;
+    const ChatTarget target = getChatTargetByPurpleId(purpleChatId);
+    return target.valid() ? getChat(target.chatId()) : nullptr;
 }
 
 static bool isPrivateChat(const td::td_api::chat &chat, UserId userId)
@@ -732,23 +803,93 @@ void TdAccountData::deleteChat(ChatId id)
     m_chatInfo.erase(id);
 }
 
-void TdAccountData::addExpectedChat(ChatId id)
+TdAccountData::ForumTopicUpsertResult TdAccountData::upsertForumTopic(
+    ChatTarget target, const std::string &name, bool closed, bool hidden,
+    uint64_t generation)
 {
-    if (!isExpectedChat(id))
-        m_expectedChats.push_back(id);
+    if (!target.valid() || !target.isForumTopic())
+        return ForumTopicUpsertResult(nullptr, false);
+
+    auto inserted = m_forumTopics.emplace(target, ForumTopicState(target));
+    ForumTopicState &topic = inserted.first->second;
+    if (!inserted.second && topic.metadataKnown &&
+        generation <= topic.metadataGeneration) {
+        return ForumTopicUpsertResult(&topic, false);
+    }
+
+    topic.name = name;
+    topic.closed = closed;
+    topic.hidden = hidden;
+    topic.metadataGeneration = generation;
+    topic.metadataKnown = true;
+    return ForumTopicUpsertResult(&topic, true);
 }
 
-bool TdAccountData::isExpectedChat(ChatId chatId)
+TdAccountData::ForumTopicState *TdAccountData::findForumTopicMutable(
+    ChatTarget target)
 {
-    return (std::find(m_expectedChats.begin(), m_expectedChats.end(), chatId) != m_expectedChats.end());
+    auto topic = m_forumTopics.find(target);
+    return topic == m_forumTopics.end() ? nullptr : &topic->second;
 }
 
-void TdAccountData::removeExpectedChat(ChatId id)
+const TdAccountData::ForumTopicState *TdAccountData::findForumTopic(
+    ChatTarget target) const
 {
-    auto expIt = std::find(m_expectedChats.begin(), m_expectedChats.end(), id);
-    if (expIt != m_expectedChats.end())
-        m_expectedChats.erase(expIt);
+    auto topic = m_forumTopics.find(target);
+    return topic == m_forumTopics.end() ? nullptr : &topic->second;
+}
 
+void TdAccountData::getForumTopics(
+    ChatId chatId, std::vector<const ForumTopicState *> &topics) const
+{
+    topics.clear();
+    for (const auto &entry : m_forumTopics) {
+        if (entry.first.chatId() == chatId)
+            topics.push_back(&entry.second);
+    }
+}
+
+bool TdAccountData::setForumTopicSaved(ChatTarget target, bool saved)
+{
+    ForumTopicState *topic = findForumTopicMutable(target);
+    if (!topic)
+        return false;
+    topic->saved = saved;
+    if (saved)
+        allocateForumTopicPurpleId(*topic);
+    return true;
+}
+
+int32_t TdAccountData::activateForumTopic(ChatTarget target)
+{
+    ForumTopicState *topic = findForumTopicMutable(target);
+    if (!topic)
+        return 0;
+    topic->active = true;
+    return allocateForumTopicPurpleId(*topic);
+}
+
+void TdAccountData::deactivateForumTopic(ChatTarget target)
+{
+    ForumTopicState *topic = findForumTopicMutable(target);
+    if (topic)
+        topic->active = false;
+}
+
+void TdAccountData::addExpectedChat(ChatTarget target)
+{
+    if (target.valid())
+        m_expectedChats.insert(target);
+}
+
+bool TdAccountData::isExpectedChat(ChatTarget target) const
+{
+    return m_expectedChats.find(target) != m_expectedChats.end();
+}
+
+void TdAccountData::removeExpectedChat(ChatTarget target)
+{
+    m_expectedChats.erase(target);
 }
 
 std::unique_ptr<PendingRequest> TdAccountData::getPendingRequestImpl(uint64_t requestId)

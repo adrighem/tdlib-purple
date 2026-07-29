@@ -323,6 +323,38 @@ public:
     using TdChatMembersPtr    = td::td_api::object_ptr<td::td_api::chatMembers>;
     using SecretChatPtr       = td::td_api::object_ptr<td::td_api::secretChat>;
 
+    struct ForumTopicState {
+        ChatTarget target;
+        std::string name;
+        int32_t purpleId = 0;
+        bool closed = false;
+        bool hidden = false;
+        bool deleted = false;
+        bool saved = false;
+        bool active = false;
+        uint64_t metadataGeneration = 0;
+        bool metadataKnown = false;
+        MessageId creationMessageId;
+
+        explicit ForumTopicState(ChatTarget target)
+            : target(target)
+        {}
+
+        bool isGeneral() const {
+            return target.isForumTopic() &&
+                   target.forumTopicId() == ForumTopicId::general();
+        }
+    };
+
+    struct ForumTopicUpsertResult {
+        const ForumTopicState *state;
+        bool applied;
+
+        ForumTopicUpsertResult(const ForumTopicState *state, bool applied)
+            : state(state), applied(applied)
+        {}
+    };
+
     struct {
         unsigned maxCaptionLength = 0;
         unsigned maxMessageLength = 0;
@@ -354,12 +386,23 @@ public:
     void getContactsWithNoChat(std::vector<UserId> &userIds);
     void getChats(std::vector<const td::td_api::chat *> &chats) const;
     void deleteChat(ChatId id);
-    void addExpectedChat(ChatId id);
-    bool isExpectedChat(ChatId chatId);
-    void removeExpectedChat(ChatId id);
+    void addExpectedChat(ChatTarget target);
+    bool isExpectedChat(ChatTarget target) const;
+    void removeExpectedChat(ChatTarget target);
+    void addExpectedChat(ChatId id) {
+        addExpectedChat(ChatTarget::chat(id));
+    }
+    bool isExpectedChat(ChatId id) const {
+        return isExpectedChat(ChatTarget::chat(id));
+    }
+    void removeExpectedChat(ChatId id) {
+        removeExpectedChat(ChatTarget::chat(id));
+    }
 
     const td::td_api::chat       *getChat(ChatId chatId) const;
-    int                           getPurpleChatId(ChatId tdChatId);
+    int                           getPurpleChatId(ChatId tdChatId) const;
+    int                           getPurpleChatId(ChatTarget target) const;
+    ChatTarget                    getChatTargetByPurpleId(int32_t purpleChatId) const;
     const td::td_api::chat       *getChatByPurpleId(int32_t purpleChatId) const;
     const td::td_api::chat       *getPrivateChatByUserId(UserId userId) const;
     const td::td_api::user       *getUser(UserId userId) const;
@@ -380,6 +423,19 @@ public:
     bool                          isGroupChatWithMembership(const td::td_api::chat &chat) const;
 
     const td::td_api::chat       *getChatBySecretChat(SecretChatId secretChatId);
+
+    ForumTopicUpsertResult         upsertForumTopic(ChatTarget target,
+                                                    const std::string &name,
+                                                    bool closed,
+                                                    bool hidden,
+                                                    uint64_t generation);
+    const ForumTopicState         *findForumTopic(ChatTarget target) const;
+    void                          getForumTopics(
+                                      ChatId chatId,
+                                      std::vector<const ForumTopicState *> &topics) const;
+    bool                          setForumTopicSaved(ChatTarget target, bool saved);
+    int32_t                       activateForumTopic(ChatTarget target);
+    void                          deactivateForumTopic(ChatTarget target);
 
     template<typename ReqType, typename... ArgsType>
     void addPendingRequest(ArgsType... args)
@@ -496,7 +552,8 @@ private:
     std::map<BasicGroupId, GroupInfo>  m_groups;
     std::map<SupergroupId, SupergroupInfo>  m_supergroups;
     std::map<SecretChatId, SecretChatPtr>   m_secretChats;
-    int                                m_lastChatPurpleId = 0;
+    std::map<ChatTarget, ForumTopicState>    m_forumTopics;
+    int32_t                            m_lastChatPurpleId = 0;
 
     // List of contacts for which private chat is not known yet.
     std::vector<UserId>                m_contactUserIdsNoChat;
@@ -505,7 +562,7 @@ private:
     std::vector<ContactRequest>        m_addContactRequests;
 
     // Chats we want to libpurple-join when we get an updateNewChat about them
-    std::vector<ChatId>                m_expectedChats;
+    std::set<ChatTarget>               m_expectedChats;
 
     std::vector<std::unique_ptr<PendingRequest>> m_requests;
 
@@ -522,6 +579,10 @@ private:
 
     std::unique_ptr<PendingRequest> getPendingRequestImpl(uint64_t requestId);
     PendingRequest *                findPendingRequestImpl(uint64_t requestId);
+    ForumTopicState *               findForumTopicMutable(ChatTarget target);
+    int32_t                         allocatePurpleChatId();
+    int32_t                         allocateForumTopicPurpleId(ForumTopicState &topic);
+    bool                            isForumChat(ChatId chatId) const;
 
     // Read receipts not sent immediately due to away status (grouped per chat)
     std::vector<std::vector<ReadReceipt>> m_pendingReadReceipts;
