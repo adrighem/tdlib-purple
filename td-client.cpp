@@ -1,4 +1,5 @@
 #include "td-client.h"
+#include "tdlib-schema.h"
 #include "purple-info.h"
 #include "config.h"
 #include "format.h"

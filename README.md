@@ -52,6 +52,8 @@ To uninstall a local build installed this way:
 For manual CMake builds, use `sudo cmake --build build --target uninstall` from the repository root, or `sudo make uninstall` inside a Makefile-generated build directory.
 
 Manual CMake builds need CMake 3.16 or newer. CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for local builds.
+They also require TDLib 1.8.65 or an API-compatible newer release. The pinned
+submodule is the supported and tested schema.
 
 ## Reporting Issues
 
