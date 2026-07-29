@@ -18,6 +18,9 @@ std::vector<const td::td_api::user *> getUsersByPurpleName(const char *buddyName
                                                            const char *action);
 PurpleConversation *getImConversation(PurpleAccount *account, const char *username);
 PurpleConvChat *    getChatConversation(TdAccountData &account, const td::td_api::chat &chat,
+                                        ChatTarget target, int chatPurpleId,
+                                        const std::string &displayTitle);
+PurpleConvChat *    getChatConversation(TdAccountData &account, const td::td_api::chat &chat,
                                         int chatPurpleId);
 PurpleConvChat *    findChatConversation(PurpleAccount *account, const td::td_api::chat &chat);
 bool                conversationHasFocus(PurpleConversation *conv);

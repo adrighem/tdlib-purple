@@ -178,11 +178,18 @@ PurpleConversation *getImConversation(PurpleAccount *account, const char *userna
     return conv;
 }
 
-PurpleConvChat *getChatConversation(TdAccountData &account, const td::td_api::chat &chat,
-                                    int chatPurpleId)
+PurpleConvChat *getChatConversation(
+    TdAccountData &account, const td::td_api::chat &chat,
+    ChatTarget target, int chatPurpleId, const std::string &displayTitle)
 {
-    std::string chatName       = getPurpleChatName(chat);
+    if (!target.valid() || target.chatId() != getId(chat))
+        return NULL;
+
+    std::string chatName       = getPurpleChatName(target);
     bool        newChatCreated = false;
+    const bool isChildTopic =
+        target.isForumTopic() &&
+        target.forumTopicId() != ForumTopicId::general();
 
     // If account logged off with chats open, these chats will be purple_conv_chat_left()'d but not
     // purple_conversation_destroy()'d by purple_connection_destroy. So when logging back in,
@@ -211,8 +218,10 @@ PurpleConvChat *getChatConversation(TdAccountData &account, const td::td_api::ch
                 // to prevent that.
                 PurpleChat *purpleChat = purple_blist_find_chat(account.purpleAccount, chatName.c_str());
                 if (!purpleChat) {
-                    purple_debug_misc(config::pluginId, "Setting conversation title to '%s'\n", chat.title_.c_str());
-                    purple_conversation_set_title(conv, chat.title_.c_str());
+                    const std::string &title =
+                        displayTitle.empty() ? chat.title_ : displayTitle;
+                    purple_debug_misc(config::pluginId, "Setting conversation title to '%s'\n", title.c_str());
+                    purple_conversation_set_title(conv, title.c_str());
                 }
                 newChatCreated = true;
             }
@@ -224,7 +233,7 @@ PurpleConvChat *getChatConversation(TdAccountData &account, const td::td_api::ch
     if (conv) {
         PurpleConvChat *purpleChat = purple_conversation_get_chat_data(conv);
 
-        if (purpleChat && newChatCreated) {
+        if (purpleChat && newChatCreated && !isChildTopic) {
             BasicGroupId                          basicGroupId = getBasicGroupId(chat);
             const td::td_api::basicGroupFullInfo *groupInfo    = basicGroupId.valid() ? account.getBasicGroupInfo(basicGroupId) : nullptr;
             if (groupInfo)
@@ -245,6 +254,15 @@ PurpleConvChat *getChatConversation(TdAccountData &account, const td::td_api::ch
     }
 
     return NULL;
+}
+
+PurpleConvChat *getChatConversation(TdAccountData &account,
+                                    const td::td_api::chat &chat,
+                                    int chatPurpleId)
+{
+    return getChatConversation(
+        account, chat, ChatTarget::chat(getId(chat)), chatPurpleId,
+        chat.title_);
 }
 
 PurpleConvChat *findChatConversation(PurpleAccount *account, const td::td_api::chat &chat)

@@ -356,6 +356,14 @@ struct RequestActionEvent: PurpleEvent {
 
 struct JoinChatFailedEvent: PurpleEvent {
     PurpleConnection *connection;
+    std::string chatName;
+
+    explicit JoinChatFailedEvent(
+        PurpleConnection *connection, const std::string &chatName = "")
+    : PurpleEvent(PurpleEventType::JoinChatFailed),
+      connection(connection),
+      chatName(chatName)
+    {}
 };
 
 struct ServGotChatEvent: public PurpleEvent {

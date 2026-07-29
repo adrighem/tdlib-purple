@@ -3,8 +3,11 @@
 
 #include "identifiers.h"
 
+#include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <utility>
 
 class TdAccountData;
 class TdTransceiver;
@@ -27,6 +30,34 @@ struct ForumTopicMetadata {
 bool adaptForumTopicInfo(const td::td_api::forumTopicInfo &info,
                          ForumTopicMetadata &result);
 
+enum class ForumTopicLookupStatus : uint8_t {
+    Available,
+    InvalidTarget,
+    ParentUnavailable,
+    ParentIneligible,
+    Timeout,
+    TdlibError,
+    InvalidResponse,
+    Superseded,
+};
+
+struct ForumTopicLookupResult {
+    ChatTarget target;
+    ForumTopicLookupStatus status;
+    int32_t tdlibErrorCode;
+
+    ForumTopicLookupResult(
+        ChatTarget target, ForumTopicLookupStatus status,
+        int32_t tdlibErrorCode = 0)
+        : target(target),
+          status(status),
+          tdlibErrorCode(tdlibErrorCode)
+    {}
+};
+
+using ForumTopicLookupCallback =
+    std::function<void(const ForumTopicLookupResult &)>;
+
 class ForumTopicsAdapter {
 public:
     ForumTopicsAdapter(TdTransceiver &transceiver, TdAccountData &account);
@@ -41,6 +72,9 @@ public:
     void cancelRoomList(PurpleRoomlist *roomList);
     void shutdown();
     void processUpdate(const td::td_api::updateForumTopicInfo &update);
+    void resolveForumTopic(
+        ChatTarget target, ForumTopicLookupCallback callback);
+    void cancelForumTopicLookup(ChatTarget target);
 
 private:
     struct Impl;

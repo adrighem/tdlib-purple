@@ -24,6 +24,63 @@ static ChatId chatIdFromTdInt(td::td_api::int53 id)
     return ChatId::fromString(idString.c_str());
 }
 
+static bool isChildForumTopic(ChatTarget target)
+{
+    return target.valid() && target.isForumTopic() &&
+           target.forumTopicId() != ForumTopicId::general();
+}
+
+static bool hasChildForumConversation(
+    PurpleAccount *account, int32_t purpleChatId)
+{
+    for (GList *item = purple_get_chats(); item; item = item->next) {
+        PurpleConversation *conversation =
+            static_cast<PurpleConversation *>(item->data);
+        if (!conversation ||
+            purple_conversation_get_account(conversation) != account) {
+            continue;
+        }
+
+        PurpleConvChat *chat =
+            purple_conversation_get_chat_data(conversation);
+        if (!chat || purple_conv_chat_get_id(chat) != purpleChatId)
+            continue;
+
+        const ChatTarget nameTarget = parsePurpleChatName(
+            purple_conversation_get_name(conversation));
+        if (isChildForumTopic(nameTarget))
+            return true;
+    }
+
+    return false;
+}
+
+static bool isEligibleForumParent(
+    const TdAccountData &account, const td::td_api::chat &chat)
+{
+    if (!account.isGroupChatWithMembership(chat))
+        return false;
+
+    const SupergroupId groupId = getSupergroupId(chat);
+    const td::td_api::supergroup *group =
+        groupId.valid() ? account.getSupergroup(groupId) : nullptr;
+    return group && group->is_forum_;
+}
+
+static bool hasPersistentForumTopicJoin(
+    PurpleAccount *account, ChatTarget target)
+{
+    if (!purple_account_is_connected(account))
+        return true;
+
+    const std::string purpleName = getPurpleChatName(target);
+    return purple_blist_find_chat(
+               account, purpleName.c_str()) != nullptr ||
+           purple_find_conversation_with_account(
+               PURPLE_CONV_TYPE_CHAT,
+               purpleName.c_str(), account) != nullptr;
+}
+
 static std::string escapeForNotice(const std::string &text)
 {
     char *escaped = purple_markup_escape_text(text.c_str(), text.size());
@@ -225,6 +282,8 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
             m_deferredGroupChats.insert(chatId);
             m_forumTopics->markRoomListsPending();
         } else {
+            const ChatId chatId = getId(*newChat.chat_);
+            failForumTopicJoins(chatId);
             purple_debug_misc(config::pluginId,
                               "Incoming update: ignorig ID=%d\n",
                               update.get_id());
@@ -1166,14 +1225,19 @@ void PurpleTdClient::updateGroup(td::td_api::object_ptr<td::td_api::basicGroup> 
     BasicGroupId id = getId(*group);
     m_data.updateBasicGroup(std::move(group));
     const td::td_api::chat *chat = m_data.getBasicGroupChatByGroup(id);
-    if (chat && resolveDeferredGroupChat(getId(*chat)))
+    const ChatId chatId = chat ? getId(*chat) : ChatId::invalid;
+    if (chat && resolveDeferredGroupChat(chatId)) {
+        failForumTopicJoins(chatId);
         return;
+    }
 
     // purple_blist_find_chat doesn't work if account is not connected.
     // Updates are only supposed to come after authorizationStateReady which sets account to connected.
     // But check purple_account_is_connected just in case.
     if (purple_account_is_connected(m_account))
         updateBasicGroupChat(m_data, id);
+    if (chatId.valid())
+        failForumTopicJoins(chatId);
 }
 
 void PurpleTdClient::updateSupergroup(td::td_api::object_ptr<td::td_api::supergroup> group)
@@ -1186,14 +1250,19 @@ void PurpleTdClient::updateSupergroup(td::td_api::object_ptr<td::td_api::supergr
     SupergroupId id = getId(*group);
     m_data.updateSupergroup(std::move(group));
     const td::td_api::chat *chat = m_data.getSupergroupChatByGroup(id);
-    if (chat && resolveDeferredGroupChat(getId(*chat)))
+    const ChatId chatId = chat ? getId(*chat) : ChatId::invalid;
+    if (chat && resolveDeferredGroupChat(chatId)) {
+        retryExpectedForumTopicJoins(chatId);
         return;
+    }
 
     // purple_blist_find_chat doesn't work if account is not connected.
     // Updates are only supposed to come after authorizationStateReady which sets account to connected.
     // But check purple_account_is_connected just in case.
     if (purple_account_is_connected(m_account))
         updateSupergroupChat(m_data, id);
+    if (chatId.valid())
+        retryExpectedForumTopicJoins(chatId);
 }
 
 bool PurpleTdClient::resolveDeferredGroupChat(ChatId chatId)
@@ -1219,6 +1288,7 @@ bool PurpleTdClient::resolveDeferredGroupChat(ChatId chatId)
 
     if (!m_data.isGroupChatWithMembership(*chat)) {
         m_deferredGroupChats.erase(deferred);
+        failForumTopicJoins(chatId);
         m_data.deleteChat(chatId);
         markForumRoomListsReadyIfPossible();
         return true;
@@ -1345,6 +1415,7 @@ void PurpleTdClient::addChat(td::td_api::object_ptr<td::td_api::chat> chat)
     ChatId chatId = getId(*chat);
     m_data.addChat(std::move(chat));
     updateChat(m_data.getChat(chatId));
+    retryExpectedForumTopicJoins(chatId);
 }
 
 void PurpleTdClient::handleUserChatAction(const td::td_api::updateChatAction &updateChatAction)
@@ -1619,10 +1690,17 @@ void PurpleTdClient::getUsers(const char *username, std::vector<const td::td_api
 
 bool PurpleTdClient::joinChat(const char *chatName)
 {
-    ChatId                  id       = getTdlibChatId(chatName);
+    const ChatTarget target = parsePurpleChatName(chatName);
+    if (!target.valid())
+        return false;
+    if (isChildForumTopic(target))
+        return joinForumTopic(target);
+
+    ChatId                  id       = target.chatId();
     const td::td_api::chat *chat     = m_data.getChat(id);
     int32_t                 purpleId = m_data.getPurpleChatId(id);
     PurpleConvChat         *conv     = NULL;
+    bool                     accepted = false;
 
     if (!chat) {
         // Either the user is actively trying to join non-existent chat (for example by entering
@@ -1635,6 +1713,7 @@ bool PurpleTdClient::joinChat(const char *chatName)
             purple_debug_misc(config::pluginId, "Scheduling to rejoin group chat %s - "
                               "no telegram chat found at the moment\n", chatName);
             m_data.addExpectedChat(id);
+            accepted = true;
         } else
             purple_debug_warning(config::pluginId, "No telegram chat found for purple name %s\n", chatName);
     } else if (!m_data.isGroupChatWithMembership(*chat))
@@ -1646,12 +1725,306 @@ bool PurpleTdClient::joinChat(const char *chatName)
             purple_conversation_present(purple_conv_chat_get_conversation(conv));
     }
 
-    return conv ? true : false;
+    return conv || accepted;
+}
+
+bool PurpleTdClient::joinForumTopic(ChatTarget target)
+{
+    if (!isChildForumTopic(target))
+        return false;
+
+    const std::string chatName = getPurpleChatName(target);
+    PurpleConversation *baseConv =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT, chatName.c_str(), m_account);
+    const bool isRejoin =
+        baseConv &&
+        purple_conv_chat_has_left(
+            purple_conversation_get_chat_data(baseConv));
+    PurpleChat *bookmark = purple_account_is_connected(m_account)
+        ? purple_blist_find_chat(m_account, chatName.c_str())
+        : nullptr;
+    if (purple_account_is_connected(m_account))
+        m_data.setForumTopicSaved(target, bookmark != nullptr);
+
+    const td::td_api::chat *parent =
+        m_data.getChat(target.chatId());
+    if (!parent) {
+        if (isRejoin || bookmark) {
+            m_data.addExpectedChat(target);
+            return true;
+        }
+        return false;
+    }
+
+    const SupergroupId groupId =
+        getSupergroupId(*parent);
+    if (!groupId.valid())
+        return false;
+
+    const td::td_api::supergroup *group =
+        m_data.getSupergroup(groupId);
+    if (!group) {
+        if (isRejoin || bookmark) {
+            m_data.addExpectedChat(target);
+            return true;
+        }
+        return false;
+    }
+
+    if (!isEligibleForumParent(m_data, *parent))
+        return false;
+
+    const bool persistentIntent = isRejoin || bookmark;
+    const ForumTopicJoinIntent intent = persistentIntent
+        ? ForumTopicJoinIntent::PersistentRejoin
+        : ForumTopicJoinIntent::UserRequest;
+    auto pendingJoin =
+        m_pendingForumTopicJoins.emplace(target, intent);
+    if (!pendingJoin.second) {
+        if (!persistentIntent) {
+            pendingJoin.first->second =
+                ForumTopicJoinIntent::UserRequest;
+        }
+        return true;
+    }
+
+    m_forumTopics->resolveForumTopic(
+        target,
+        [this](const ForumTopicLookupResult &result) {
+            completeForumTopicJoin(result);
+        });
+    return true;
+}
+
+void PurpleTdClient::completeForumTopicJoin(
+    const ForumTopicLookupResult &result)
+{
+    const ChatTarget target = result.target;
+    auto pending = m_pendingForumTopicJoins.find(target);
+    if (pending == m_pendingForumTopicJoins.end())
+        return;
+    const bool revalidatePersistentIntent =
+        pending->second == ForumTopicJoinIntent::PersistentRejoin;
+    m_pendingForumTopicJoins.erase(pending);
+    m_data.removeExpectedChat(target);
+
+    const std::string purpleName = getPurpleChatName(target);
+    PurpleChat *bookmark = purple_account_is_connected(m_account)
+        ? purple_blist_find_chat(m_account, purpleName.c_str())
+        : nullptr;
+    PurpleConversation *existingConversation =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT, purpleName.c_str(), m_account);
+    m_data.setForumTopicSaved(target, bookmark != nullptr);
+    if (revalidatePersistentIntent &&
+        !bookmark && !existingConversation) {
+        return;
+    }
+
+    const TdAccountData::ForumTopicState *topic =
+        m_data.findForumTopic(target);
+    const td::td_api::chat *parent =
+        m_data.getChat(target.chatId());
+    if (result.status != ForumTopicLookupStatus::Available ||
+        !topic || !topic->metadataKnown || topic->deleted ||
+        !parent || !isEligibleForumParent(m_data, *parent)) {
+        if (result.tdlibErrorCode != 0) {
+            purple_debug_warning(
+                config::pluginId,
+                "Failed to open forum topic in chat %" G_GINT64_FORMAT
+                " (topic %d, TDLib code %d)\n",
+                target.chatId().value(),
+                target.forumTopicId().value(),
+                result.tdlibErrorCode);
+        }
+        failForumTopicJoin(target);
+        return;
+    }
+
+    const int32_t purpleId = m_data.activateForumTopic(target);
+    if (purpleId == 0) {
+        failForumTopicJoin(target);
+        return;
+    }
+
+    const std::string topicName = topic->name.empty()
+        ? formatMessage(_("Topic {}"), target.forumTopicId().value())
+        : topic->name;
+    const std::string displayTitle =
+        parent->title_ + " / " + topicName;
+    if (bookmark) {
+        const char *bookmarkTitle = purple_chat_get_name(bookmark);
+        if (!bookmarkTitle || displayTitle != bookmarkTitle)
+            purple_blist_alias_chat(bookmark, displayTitle.c_str());
+    }
+
+    PurpleConvChat *conversation = getChatConversation(
+        m_data, *parent, target, purpleId, displayTitle);
+    if (!conversation) {
+        m_data.deactivateForumTopic(target);
+        failForumTopicJoin(target);
+        return;
+    }
+
+    PurpleConversation *baseConversation =
+        purple_conv_chat_get_conversation(conversation);
+    const char *currentTitle =
+        purple_conversation_get_title(baseConversation);
+    if (!currentTitle || displayTitle != currentTitle)
+        purple_conversation_set_title(
+            baseConversation, displayTitle.c_str());
+    purple_conversation_present(baseConversation);
+}
+
+void PurpleTdClient::failForumTopicJoin(ChatTarget target)
+{
+    if (!target.valid())
+        return;
+
+    PurpleConnection *connection =
+        purple_account_get_connection(m_account);
+    if (!connection)
+        return;
+
+    GHashTable *components = getChatComponents(target);
+    purple_serv_got_join_chat_failed(
+        connection, components);
+    g_hash_table_destroy(components);
+}
+
+void PurpleTdClient::failForumTopicJoins(ChatId chatId)
+{
+    pruneAbandonedForumTopicJoins(chatId);
+
+    std::set<ChatTarget> failedTargets;
+    std::vector<ChatTarget> expectedTargets;
+    m_data.getExpectedForumTopics(chatId, expectedTargets);
+    failedTargets.insert(
+        expectedTargets.begin(), expectedTargets.end());
+
+    for (auto pending = m_pendingForumTopicJoins.begin();
+         pending != m_pendingForumTopicJoins.end();) {
+        if (pending->first.chatId() == chatId) {
+            const ChatTarget target = pending->first;
+            failedTargets.insert(target);
+            m_forumTopics->cancelForumTopicLookup(target);
+            pending = m_pendingForumTopicJoins.erase(pending);
+        } else {
+            ++pending;
+        }
+    }
+
+    for (ChatTarget target : failedTargets) {
+        m_data.removeExpectedChat(target);
+        failForumTopicJoin(target);
+    }
+}
+
+void PurpleTdClient::pruneAbandonedForumTopicJoins(ChatId chatId)
+{
+    if (!purple_account_is_connected(m_account))
+        return;
+
+    std::vector<ChatTarget> expectedTargets;
+    m_data.getExpectedForumTopics(chatId, expectedTargets);
+    for (ChatTarget target : expectedTargets) {
+        if (hasPersistentForumTopicJoin(m_account, target))
+            continue;
+
+        m_data.removeExpectedChat(target);
+        m_data.setForumTopicSaved(target, false);
+    }
+
+    for (auto pending = m_pendingForumTopicJoins.begin();
+         pending != m_pendingForumTopicJoins.end();) {
+        const ChatTarget target = pending->first;
+        if (target.chatId() != chatId ||
+            pending->second != ForumTopicJoinIntent::PersistentRejoin ||
+            hasPersistentForumTopicJoin(m_account, target)) {
+            ++pending;
+            continue;
+        }
+
+        m_forumTopics->cancelForumTopicLookup(target);
+        pending = m_pendingForumTopicJoins.erase(pending);
+        m_data.removeExpectedChat(target);
+        m_data.setForumTopicSaved(target, false);
+    }
+}
+
+void PurpleTdClient::retryExpectedForumTopicJoins(ChatId chatId)
+{
+    pruneAbandonedForumTopicJoins(chatId);
+
+    std::vector<ChatTarget> targets;
+    m_data.getExpectedForumTopics(chatId, targets);
+    const bool pendingLookup = std::any_of(
+        m_pendingForumTopicJoins.begin(),
+        m_pendingForumTopicJoins.end(),
+        [chatId](const auto &entry) {
+            return entry.first.chatId() == chatId;
+        });
+    if (targets.empty() && !pendingLookup)
+        return;
+
+    const td::td_api::chat *parent = m_data.getChat(chatId);
+    if (!parent)
+        return;
+    const SupergroupId groupId = getSupergroupId(*parent);
+    if (!groupId.valid()) {
+        failForumTopicJoins(chatId);
+        return;
+    }
+    const td::td_api::supergroup *group =
+        m_data.getSupergroup(groupId);
+    if (!group)
+        return;
+
+    if (!isEligibleForumParent(m_data, *parent)) {
+        failForumTopicJoins(chatId);
+        return;
+    }
+
+    for (ChatTarget target : targets)
+        joinForumTopic(target);
+}
+
+void PurpleTdClient::closeConversation(const char *conversationName)
+{
+    const ChatTarget target =
+        parsePurpleChatName(conversationName);
+    if (!isChildForumTopic(target))
+        return;
+
+    m_forumTopics->cancelForumTopicLookup(target);
+    m_pendingForumTopicJoins.erase(target);
+    m_data.removeExpectedChat(target);
+    m_data.deactivateForumTopic(target);
+    if (purple_account_is_connected(m_account)) {
+        const std::string purpleName = getPurpleChatName(target);
+        m_data.setForumTopicSaved(
+            target,
+            purple_blist_find_chat(
+                m_account, purpleName.c_str()) != nullptr);
+    }
 }
 
 int PurpleTdClient::sendGroupMessage(int purpleChatId, const char *message)
 {
-    const td::td_api::chat *chat = m_data.getChatByPurpleId(purpleChatId);
+    const ChatTarget target =
+        m_data.getChatTargetByPurpleId(purpleChatId);
+    if (isChildForumTopic(target) ||
+        hasChildForumConversation(m_account, purpleChatId)) {
+        purple_debug_warning(
+            config::pluginId,
+            "Topic message routing is not available for purple id %d\n",
+            purpleChatId);
+        return -1;
+    }
+
+    const td::td_api::chat *chat =
+        target.valid() ? m_data.getChat(target.chatId()) : nullptr;
 
     if (!chat)
         purple_debug_warning(config::pluginId, "No chat found for purple id %d\n", purpleChatId);
@@ -1860,7 +2233,19 @@ void PurpleTdClient::deleteSupergroupResponse(uint64_t requestId, td::td_api::ob
 
 void PurpleTdClient::setGroupDescription(int purpleChatId, const char *description)
 {
-    const td::td_api::chat *chat = m_data.getChatByPurpleId(purpleChatId);
+    const ChatTarget target =
+        m_data.getChatTargetByPurpleId(purpleChatId);
+    if (isChildForumTopic(target) ||
+        hasChildForumConversation(m_account, purpleChatId)) {
+        purple_debug_warning(
+            config::pluginId,
+            "Refusing to change a parent description from topic purple id %d\n",
+            purpleChatId);
+        return;
+    }
+
+    const td::td_api::chat *chat =
+        target.valid() ? m_data.getChat(target.chatId()) : nullptr;
     if (!chat) {
         purple_debug_warning(config::pluginId, "Unknown libpurple chat id %d\n", purpleChatId);
         return;
@@ -1888,7 +2273,19 @@ void PurpleTdClient::setGroupDescriptionResponse(uint64_t requestId, td::td_api:
 void PurpleTdClient::kickUserFromChat(PurpleConversation *conv, const char *name)
 {
     int purpleChatId = purple_conv_chat_get_id(PURPLE_CONV_CHAT(conv));
-    const td::td_api::chat *chat = m_data.getChatByPurpleId(purpleChatId);
+    const ChatTarget target =
+        m_data.getChatTargetByPurpleId(purpleChatId);
+    if (isChildForumTopic(target) ||
+        hasChildForumConversation(m_account, purpleChatId)) {
+        purple_conversation_write(
+            conv, "",
+            _("Group administration is unavailable from a topic room"),
+            PURPLE_MESSAGE_NO_LOG, time(NULL));
+        return;
+    }
+
+    const td::td_api::chat *chat =
+        target.valid() ? m_data.getChat(target.chatId()) : nullptr;
 
     if (!chat) {
         // Unlikely error message not worth translating
@@ -1965,7 +2362,19 @@ void PurpleTdClient::chatActionResponse(uint64_t requestId, td::td_api::object_p
 
 void PurpleTdClient::addUserToChat(int purpleChatId, const char *name)
 {
-    const td::td_api::chat *chat = m_data.getChatByPurpleId(purpleChatId);
+    const ChatTarget target =
+        m_data.getChatTargetByPurpleId(purpleChatId);
+    if (isChildForumTopic(target) ||
+        hasChildForumConversation(m_account, purpleChatId)) {
+        purple_debug_warning(
+            config::pluginId,
+            "Refusing parent administration from topic purple id %d\n",
+            purpleChatId);
+        return;
+    }
+
+    const td::td_api::chat *chat =
+        target.valid() ? m_data.getChat(target.chatId()) : nullptr;
     if (!chat) {
         purple_debug_warning(config::pluginId, "Unknown libpurple chat id %d\n", purpleChatId);
         return;
@@ -2173,7 +2582,14 @@ bool PurpleTdClient::canSendFileToUser(const char *purpleName)
 
 bool PurpleTdClient::canSendFileToChat(int purpleChatId)
 {
-    const td::td_api::chat *chat = m_data.getChatByPurpleId(purpleChatId);
+    const ChatTarget target =
+        m_data.getChatTargetByPurpleId(purpleChatId);
+    if (isChildForumTopic(target) ||
+        hasChildForumConversation(m_account, purpleChatId))
+        return false;
+
+    const td::td_api::chat *chat =
+        target.valid() ? m_data.getChat(target.chatId()) : nullptr;
     return chat && m_data.isGroupChatWithMembership(*chat);
 }
 
@@ -2195,8 +2611,14 @@ void PurpleTdClient::sendFileToChat(PurpleXfer *xfer, const char *purpleName,
                 chat = m_data.getPrivateChatByUserId(getId(*privateUser));
             }
         }
-    } else if (type == PURPLE_CONV_TYPE_CHAT)
-        chat = m_data.getChatByPurpleId(purpleChatId);
+    } else if (type == PURPLE_CONV_TYPE_CHAT) {
+        const ChatTarget target =
+            m_data.getChatTargetByPurpleId(purpleChatId);
+        if (!isChildForumTopic(target) &&
+            !hasChildForumConversation(m_account, purpleChatId) &&
+            target.valid())
+            chat = m_data.getChat(target.chatId());
+    }
 
     if (filename && chat)
         startDocumentUpload(getId(*chat), filename, xfer, m_transceiver, m_data, &PurpleTdClient::uploadResponse);

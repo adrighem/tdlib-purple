@@ -158,6 +158,7 @@ static void compare(const RequestActionEvent &actual, const RequestActionEvent &
 static void compare(const JoinChatFailedEvent &actual, const JoinChatFailedEvent &expected)
 {
     COMPARE(connection);
+    COMPARE(chatName);
 }
 
 static void compare(const ServGotChatEvent &actual, const ServGotChatEvent &expected)

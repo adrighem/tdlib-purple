@@ -437,6 +437,7 @@ TEST_F(SupergroupTest, JoinByLink_InvalidLink1)
     pluginInfo().join_chat(connection, components);
     // Not a join link nor a group link - fail immediately
     tgl.verifyNoRequests();
+    prpl.verifyEvents(JoinChatFailedEvent(connection));
 
     g_hash_table_destroy(components);
 }
@@ -452,6 +453,7 @@ TEST_F(SupergroupTest, JoinByLink_InvalidLink2)
     pluginInfo().join_chat(connection, components);
     // Not a join link nor a group link - fail immediately
     tgl.verifyNoRequests();
+    prpl.verifyEvents(JoinChatFailedEvent(connection));
 
     g_hash_table_destroy(components);
 }

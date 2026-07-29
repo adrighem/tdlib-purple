@@ -16,6 +16,20 @@ struct AccountInfo {
 
 std::vector<AccountInfo>  g_accounts;
 PurplePlugin             *g_plugin;
+static GList             *g_chatConversations = nullptr;
+
+struct SignalConnection {
+    void *instance;
+    std::string signal;
+    void *handle;
+    PurpleCallback callback;
+    void *data;
+    gulong id;
+};
+
+static std::vector<SignalConnection> g_signalConnections;
+static gulong g_nextSignalId = 1;
+static char g_conversationsHandle;
 
 extern "C" {
 
@@ -119,6 +133,10 @@ void purple_account_destroy(PurpleAccount *account)
     while (!it->chats.empty())
         purple_blist_remove_chat(it->chats.back());
     g_accounts.erase(it);
+    if (g_accounts.empty()) {
+        g_list_free(g_chatConversations);
+        g_chatConversations = nullptr;
+    }
 
     delete account;
     ASSERT_EQ(nullptr, root.child) << "Blist nodes remain";
@@ -517,6 +535,16 @@ void purple_conversation_destroy(PurpleConversation *conv)
                                  [conv](const AccountInfo &info) { return info.account == conv->account; });
     ASSERT_FALSE(pAccount == g_accounts.end()) << "Removing conversation with unknown account";
 
+    const std::vector<SignalConnection> connections = g_signalConnections;
+    for (const SignalConnection &connection: connections) {
+        if ((connection.instance == purple_conversations_get_handle()) &&
+            (connection.signal == "deleting-conversation")) {
+            typedef void (*DeletingConversationCallback)(PurpleConversation *, gpointer);
+            reinterpret_cast<DeletingConversationCallback>(connection.callback)(
+                conv, connection.data);
+        }
+    }
+
     auto it = std::find(pAccount->conversations.begin(), pAccount->conversations.end(), conv);
     ASSERT_FALSE(it == pAccount->conversations.end()) << "Removing unkown conversation";
     pAccount->conversations.erase(it);
@@ -677,6 +705,22 @@ PurpleConversation *purple_find_chat(const PurpleConnection *gc, int id)
     }
 
     return NULL;
+}
+
+GList *purple_get_chats(void)
+{
+    g_list_free(g_chatConversations);
+    g_chatConversations = nullptr;
+    for (const AccountInfo &accountInfo : g_accounts) {
+        for (PurpleConversation *conversation : accountInfo.conversations) {
+            if (purple_conversation_get_type(conversation) ==
+                PURPLE_CONV_TYPE_CHAT) {
+                g_chatConversations =
+                    g_list_append(g_chatConversations, conversation);
+            }
+        }
+    }
+    return g_chatConversations;
 }
 
 PurpleConversation *purple_find_conversation_with_account(
@@ -968,7 +1012,10 @@ void purple_roomlist_room_add(PurpleRoomlist *list, PurpleRoomlistRoom *room)
 
 void purple_serv_got_join_chat_failed(PurpleConnection *gc, GHashTable *data)
 {
-    // TODO event
+    const char *chatName = data
+        ? static_cast<const char *>(g_hash_table_lookup(data, "id"))
+        : nullptr;
+    EVENT(JoinChatFailedEvent, gc, chatName ? chatName : "");
 }
 
 PurpleStatusType *purple_status_type_new_full(PurpleStatusPrimitive primitive,
@@ -1674,7 +1721,7 @@ void setUiName(const char *name)
 
 void *purple_conversations_get_handle()
 {
-    return NULL;
+    return &g_conversationsHandle;
 }
 
 PurpleConversationUiOps *purple_conversation_get_ui_ops(const PurpleConversation *conv)
@@ -1691,7 +1738,21 @@ gboolean purple_conversation_has_focus(PurpleConversation *conv)
 gulong purple_signal_connect(void *instance, const char *signal,
 	void *handle, PurpleCallback func, void *data)
 {
-    return 0;
+    const gulong id = g_nextSignalId++;
+    g_signalConnections.push_back(
+        SignalConnection{instance, signal ? signal : "", handle, func, data, id});
+    return id;
+}
+
+void purple_signals_disconnect_by_handle(void *handle)
+{
+    g_signalConnections.erase(
+        std::remove_if(
+            g_signalConnections.begin(), g_signalConnections.end(),
+            [handle](const SignalConnection &connection) {
+                return connection.handle == handle;
+            }),
+        g_signalConnections.end());
 }
 
 };

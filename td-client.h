@@ -6,6 +6,7 @@
 #include "forum-topics.h"
 #include <td/telegram/Log.h>
 #include <purple.h>
+#include <map>
 #include <memory>
 #include <set>
 
@@ -40,6 +41,7 @@ public:
     void createGroup(const char *name, int type, const std::vector<std::string> &basicGroupMembers);
     BasicGroupMembership getBasicGroupMembership(const char *purpleChatName);
     void leaveGroup(const std::string &purpleChatName, bool deleteSupergroup);
+    void closeConversation(const char *conversationName);
     int  sendGroupMessage(int purpleChatId, const char *message);
     void setGroupDescription(int purpleChatId, const char *description);
     void kickUserFromChat(PurpleConversation *conv, const char *name);
@@ -63,6 +65,10 @@ public:
 private:
     using TdObjectPtr   = td::td_api::object_ptr<td::td_api::Object>;
     using ResponseCb    = void (PurpleTdClient::*)(uint64_t requestId, TdObjectPtr object);
+    enum class ForumTopicJoinIntent : uint8_t {
+        UserRequest,
+        PersistentRejoin,
+    };
 
     void       processUpdate(td::td_api::Object &object);
     void       processAuthorizationState(td::td_api::AuthorizationState &authState);
@@ -140,6 +146,13 @@ private:
     void       addContactResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       addContactCreatePrivateChatResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       notifyFailedContact(const std::string &errorMessage);
+    bool       joinForumTopic(ChatTarget target);
+    void       completeForumTopicJoin(
+                   const ForumTopicLookupResult &result);
+    void       failForumTopicJoin(ChatTarget target);
+    void       failForumTopicJoins(ChatId chatId);
+    void       pruneAbandonedForumTopicJoins(ChatId chatId);
+    void       retryExpectedForumTopicJoins(ChatId chatId);
     void       joinChatResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       joinGroupSearchChatResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       deleteSupergroupResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
@@ -165,6 +178,7 @@ private:
     int32_t               m_lastAuthState = 0;
     std::vector<UserId>   m_usersForNewPrivateChats;
     std::set<ChatId>      m_deferredGroupChats;
+    std::map<ChatTarget, ForumTopicJoinIntent> m_pendingForumTopicJoins;
     bool                  m_chatListReady = false;
     bool                  m_isProxyAdded = false;
     td::td_api::object_ptr<td::td_api::addedProxy>   m_addedProxy;

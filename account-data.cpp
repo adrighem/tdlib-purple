@@ -824,8 +824,7 @@ TdAccountData::ForumTopicUpsertResult TdAccountData::upsertForumTopic(
 
     auto inserted = m_forumTopics.emplace(target, ForumTopicState(target));
     ForumTopicState &topic = inserted.first->second;
-    if (!inserted.second && topic.metadataKnown &&
-        generation <= topic.metadataGeneration) {
+    if (!inserted.second && generation <= topic.metadataGeneration) {
         return ForumTopicUpsertResult(&topic, false);
     }
 
@@ -840,6 +839,32 @@ TdAccountData::ForumTopicUpsertResult TdAccountData::upsertForumTopic(
     return ForumTopicUpsertResult(&topic, true);
 }
 
+const TdAccountData::ForumTopicState *
+TdAccountData::ensureForumTopicPlaceholder(ChatTarget target)
+{
+    if (!target.valid() || !target.isForumTopic() ||
+        target.forumTopicId() == ForumTopicId::general()) {
+        return nullptr;
+    }
+
+    auto inserted = m_forumTopics.emplace(
+        target, ForumTopicState(target));
+    return &inserted.first->second;
+}
+
+void TdAccountData::invalidateForumTopicMetadata(
+    ChatTarget target, uint64_t generation)
+{
+    ForumTopicState *topic = findForumTopicMutable(target);
+    if (!topic || generation < topic->metadataGeneration)
+        return;
+    if (generation > m_forumTopicGeneration)
+        m_forumTopicGeneration = generation;
+
+    topic->metadataKnown = false;
+    topic->metadataGeneration = generation;
+}
+
 uint64_t TdAccountData::reserveForumTopicGeneration()
 {
     if (m_forumTopicGeneration != std::numeric_limits<uint64_t>::max())
@@ -850,7 +875,7 @@ uint64_t TdAccountData::reserveForumTopicGeneration()
 void TdAccountData::tombstoneForumTopic(
     ForumTopicState &topic, uint64_t generation)
 {
-    if (topic.metadataKnown && generation <= topic.metadataGeneration)
+    if (generation <= topic.metadataGeneration)
         return;
 
     topic.deleted = true;
@@ -870,7 +895,6 @@ void TdAccountData::reconcileForumTopics(
     for (auto &entry : m_forumTopics) {
         ForumTopicState &topic = entry.second;
         if (topic.target.chatId() != chatId || topic.isGeneral() ||
-            !topic.metadataKnown ||
             seenTargets.find(topic.target) != seenTargets.end()) {
             continue;
         }
@@ -906,6 +930,11 @@ void TdAccountData::getForumTopics(
 bool TdAccountData::setForumTopicSaved(ChatTarget target, bool saved)
 {
     ForumTopicState *topic = findForumTopicMutable(target);
+    if (!topic && saved && target.valid() && target.isForumTopic() &&
+        target.forumTopicId() != ForumTopicId::general()) {
+        auto inserted = m_forumTopics.emplace(target, ForumTopicState(target));
+        topic = &inserted.first->second;
+    }
     if (!topic)
         return false;
     topic->saved = saved;
@@ -944,6 +973,19 @@ bool TdAccountData::isExpectedChat(ChatTarget target) const
 void TdAccountData::removeExpectedChat(ChatTarget target)
 {
     m_expectedChats.erase(target);
+}
+
+void TdAccountData::getExpectedForumTopics(
+    ChatId chatId, std::vector<ChatTarget> &targets) const
+{
+    targets.clear();
+    for (ChatTarget target : m_expectedChats) {
+        if (target.isForumTopic() &&
+            target.forumTopicId() != ForumTopicId::general() &&
+            target.chatId() == chatId) {
+            targets.push_back(target);
+        }
+    }
 }
 
 std::unique_ptr<PendingRequest> TdAccountData::getPendingRequestImpl(uint64_t requestId)

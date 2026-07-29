@@ -320,6 +320,28 @@ conversation_updated_cb(PurpleConversation *conv, PurpleConvUpdateType type)
     }
 }
 
+static void
+deleting_conversation_cb(PurpleConversation *conv, gpointer data)
+{
+    PurpleAccount *registeredAccount = static_cast<PurpleAccount *>(data);
+    if (!conv || !registeredAccount ||
+        (purple_conversation_get_type(conv) != PURPLE_CONV_TYPE_CHAT))
+        return;
+
+    PurpleAccount *account = purple_conversation_get_account(conv);
+    if (account != registeredAccount)
+        return;
+
+    const char *protocolId = purple_account_get_protocol_id(account);
+    if (protocolId && *protocolId && strcmp(protocolId, config::pluginId))
+        return;
+
+    PurpleTdClient *tdClient = getTdClient(account);
+    const char *conversationName = purple_conversation_get_name(conv);
+    if (tdClient && conversationName)
+        tdClient->closeConversation(conversationName);
+}
+
 static void tgprpl_login (PurpleAccount *acct)
 {
     purple_debug_misc(config::pluginId, "version %s, test backend: %p\n", config::versionString, g_testBackend);
@@ -331,10 +353,13 @@ static void tgprpl_login (PurpleAccount *acct)
 
     purple_signal_connect(purple_conversations_get_handle(), "conversation-updated",
                           acct, PURPLE_CALLBACK(conversation_updated_cb), NULL);
+    purple_signal_connect(purple_conversations_get_handle(), "deleting-conversation",
+                          acct, PURPLE_CALLBACK(deleting_conversation_cb), acct);
 }
 
 static void tgprpl_close (PurpleConnection *gc)
 {
+    purple_signals_disconnect_by_handle(purple_connection_get_account(gc));
     delete static_cast<PurpleTdClient *>(purple_connection_get_protocol_data(gc));
     purple_connection_set_protocol_data(gc, NULL);
 }

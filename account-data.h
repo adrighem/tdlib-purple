@@ -389,6 +389,8 @@ public:
     void addExpectedChat(ChatTarget target);
     bool isExpectedChat(ChatTarget target) const;
     void removeExpectedChat(ChatTarget target);
+    void getExpectedForumTopics(
+        ChatId chatId, std::vector<ChatTarget> &targets) const;
     void addExpectedChat(ChatId id) {
         addExpectedChat(ChatTarget::chat(id));
     }
@@ -429,6 +431,11 @@ public:
                                                     bool closed,
                                                     bool hidden,
                                                     uint64_t generation);
+    const ForumTopicState         *ensureForumTopicPlaceholder(
+                                      ChatTarget target);
+    void                          invalidateForumTopicMetadata(
+                                      ChatTarget target,
+                                      uint64_t generation);
     uint64_t                      reserveForumTopicGeneration();
     void                          reconcileForumTopics(
                                       ChatId chatId,
