@@ -98,6 +98,9 @@ TdTransceiver::TdTransceiver(PurpleTdClient *owner, PurpleAccount *account, Upda
 
 TdTransceiver::~TdTransceiver()
 {
+    if (m_testBackend)
+        m_testBackend->setOwner(nullptr);
+
     for (const TimerInfo &timer: m_impl->m_timers) {
         if (!m_testBackend)
             g_source_remove(timer.timerId);
@@ -278,5 +281,8 @@ gboolean TdTransceiver::timerCallback(gpointer userdata)
 
 void ITransceiverBackend::receive(td::Client::Response response)
 {
+    if (!m_owner)
+        return;
+
     TdTransceiverImpl::rxCallback(m_owner->queueResponse(std::move(response)));
 }

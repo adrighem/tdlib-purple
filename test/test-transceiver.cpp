@@ -836,5 +836,15 @@ TEST(TestTransceiverHarness, MockViewMessagesPreservesSource)
     EXPECT_EQ(messageSourceForumTopicHistory::ID, request->source_->get_id());
 }
 
+TEST(TestTransceiverHarness, IgnoresResponseAfterOwnerIsDestroyed)
+{
+    TestTransceiver backend;
+    {
+        TdTransceiver transceiver(nullptr, nullptr, nullptr, &backend);
+    }
+
+    backend.update(make_object<updateConnectionState>(make_object<connectionStateReady>()));
+}
+
 }
 }
