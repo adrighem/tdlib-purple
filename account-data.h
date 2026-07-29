@@ -125,24 +125,29 @@ struct TgMessageInfo {
         Sticker,
         Other
     };
+    ChatTarget  target;
     MessageId   id;
-    Type        type;
+    Type        type = Type::Other;
     std::string incomingGroupchatSender;
-    time_t      timestamp;
-    bool        outgoing;
+    time_t      timestamp = 0;
+    bool        outgoing = false;
     bool        sentLocally = false; // For outgoing messages, whether sent by this very client
+    bool        forumTopicDisplayAccepted = false;
     MessageId   repliedMessageId;
     td::td_api::object_ptr<td::td_api::message> repliedMessage;
     std::string forwardedFrom;
 
     void assign(const TgMessageInfo &other)
     {
+        target = other.target;
         id = other.id;
         type = other.type;
         incomingGroupchatSender = other.incomingGroupchatSender;
         timestamp = other.timestamp;
         outgoing = other.outgoing;
         sentLocally = other.sentLocally;
+        forumTopicDisplayAccepted =
+            other.forumTopicDisplayAccepted;
         repliedMessageId = other.repliedMessageId;
         repliedMessage = nullptr;
         forwardedFrom = other.forwardedFrom;
@@ -307,11 +312,6 @@ private:
                               std::vector<IncomingMessage> &readyMessages);
 };
 
-struct ReadReceipt {
-    ChatId    chatId;
-    MessageId messageId;
-};
-
 class TdAccountData {
 public:
     using TdUserPtr           = td::td_api::object_ptr<td::td_api::user>;
@@ -447,6 +447,8 @@ public:
                                       std::vector<const ForumTopicState *> &topics) const;
     bool                          setForumTopicSaved(ChatTarget target, bool saved);
     int32_t                       activateForumTopic(ChatTarget target);
+    int32_t                       activateForumTopicForIncomingMessage(
+                                      ChatTarget target);
     void                          deactivateForumTopic(ChatTarget target);
 
     template<typename ReqType, typename... ArgsType>
@@ -498,8 +500,11 @@ public:
 
     PendingMessageQueue        pendingMessages;
 
-    void                       addPendingReadReceipt(ChatId chatId, MessageId messageId);
-    void                       extractPendingReadReceipts(ChatId chatId, std::vector<ReadReceipt> &receipts);
+    void                       addPendingReadReceipt(ChatTarget target,
+                                                     MessageId messageId);
+    void                       extractPendingReadReceipts(
+                                      ChatTarget target,
+                                      std::vector<MessageId> &messageIds);
     void                       rememberDisplayedMessage(ChatId chatId, MessageId messageId,
                                                         PurpleConversation *conv,
                                                         const std::string &sender,
@@ -599,8 +604,8 @@ private:
     int32_t                         allocateForumTopicPurpleId(ForumTopicState &topic);
     bool                            isForumChat(ChatId chatId) const;
 
-    // Read receipts not sent immediately due to away status (grouped per chat)
-    std::vector<std::vector<ReadReceipt>> m_pendingReadReceipts;
+    // Read receipts not sent immediately due to away status (grouped per exact room)
+    std::map<ChatTarget, std::vector<MessageId>> m_pendingReadReceipts;
 
     std::vector<DisplayedMessageInfo> m_displayedMessages;
 };

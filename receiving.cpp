@@ -1,5 +1,6 @@
 #include "receiving.h"
 #include "client-utils.h"
+#include "td-client.h"
 #include "format.h"
 #include "purple-info.h"
 #include "file-transfer.h"
@@ -311,11 +312,42 @@ static PurpleMessageFlags getNotificationFlags(PurpleMessageFlags extraFlags)
     return (PurpleMessageFlags)flags;
 }
 
-void sendConversationReadReceipts(TdAccountData &account, PurpleConversation *conv)
+static void sendPendingReadReceipts(
+    TdAccountData &account, ChatTarget target)
+{
+    if (!target.valid())
+        return;
+
+    std::vector<MessageId> messageIds;
+    account.extractPendingReadReceipts(target, messageIds);
+    if (messageIds.empty())
+        return;
+
+    purple_debug_misc(
+        config::pluginId,
+        "Sending %zu read receipts for chat %" G_GINT64_FORMAT "\n",
+        messageIds.size(), target.chatId().value());
+    auto request =
+        td::td_api::make_object<td::td_api::viewMessages>();
+    request->chat_id_ = target.chatId().value();
+    if (target.isForumTopic()) {
+        request->source_ =
+            td::td_api::make_object<
+                td::td_api::messageSourceForumTopicHistory>();
+    }
+    request->force_read_ = true;
+    request->message_ids_.reserve(messageIds.size());
+    for (MessageId messageId : messageIds)
+        request->message_ids_.push_back(messageId.value());
+    account.transceiver.sendQuery(std::move(request), nullptr);
+}
+
+void sendConversationReadReceipts(
+    TdAccountData &account, PurpleConversation *conv)
 {
     if (!conversationHasFocus(conv))
         return;
-    ChatId chatId;
+
     PurpleConversationType convType = purple_conversation_get_type(conv);
     const char            *convName = purple_conversation_get_name(conv);
 
@@ -330,23 +362,30 @@ void sendConversationReadReceipts(TdAccountData &account, PurpleConversation *co
             tdlibChat = account.getChatBySecretChat(secretChatId);
 
         if (tdlibChat)
-            chatId = getId(*tdlibChat);
-    } else if (convType == PURPLE_CONV_TYPE_CHAT)
-        chatId = getTdlibChatId(convName);
-
-    std::vector<ReadReceipt> receipts;
-    account.extractPendingReadReceipts(chatId, receipts);
-
-    if (!receipts.empty()) {
-        purple_debug_misc(config::pluginId, "Sending %zu read receipts for chat %" G_GINT64_FORMAT "\n",
-                          receipts.size(), chatId.value());
-        td::td_api::object_ptr<td::td_api::viewMessages> viewMessagesReq = td::td_api::make_object<td::td_api::viewMessages>();
-        viewMessagesReq->chat_id_ = chatId.value();
-        viewMessagesReq->force_read_ = true; // no idea what "closed chats" are at this point
-        viewMessagesReq->message_ids_.resize(receipts.size());
-        for (size_t i = 0; i < receipts.size(); i++)
-            viewMessagesReq->message_ids_[i] = receipts[i].messageId.value();
-        account.transceiver.sendQuery(std::move(viewMessagesReq), nullptr);
+            sendPendingReadReceipts(
+                account, ChatTarget::chat(getId(*tdlibChat)));
+    } else if (convType == PURPLE_CONV_TYPE_CHAT) {
+        const ChatTarget nameTarget = parsePurpleChatName(convName);
+        PurpleConvChat *chat = purple_conversation_get_chat_data(conv);
+        const ChatTarget idTarget = chat
+            ? account.getChatTargetByPurpleId(
+                  purple_conv_chat_get_id(chat))
+            : ChatTarget();
+        if (nameTarget.valid() && idTarget.valid() &&
+            nameTarget.chatId() == idTarget.chatId() &&
+            (!nameTarget.isForumTopic() ||
+             nameTarget == idTarget)) {
+            if (nameTarget.isForumTopic()) {
+                sendPendingReadReceipts(account, nameTarget);
+            } else {
+                sendPendingReadReceipts(
+                    account,
+                    ChatTarget::forumTopic(
+                        nameTarget.chatId(),
+                        ForumTopicId::general()));
+                sendPendingReadReceipts(account, nameTarget);
+            }
+        }
     }
 }
 
@@ -378,50 +417,135 @@ PurpleConversation *showMessageTextIm(TdAccountData &account, const char *purple
                              getNotificationFlags(flags), timestamp);
     }
 
-    // TODO: sending all pending read receipts for the chat is technically not quite right,
-    // because maybe a message is being shown while others are waiting for some asynchronous
-    // response before they can be displayed. But who cares.
     if (conv != NULL)
         sendConversationReadReceipts(account, conv);
 
     return conv;
 }
 
-static void showMessageTextChat(TdAccountData &account, const td::td_api::chat &chat,
-                                const TgMessageInfo &message, const char *text,
-                                const char *notification, PurpleMessageFlags flags)
+static PurpleConversation *showMessageTextChat(
+    TdAccountData &account, const td::td_api::chat &chat,
+    const TgMessageInfo &message, const char *text,
+    const char *notification, PurpleMessageFlags flags)
 {
+    const ChatTarget target = message.target;
+    if (!target.valid() || target.chatId() != getId(chat)) {
+        purple_debug_warning(
+            config::pluginId,
+            "Refusing to display a group message with an invalid room target\n");
+        return NULL;
+    }
+
     // Again, doing what facebook plugin does
-    int purpleId = account.getPurpleChatId(getId(chat));
-    PurpleConvChat *conv = getChatConversation(account, chat, purpleId);
+    int purpleId = 0;
+    std::string displayTitle = chat.title_;
+    if (target.isForumTopic()) {
+        if (target.forumTopicId() == ForumTopicId::general()) {
+            purpleId = account.getPurpleChatId(target);
+        } else {
+            TdAccountData::ForumTopicState const *topic =
+                account.findForumTopic(target);
+            if (!topic || topic->deleted)
+                return NULL;
+            if (!topic->active) {
+                if (!message.forumTopicDisplayAccepted ||
+                    !isEligibleForumParent(account, chat) ||
+                    account.activateForumTopic(target) == 0) {
+                    return NULL;
+                }
+                topic = account.findForumTopic(target);
+                if (!topic)
+                    return NULL;
+            }
+            purpleId = account.getPurpleChatId(target);
+        }
+        if (target.forumTopicId() != ForumTopicId::general()) {
+            const TdAccountData::ForumTopicState *topic =
+                account.findForumTopic(target);
+            if (topic)
+                displayTitle = getForumTopicDisplayTitle(chat, *topic);
+        }
+    } else {
+        purpleId = account.getPurpleChatId(target);
+    }
+
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    PurpleTdClient *client = getTdClient(purpleAccount);
+    const ContinuationGuard canContinue = client
+        ? ContinuationGuard(
+              [purpleAccount, client]() {
+                  return getTdClient(purpleAccount) == client;
+              })
+        : ContinuationGuard();
+    if (client && target.isForumTopic() &&
+        target.forumTopicId() != ForumTopicId::general()) {
+        const TdAccountData::ForumTopicState *topic =
+            account.findForumTopic(target);
+        if (topic && !topic->metadataKnown) {
+            client->ensureForumTopicMetadata(target);
+            if (!canContinue())
+                return NULL;
+            topic = account.findForumTopic(target);
+            if (!topic || topic->deleted || !topic->active)
+                return NULL;
+            purpleId = account.getPurpleChatId(target);
+            displayTitle =
+                getForumTopicDisplayTitle(chat, *topic);
+        }
+    }
+    PurpleConvChat *conv = getChatConversation(
+        account, chat, target, purpleId, displayTitle, canContinue);
+    if (canContinue && !canContinue())
+        return NULL;
+    if (!conv)
+        return NULL;
 
     if (text) {
         if (flags & PURPLE_MESSAGE_SEND) {
-            if (conv)
-                purple_conv_chat_write(conv, purple_account_get_name_for_display(account.purpleAccount),
-                                       text, flags, message.timestamp);
+            purple_conv_chat_write(
+                conv,
+                purple_account_get_name_for_display(purpleAccount),
+                text, flags, message.timestamp);
         } else {
-            if (purpleId != 0)
-                serv_got_chat_in(purple_account_get_connection(account.purpleAccount), purpleId,
-                                 message.incomingGroupchatSender.empty() ? "someone" : message.incomingGroupchatSender.c_str(),
-                                 flags, text, message.timestamp);
+            serv_got_chat_in(
+                purple_account_get_connection(purpleAccount), purpleId,
+                message.incomingGroupchatSender.empty()
+                    ? "someone"
+                    : message.incomingGroupchatSender.c_str(),
+                flags, text, message.timestamp);
         }
+        if (canContinue && !canContinue())
+            return NULL;
     }
 
     if (notification) {
-        if (conv)
+        PurpleConversation *currentConversation =
+            purple_find_conversation_with_account(
+                PURPLE_CONV_TYPE_CHAT,
+                getPurpleChatName(target).c_str(), purpleAccount);
+        PurpleConvChat *currentChat = currentConversation
+            ? purple_conversation_get_chat_data(currentConversation)
+            : NULL;
+        if (currentChat)
             // Protocol plugins mostly use who="" for such messages, but this currently causes problems
             // with Spectrum. Use some non-empty string. Pidgin will ignore the who parameter for
             // notification messages.
-            purple_conv_chat_write(conv, " ", notification, getNotificationFlags(flags), message.timestamp);
+            purple_conv_chat_write(currentChat, " ", notification, getNotificationFlags(flags), message.timestamp);
+        if (canContinue && !canContinue())
+            return NULL;
     }
 
-    // TODO: sending all pending read receipts for the chat is technically not quite right,
-    // because maybe a message is being shown while others are waiting for some asynchronous
-    // response before they can be displayed. But who cares.
-    PurpleConversation *baseConv = conv ? purple_conv_chat_get_conversation(conv) : NULL;
+    PurpleConversation *baseConv =
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            getPurpleChatName(target).c_str(), purpleAccount);
+
     if (baseConv != NULL)
         sendConversationReadReceipts(account, baseConv);
+    if (canContinue && !canContinue())
+        return NULL;
+
+    return baseConv;
 }
 
 std::string formatMessageQuote(const td::td_api::message *message, TdAccountData &account)
@@ -509,7 +633,7 @@ std::string formatMessageQuote(const td::td_api::message *message, TdAccountData
     return formatMessage(_("<b>&gt; {0} wrote:</b>\n&gt; {1}"), {originalName, text});
 }
 
-void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const TgMessageInfo &message,
+bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const TgMessageInfo &message,
                      const char *text, const char *notification, uint32_t extraFlags)
 {
     PurpleMessageFlags directionFlag = message.outgoing ? PURPLE_MESSAGE_SEND : PURPLE_MESSAGE_RECV;
@@ -562,22 +686,27 @@ void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
     }
 
     if (getBasicGroupId(chat).valid() || getSupergroupId(chat).valid()) {
-        showMessageTextChat(account, chat, message, text, notification, flags);
-        if (text) {
-            PurpleConversation *conv = purple_find_conversation_with_account(
-                PURPLE_CONV_TYPE_CHAT, getPurpleChatName(chat).c_str(), account.purpleAccount);
+        PurpleAccount *purpleAccount = account.purpleAccount;
+        PurpleTdClient *client = getTdClient(purpleAccount);
+        PurpleConversation *conv =
+            showMessageTextChat(
+                account, chat, message, text, notification, flags);
+        if (client && getTdClient(purpleAccount) != client)
+            return false;
+        if (text)
             account.rememberDisplayedMessage(getId(chat), message.id, conv,
-                                             getSenderDisplayName(chat, message, account.purpleAccount),
+                                             getSenderDisplayName(chat, message, purpleAccount),
                                              message.timestamp, flags);
-        }
     }
+
+    return true;
 }
 
 void showChatNotification(TdAccountData &account, const td::td_api::chat &chat,
                           const char *notification, time_t timestamp, PurpleMessageFlags extraFlags)
 {
     TgMessageInfo messageInfo;
-    messageInfo.type = TgMessageInfo::Type::Other;
+    messageInfo.target = ChatTarget::chat(getId(chat));
     messageInfo.timestamp = timestamp;
     messageInfo.outgoing = true;
     showMessageText(account, chat, messageInfo, NULL, notification, extraFlags);
@@ -647,7 +776,10 @@ static void showDownloadedSticker(const td::td_api::chat &chat, TgMessageInfo &m
             // TRANSLATOR: In-chat status update
             std::string notice = makeNoticeWithSender(chat, message, _("Converting sticker"),
                                                       account.purpleAccount);
-            showMessageText(account, chat, message, NULL, notice.c_str());
+            if (!showMessageText(
+                    account, chat, message, NULL, notice.c_str())) {
+                return;
+            }
             StickerConversionThread *thread;
             thread = new StickerConversionThread(account.purpleAccount, filePath, getId(chat),
                                                  std::move(message));
@@ -817,8 +949,12 @@ static void showFileInline(const td::td_api::chat &chat, IncomingMessage &fullMe
                                       account.purpleAccount);
 
     // Notice means file isn't downloaded yet or is ignored. Either way, show caption as well.
-    if (!notice.empty())
-        showMessageText(account, chat, fullMessage.messageInfo, caption, notice.c_str());
+    if (!notice.empty() &&
+        !showMessageText(
+            account, chat, fullMessage.messageInfo,
+            caption, notice.c_str())) {
+        return;
+    }
 
     if (autoDownload || askDownload) {
         if (fullMessage.animatedStickerConverted) {
@@ -910,7 +1046,7 @@ static void showStickerMessage(const td::td_api::chat &chat, IncomingMessage &fu
 }
 
 void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
-                TdTransceiver &transceiver, TdAccountData &account)
+                 TdTransceiver &transceiver, TdAccountData &account)
 {
     if (!fullMessage.message) return;
     td::td_api::message &message = *fullMessage.message;
@@ -927,7 +1063,11 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
             // TRANSLATOR: In-chat warning message
             const char *text   = _("Received self-destructing message, displaying anyway");
             std::string notice = makeNoticeWithSender(chat, messageInfo, text, account.purpleAccount);
-            showMessageText(account, chat, messageInfo, NULL, notice.c_str());
+            if (!showMessageText(
+                    account, chat, messageInfo, NULL,
+                    notice.c_str())) {
+                return;
+            }
         } else {
             // TRANSLATOR: In-chat warning message
             const char *text   = _("Received self-destructing message, not displayed due to lack of support");
@@ -944,8 +1084,14 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
             // TRANSLATOR: In-chat warning message
             std::string notice = formatMessage("Received secret file {}, displaying anyway", fileInfo.description);
             notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
-            showMessageText(account, chat, messageInfo, !fileInfo.caption.empty() ? fileInfo.caption.c_str() : nullptr,
-                            notice.c_str());
+            if (!showMessageText(
+                    account, chat, messageInfo,
+                    !fileInfo.caption.empty()
+                        ? fileInfo.caption.c_str()
+                        : nullptr,
+                    notice.c_str())) {
+                return;
+            }
         } else {
             // TRANSLATOR: In-chat warning message
             std::string notice = formatMessage("Ignoring secret file ({})", fileInfo.description);
@@ -1122,11 +1268,16 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
 
 void showMessages(std::vector<IncomingMessage>& messages, TdAccountData &account)
 {
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    PurpleTdClient *client = getTdClient(purpleAccount);
     for (IncomingMessage &readyMessage: messages) {
         if (!readyMessage.message) continue;
         const td::td_api::chat *chat = account.getChat(getChatId(*readyMessage.message));
         if (chat)
-            showMessage(*chat, readyMessage, account.transceiver, account);
+            showMessage(
+                *chat, readyMessage, account.transceiver, account);
+        if (client && getTdClient(purpleAccount) != client)
+            return;
     }
 }
 
@@ -1182,6 +1333,7 @@ void makeFullMessage(const td::td_api::chat &chat, td::td_api::object_ptr<td::td
     fullMessage.inlineFileSizeLimit = getAutoDownloadLimitKb(account.purpleAccount);
 
     TgMessageInfo &messageInfo = fullMessage.messageInfo;
+    messageInfo.target           = getMessageRoomTarget(chat, *message);
     messageInfo.id               = getId(*message);
     messageInfo.type             = TgMessageInfo::Type::Other;
     messageInfo.incomingGroupchatSender = getIncomingGroupchatSenderPurpleName(chat, *message, account);
@@ -1456,16 +1608,53 @@ static void findMessageResponse(TdAccountData &account, ChatId chatId, MessageId
 
 void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
     td::td_api::object_ptr<td::td_api::message> message,
-    PendingMessageQueue::MessageAction action)
+    PendingMessageQueue::MessageAction action,
+    IncomingMessageSource source)
 {
     if (!message) return;
     ChatId chatId = getId(chat);
+    const ChatTarget target = getMessageRoomTarget(chat, *message);
+    if (!target.valid() || target.chatId() != chatId) {
+        purple_debug_warning(
+            config::pluginId,
+            "Refusing incoming message with invalid room target\n");
+        return;
+    }
+    bool forumTopicDisplayAccepted = false;
+    if (target.isForumTopic() &&
+        target.forumTopicId() != ForumTopicId::general()) {
+        int32_t purpleId = 0;
+        if (source == IncomingMessageSource::LiveUpdate) {
+            purpleId =
+                account.activateForumTopicForIncomingMessage(
+                    target);
+        } else if (isEligibleForumParent(account, chat)) {
+            const TdAccountData::ForumTopicState *topic =
+                account.findForumTopic(target);
+            if (!topic || !topic->deleted) {
+                if (!topic)
+                    account.ensureForumTopicPlaceholder(target);
+                purpleId = account.activateForumTopic(target);
+            }
+        }
+
+        if (purpleId == 0) {
+            purple_debug_warning(
+                config::pluginId,
+                "Could not allocate an exact room for incoming forum topic %d\n",
+                target.forumTopicId().value());
+            return;
+        }
+        forumTopicDisplayAccepted = true;
+    }
 
     if (isReadReceiptsEnabled(account.purpleAccount))
-        account.addPendingReadReceipt(chatId, getId(*message));
+        account.addPendingReadReceipt(target, getId(*message));
 
     IncomingMessage fullMessage;
     makeFullMessage(chat, std::move(message), fullMessage, account);
+    fullMessage.messageInfo.forumTopicDisplayAccepted =
+        forumTopicDisplayAccepted;
 
     if (isMessageReady(fullMessage, account)) {
         IncomingMessage readyMessage = account.pendingMessages.addReadyMessage(std::move(fullMessage), action);
@@ -1518,7 +1707,10 @@ static void fetchHistoryResponse(TdAccountData &account, ChatId chatId, MessageI
             messagesFetched++;
             lastMessageId = getId(*message);
             if (chat)
-                handleIncomingMessage(account, *chat, std::move(message), PendingMessageQueue::Prepend);
+                handleIncomingMessage(
+                    account, *chat, std::move(message),
+                    PendingMessageQueue::Prepend,
+                    IncomingMessageSource::History);
         }
 
         if (stop == messages.messages_.end())

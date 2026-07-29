@@ -493,6 +493,52 @@ TEST_F(PrivateChatTest, ContactedByNew)
     )));
 }
 
+TEST_F(
+    PrivateChatTest,
+    BotStyleForumTopicsKeepLegacyImHistoryAndReceipts)
+{
+    purple_account_set_string(
+        account,
+        ("last-message-chat" + std::to_string(chatIds[0])).c_str(),
+        "1");
+    loginWithOneContact();
+
+    tgl.update(make_object<updateChatLastMessage>(
+        chatIds[0], nullptr,
+        std::vector<object_ptr<chatPosition>>()));
+    tgl.verifyNoRequests();
+
+    tgl.update(make_object<updateNewMessage>(makeMessage(
+        3, userIds[0], chatIds[0], false, 3,
+        makeTextMessage("Live bot topic"),
+        make_object<messageTopicForum>(42))));
+    tgl.verifyRequest(
+        getChatHistory(chatIds[0], 3, 0, 30, false));
+    prpl.verifyNoEvents();
+
+    std::vector<object_ptr<message>> history;
+    history.push_back(makeMessage(
+        2, userIds[0], chatIds[0], false, 2,
+        makeTextMessage("Historical bot topic"),
+        make_object<messageTopicForum>(42)));
+    history.push_back(makeMessage(
+        1, userIds[0], chatIds[0], false, 1,
+        makeTextMessage("Stop")));
+    tgl.reply(make_object<messages>(
+        history.size(), std::move(history)));
+
+    prpl.verifyEvents(
+        ServGotImEvent(
+            connection, purpleUserName(0),
+            "Historical bot topic", PURPLE_MESSAGE_RECV, 2),
+        ServGotImEvent(
+            connection, purpleUserName(0),
+            "Live bot topic", PURPLE_MESSAGE_RECV, 3));
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[0], {3, 2}, true));
+    tgl.verifyNoRequests();
+}
+
 TEST_F(PrivateChatTest, EditedMessageAddsUpdatedLine)
 {
     loginWithOneContact();
@@ -585,6 +631,48 @@ TEST_F(PrivateChatTest, UnreadReactionQuotesOriginalMessage)
     ));
     tgl.verifyNoRequests();
     prpl.verifyNoEvents();
+}
+
+TEST_F(PrivateChatTest, UnreadReactionInBotStyleTopicKeepsLegacyIm)
+{
+    constexpr int64_t messageId = 10000;
+    loginWithOneContact();
+
+    tgl.update(make_object<updateMessageUnreadReactions>(
+        chatIds[0],
+        messageId,
+        make_vector<unreadReaction>(make_object<unreadReaction>(
+            make_object<reactionTypeEmoji>("👍"),
+            make_object<messageSenderUser>(userIds[0]),
+            false)),
+        1));
+
+    const uint64_t requestId =
+        tgl.verifyRequest(getMessage(chatIds[0], messageId));
+    prpl.verifyNoEvents();
+
+    tgl.reply(requestId, makeMessage(
+        messageId,
+        selfId,
+        chatIds[0],
+        true,
+        123456,
+        makeTextMessage("Bot topic message"),
+        make_object<messageTopicForum>(42)));
+
+    prpl.verifyEvents(ServGotImEvent(
+        connection,
+        purpleUserName(0),
+        fmt::format(
+            replyPattern,
+            selfFirstName + " " + selfLastName,
+            "Bot topic message",
+            "👍"),
+        static_cast<PurpleMessageFlags>(
+            PURPLE_MESSAGE_RECV |
+            PURPLE_MESSAGE_NO_LOG),
+        0));
+    tgl.verifyNoRequests();
 }
 
 TEST_F(PrivateChatTest, ContactedByNew_ImmediatePhoneNumber)

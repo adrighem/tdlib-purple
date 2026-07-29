@@ -42,6 +42,7 @@ public:
     BasicGroupMembership getBasicGroupMembership(const char *purpleChatName);
     void leaveGroup(const std::string &purpleChatName, bool deleteSupergroup);
     void closeConversation(const char *conversationName);
+    void ensureForumTopicMetadata(ChatTarget target);
     int  sendGroupMessage(int purpleChatId, const char *message);
     void setGroupDescription(int purpleChatId, const char *description);
     void kickUserFromChat(PurpleConversation *conv, const char *name);
@@ -68,6 +69,16 @@ private:
     enum class ForumTopicJoinIntent : uint8_t {
         UserRequest,
         PersistentRejoin,
+    };
+    struct PendingForumTopicJoin {
+        ForumTopicJoinIntent intent;
+        uint64_t serial;
+
+        PendingForumTopicJoin(
+            ForumTopicJoinIntent intent, uint64_t serial)
+            : intent(intent),
+              serial(serial)
+        {}
     };
     struct LifetimeState {
         bool alive = true;
@@ -151,7 +162,8 @@ private:
     void       notifyFailedContact(const std::string &errorMessage);
     bool       joinForumTopic(ChatTarget target);
     void       completeForumTopicJoin(
-                   const ForumTopicLookupResult &result);
+                   const ForumTopicLookupResult &result,
+                   uint64_t joinSerial);
     void       failForumTopicJoin(ChatTarget target);
     void       failForumTopicJoins(ChatId chatId);
     void       pruneAbandonedForumTopicJoins(ChatId chatId);
@@ -185,7 +197,8 @@ private:
     int32_t               m_lastAuthState = 0;
     std::vector<UserId>   m_usersForNewPrivateChats;
     std::set<ChatId>      m_deferredGroupChats;
-    std::map<ChatTarget, ForumTopicJoinIntent> m_pendingForumTopicJoins;
+    std::map<ChatTarget, PendingForumTopicJoin> m_pendingForumTopicJoins;
+    uint64_t              m_lastForumTopicJoinSerial = 0;
     bool                  m_chatListReady = false;
     bool                  m_isProxyAdded = false;
     td::td_api::object_ptr<td::td_api::addedProxy>   m_addedProxy;

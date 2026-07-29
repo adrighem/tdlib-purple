@@ -78,6 +78,7 @@ public:
     void processUpdate(const td::td_api::updateForumTopicInfo &update);
     void resolveForumTopic(
         ChatTarget target, ForumTopicLookupCallback callback);
+    void ensureForumTopicMetadata(ChatTarget target);
     void cancelForumTopicLookup(ChatTarget target);
 
 private:

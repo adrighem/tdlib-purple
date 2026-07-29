@@ -178,6 +178,57 @@ PurpleConversation *getImConversation(PurpleAccount *account, const char *userna
     return conv;
 }
 
+std::string getForumTopicDisplayTitle(
+    const td::td_api::chat &parent,
+    const TdAccountData::ForumTopicState &topic)
+{
+    const std::string topicName =
+        !topic.metadataKnown || topic.name.empty()
+        ? formatMessage(
+              _("Topic {}"), topic.target.forumTopicId().value())
+        : topic.name;
+    return parent.title_ + " / " + topicName;
+}
+
+bool isEligibleForumParent(
+    const TdAccountData &account,
+    const td::td_api::chat &chat)
+{
+    if (!account.isGroupChatWithMembership(chat))
+        return false;
+
+    const SupergroupId groupId = getSupergroupId(chat);
+    const td::td_api::supergroup *group =
+        groupId.valid() ? account.getSupergroup(groupId) : nullptr;
+    return group && group->is_forum_;
+}
+
+ChatTarget getMessageRoomTarget(
+    const td::td_api::chat &chat,
+    const td::td_api::message &message)
+{
+    const ChatTarget target = getChatTarget(message);
+    if (!target.valid() || target.chatId() != getId(chat))
+        return ChatTarget();
+    if (!target.isForumTopic())
+        return target;
+
+    // TDLib also uses messageTopicForum in private chats with bots. Purple
+    // represents those as a single IM, not as group-chat topic rooms.
+    if (!chat.type_ ||
+        chat.type_->get_id() != td::td_api::chatTypeSupergroup::ID) {
+        return ChatTarget::chat(target.chatId());
+    }
+
+    const td::td_api::chatTypeSupergroup &supergroupType =
+        static_cast<const td::td_api::chatTypeSupergroup &>(
+            *chat.type_);
+    if (supergroupType.is_channel_)
+        return ChatTarget::chat(target.chatId());
+
+    return target;
+}
+
 PurpleConvChat *getChatConversation(
     TdAccountData &account, const td::td_api::chat &chat,
     ChatTarget target, int chatPurpleId, const std::string &displayTitle,

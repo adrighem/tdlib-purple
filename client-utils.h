@@ -20,6 +20,15 @@ std::string         getSecretChatBuddyName(SecretChatId secretChatId);
 std::vector<const td::td_api::user *> getUsersByPurpleName(const char *buddyName, TdAccountData &account,
                                                            const char *action);
 PurpleConversation *getImConversation(PurpleAccount *account, const char *username);
+std::string         getForumTopicDisplayTitle(
+                        const td::td_api::chat &parent,
+                        const TdAccountData::ForumTopicState &topic);
+bool                isEligibleForumParent(
+                        const TdAccountData &account,
+                        const td::td_api::chat &chat);
+ChatTarget          getMessageRoomTarget(
+                        const td::td_api::chat &chat,
+                        const td::td_api::message &message);
 PurpleConvChat *    getChatConversation(TdAccountData &account, const td::td_api::chat &chat,
                                         ChatTarget target, int chatPurpleId,
                                         const std::string &displayTitle,

@@ -957,6 +957,25 @@ int32_t TdAccountData::activateForumTopic(ChatTarget target)
     return allocateForumTopicPurpleId(*topic);
 }
 
+int32_t TdAccountData::activateForumTopicForIncomingMessage(
+    ChatTarget target)
+{
+    if (!target.valid() || !target.isForumTopic())
+        return 0;
+    if (target.forumTopicId() == ForumTopicId::general())
+        return getPurpleChatId(target.chatId());
+
+    auto inserted = m_forumTopics.emplace(
+        target, ForumTopicState(target));
+    ForumTopicState &topic = inserted.first->second;
+    if (topic.deleted) {
+        topic.deleted = false;
+        topic.metadataKnown = false;
+    }
+    topic.active = true;
+    return allocateForumTopicPurpleId(topic);
+}
+
 void TdAccountData::deactivateForumTopic(ChatTarget target)
 {
     ForumTopicState *topic = findForumTopicMutable(target);
@@ -1206,31 +1225,24 @@ void TdAccountData::removeActiveCall()
     m_callId = 0;
 }
 
-void TdAccountData::addPendingReadReceipt(ChatId chatId, MessageId messageId)
+void TdAccountData::addPendingReadReceipt(
+    ChatTarget target, MessageId messageId)
 {
-    auto pChatReceipts = std::find_if(m_pendingReadReceipts.begin(), m_pendingReadReceipts.end(),
-                                      [chatId](const std::vector<ReadReceipt> &receipts) {
-                                          return (!receipts.empty() && (receipts[0].chatId == chatId));
-                                      });
-    if (pChatReceipts != m_pendingReadReceipts.end())
-        pChatReceipts->push_back(ReadReceipt{chatId, messageId});
-    else {
-        m_pendingReadReceipts.emplace_back();
-        m_pendingReadReceipts.back().push_back(ReadReceipt{chatId, messageId});
-    }
+    if (target.valid() && messageId.valid())
+        m_pendingReadReceipts[target].push_back(messageId);
 }
 
-void TdAccountData::extractPendingReadReceipts(ChatId chatId, std::vector<ReadReceipt>& receipts)
+void TdAccountData::extractPendingReadReceipts(
+    ChatTarget target, std::vector<MessageId>& messageIds)
 {
-    auto pChatReceipts = std::find_if(m_pendingReadReceipts.begin(), m_pendingReadReceipts.end(),
-                                      [chatId](const std::vector<ReadReceipt> &receipts) {
-                                          return (!receipts.empty() && (receipts[0].chatId == chatId));
-                                      });
-    if (pChatReceipts != m_pendingReadReceipts.end()) {
-        receipts = std::move(*pChatReceipts);
-        m_pendingReadReceipts.erase(pChatReceipts);
-    } else
-        receipts.clear();
+    auto receipts = m_pendingReadReceipts.find(target);
+    if (receipts == m_pendingReadReceipts.end()) {
+        messageIds.clear();
+        return;
+    }
+
+    messageIds = std::move(receipts->second);
+    m_pendingReadReceipts.erase(receipts);
 }
 
 void TdAccountData::rememberDisplayedMessage(ChatId chatId, MessageId messageId,

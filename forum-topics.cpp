@@ -121,6 +121,7 @@ public:
     void processUpdate(const td::td_api::updateForumTopicInfo &update);
     void resolveForumTopic(
         ChatTarget target, ForumTopicLookupCallback callback);
+    void ensureForumTopicMetadata(ChatTarget target);
     void cancelForumTopicLookup(ChatTarget target);
     void finish(std::shared_ptr<RoomListSession> session);
     TdAccountData::ForumTopicUpsertResult upsertMetadata(
@@ -145,7 +146,8 @@ private:
             : serial(serial),
               metadataGeneration(metadataGeneration)
         {
-            callbacks.push_back(std::move(callback));
+            if (callback)
+                callbacks.push_back(std::move(callback));
         }
     };
 
@@ -409,43 +411,52 @@ void ForumTopicsAdapterCore::reconcileTopicLookups(
 void ForumTopicsAdapterCore::resolveForumTopic(
     ChatTarget target, ForumTopicLookupCallback callback)
 {
-    if (!callback || m_shuttingDown)
+    if (m_shuttingDown)
         return;
 
     if (!target.valid() || !target.isForumTopic() ||
         target.forumTopicId() == ForumTopicId::general()) {
-        callback(ForumTopicLookupResult(
-            target, ForumTopicLookupStatus::InvalidTarget));
+        if (callback) {
+            callback(ForumTopicLookupResult(
+                target, ForumTopicLookupStatus::InvalidTarget));
+        }
         return;
     }
 
     const td::td_api::chat *parent = nullptr;
     if (!findForumParent(target.chatId(), parent)) {
-        callback(ForumTopicLookupResult(
-            target,
-            m_account.getChat(target.chatId())
-                ? ForumTopicLookupStatus::ParentIneligible
-                : ForumTopicLookupStatus::ParentUnavailable));
+        if (callback) {
+            callback(ForumTopicLookupResult(
+                target,
+                m_account.getChat(target.chatId())
+                    ? ForumTopicLookupStatus::ParentIneligible
+                    : ForumTopicLookupStatus::ParentUnavailable));
+        }
         return;
     }
 
     const TdAccountData::ForumTopicState *topic =
         m_account.findForumTopic(target);
     if (topic && topic->metadataKnown && !topic->deleted) {
-        callback(ForumTopicLookupResult(
-            target, ForumTopicLookupStatus::Available));
+        if (callback) {
+            callback(ForumTopicLookupResult(
+                target, ForumTopicLookupStatus::Available));
+        }
         return;
     }
 
     if (!m_account.ensureForumTopicPlaceholder(target)) {
-        callback(ForumTopicLookupResult(
-            target, ForumTopicLookupStatus::InvalidTarget));
+        if (callback) {
+            callback(ForumTopicLookupResult(
+                target, ForumTopicLookupStatus::InvalidTarget));
+        }
         return;
     }
 
     auto pending = m_topicLookups.find(target);
     if (pending != m_topicLookups.end()) {
-        pending->second.callbacks.push_back(std::move(callback));
+        if (callback)
+            pending->second.callbacks.push_back(std::move(callback));
         return;
     }
 
@@ -474,6 +485,12 @@ void ForumTopicsAdapterCore::resolveForumTopic(
                     target, serial, std::move(response));
         },
         FORUM_TOPIC_LOOKUP_TIMEOUT_SECONDS);
+}
+
+void ForumTopicsAdapterCore::ensureForumTopicMetadata(
+    ChatTarget target)
+{
+    resolveForumTopic(target, ForumTopicLookupCallback());
 }
 
 void ForumTopicsAdapterCore::cancelForumTopicLookup(
@@ -970,6 +987,13 @@ void ForumTopicsAdapter::resolveForumTopic(
 {
     const std::shared_ptr<ForumTopicsAdapterCore> core = m_impl->core;
     core->resolveForumTopic(target, std::move(callback));
+}
+
+void ForumTopicsAdapter::ensureForumTopicMetadata(
+    ChatTarget target)
+{
+    const std::shared_ptr<ForumTopicsAdapterCore> core = m_impl->core;
+    core->ensureForumTopicMetadata(target);
 }
 
 void ForumTopicsAdapter::cancelForumTopicLookup(

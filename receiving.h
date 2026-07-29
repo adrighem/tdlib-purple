@@ -11,7 +11,7 @@ std::string describeMessageContent(const td::td_api::MessageContent &content, co
 std::string formatMessageQuote(const td::td_api::message *message, TdAccountData &account);
 std::string makeInlineImageText(int imgstoreId);
 void sendConversationReadReceipts(TdAccountData &account, PurpleConversation *conv);
-void showMessageText(TdAccountData &account, const td::td_api::chat &chat, const TgMessageInfo &message,
+bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const TgMessageInfo &message,
                      const char *text, const char *notification, uint32_t extraFlags = 0);
 PurpleConversation *showMessageTextIm(TdAccountData &account, const char *purpleUserName,
                                       const char *text, const char *notification,
@@ -53,9 +53,15 @@ void fetchExtras(IncomingMessage &fullMessage, TdTransceiver &transceiver, TdAcc
 void checkMessageReady(const IncomingMessage *message, TdTransceiver &transceiver,
                        TdAccountData &account, std::vector<IncomingMessage> *rvReadyMessages = nullptr);
 
+enum class IncomingMessageSource {
+    LiveUpdate,
+    History,
+};
+
 void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
                            td::td_api::object_ptr<td::td_api::message> message,
-                           PendingMessageQueue::MessageAction action);
+                           PendingMessageQueue::MessageAction action,
+                           IncomingMessageSource source);
 void fetchHistory(TdAccountData &account, ChatId chatId, MessageId fetchFrom, MessageId stopAt);
 
 #endif
