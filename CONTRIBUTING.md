@@ -30,3 +30,5 @@ When reporting bugs or proposing fixes, include:
 - the relevant build or runtime log
 
 Debug logs may contain private names, phone numbers, chat titles, and message text. Remove sensitive data before posting logs publicly.
+
+Never commit Telegram API credentials, login codes, authorization data, or session files. Configure API credentials through the local Pidgin account settings and remove credentials from logs before sharing them.

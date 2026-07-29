@@ -39,6 +39,9 @@ jobs:
             exit 1
           fi
 
+      - name: Check credential defaults
+        run: sh ./.github/scripts/check-no-embedded-telegram-credentials.sh
+
       - name: Install dependencies
         run: |
           sudo apt-get update
