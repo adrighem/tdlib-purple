@@ -456,6 +456,78 @@ TEST_F(
 
 TEST_F(
     ForumTopicSendingTest,
+    ImmediateFailureAfterTopicDeletionUsesExistingLeftChild)
+{
+    loginWithForumSupergroup();
+    ASSERT_GT(openGeneral(), 0);
+    const int32_t purpleId = openTopic();
+    ASSERT_GT(purpleId, 0);
+    PurpleConversation *conversation = topicConversation();
+    ASSERT_NE(nullptr, conversation);
+
+    ASSERT_EQ(
+        0, pluginInfo().chat_send(
+               connection, purpleId, "deleted while sending",
+               PURPLE_MESSAGE_SEND));
+    const uint64_t requestId = tgl.verifyRequest(expectedTextSend(
+        groupChatId,
+        make_object<messageTopicForum>(TopicId),
+        "deleted while sending"));
+
+    deleteTopicAuthoritatively();
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(conversation));
+    ASSERT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+
+    tgl.reply(
+        requestId,
+        make_object<error>(100, "deleted topic rejection"));
+
+    prpl.verifyEvents(ConversationWriteEvent(
+        topicPurpleName(), NotificationWho,
+        "Failed to send message: code 100 "
+        "(deleted topic rejection)",
+        PURPLE_MESSAGE_SYSTEM, 0));
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+}
+
+TEST_F(
+    ForumTopicSendingTest,
+    ImmediateFailureAfterExactChildWasDestroyedDoesNotFallback)
+{
+    loginWithForumSupergroup();
+    ASSERT_GT(openGeneral(), 0);
+    const int32_t purpleId = openTopic();
+    ASSERT_GT(purpleId, 0);
+    PurpleConversation *conversation = topicConversation();
+    ASSERT_NE(nullptr, conversation);
+
+    ASSERT_EQ(
+        0, pluginInfo().chat_send(
+               connection, purpleId, "closed while sending",
+               PURPLE_MESSAGE_SEND));
+    const uint64_t requestId = tgl.verifyRequest(expectedTextSend(
+        groupChatId,
+        make_object<messageTopicForum>(TopicId),
+        "closed while sending"));
+
+    purple_conversation_destroy(conversation);
+    prpl.verifyNoEvents();
+    ASSERT_EQ(nullptr, topicConversation());
+    ASSERT_NE(nullptr, targetConversation(generalTarget()));
+
+    tgl.reply(
+        requestId,
+        make_object<error>(100, "closed topic rejection"));
+
+    prpl.verifyNoEvents();
+    EXPECT_EQ(nullptr, topicConversation());
+    EXPECT_NE(nullptr, targetConversation(generalTarget()));
+}
+
+TEST_F(
+    ForumTopicSendingTest,
     PendingInlineImageTempFileIsRemovedAtDisconnect)
 {
     loginWithForumSupergroup();
@@ -599,6 +671,106 @@ TEST_F(ForumTopicSendingTest, AsyncSendFailureStaysInExactChild)
         topicPurpleName(), NotificationWho,
         "Failed to send message: code 100 (later rejection)",
         PURPLE_MESSAGE_SYSTEM, 0));
+}
+
+TEST_F(
+    ForumTopicSendingTest,
+    AsyncFailureAfterForumDisableUsesExistingLeftChild)
+{
+    loginWithForumSupergroup();
+    ASSERT_GT(openGeneral(), 0);
+    const int32_t purpleId = openTopic();
+    ASSERT_GT(purpleId, 0);
+    PurpleConversation *conversation = topicConversation();
+    ASSERT_NE(nullptr, conversation);
+
+    ASSERT_EQ(
+        0, pluginInfo().chat_send(
+               connection, purpleId, "forum disabled later",
+               PURPLE_MESSAGE_SEND));
+    const uint64_t requestId = tgl.verifyRequest(expectedTextSend(
+        groupChatId,
+        make_object<messageTopicForum>(TopicId),
+        "forum disabled later"));
+    tgl.reply(requestId, makeMessage(
+        PendingMessageId, selfId, groupChatId, true, 1,
+        makeTextMessage("forum disabled later"),
+        make_object<messageTopicForum>(TopicId)));
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        groupId, make_object<chatMemberStatusMember>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(conversation));
+    ASSERT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+
+    tgl.update(make_object<updateMessageSendFailed>(
+        makeMessage(
+            FailedMessageId, selfId, groupChatId, true,
+            FailureDate, makeTextMessage("forum disabled later"),
+            make_object<messageTopicForum>(TopicId)),
+        PendingMessageId,
+        make_object<error>(100, "forum disabled rejection")));
+
+    prpl.verifyEvents(ConversationWriteEvent(
+        topicPurpleName(), NotificationWho,
+        "Failed to send message: code 100 "
+        "(forum disabled rejection)",
+        PURPLE_MESSAGE_SYSTEM, 0));
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+}
+
+TEST_F(
+    ForumTopicSendingTest,
+    AsyncFailureAfterMembershipLossUsesExistingLeftChild)
+{
+    loginWithForumSupergroup();
+    ASSERT_GT(openGeneral(), 0);
+    const int32_t purpleId = openTopic();
+    ASSERT_GT(purpleId, 0);
+    PurpleConversation *conversation = topicConversation();
+    ASSERT_NE(nullptr, conversation);
+
+    ASSERT_EQ(
+        0, pluginInfo().chat_send(
+               connection, purpleId, "membership lost later",
+               PURPLE_MESSAGE_SEND));
+    const uint64_t requestId = tgl.verifyRequest(expectedTextSend(
+        groupChatId,
+        make_object<messageTopicForum>(TopicId),
+        "membership lost later"));
+    tgl.reply(requestId, makeMessage(
+        PendingMessageId, selfId, groupChatId, true, 1,
+        makeTextMessage("membership lost later"),
+        make_object<messageTopicForum>(TopicId)));
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<updateSupergroup>(makeForumSupergroup(
+        groupId, make_object<chatMemberStatusLeft>(), 2)));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+    ASSERT_NE(nullptr, purple_conversation_get_chat_data(conversation));
+    ASSERT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
+
+    tgl.update(make_object<updateMessageSendFailed>(
+        makeMessage(
+            FailedMessageId, selfId, groupChatId, true,
+            FailureDate, makeTextMessage("membership lost later"),
+            make_object<messageTopicForum>(TopicId)),
+        PendingMessageId,
+        make_object<error>(100, "membership lost rejection")));
+
+    prpl.verifyEvents(ConversationWriteEvent(
+        topicPurpleName(), NotificationWho,
+        "Failed to send message: code 100 "
+        "(membership lost rejection)",
+        PURPLE_MESSAGE_SYSTEM, 0));
+    EXPECT_TRUE(purple_conv_chat_has_left(
+        purple_conversation_get_chat_data(conversation)));
 }
 
 TEST_F(

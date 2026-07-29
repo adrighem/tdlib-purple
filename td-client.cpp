@@ -378,11 +378,6 @@ bool PurpleTdClient::showTargetNotification(
     const std::shared_ptr<LifetimeState> lifetime =
         m_lifetime;
     if (isChildForumTopic(target)) {
-        const TdAccountData::ForumTopicState *topic =
-            m_data.findForumTopic(target);
-        if (!topic || topic->deleted || !topic->active)
-            return true;
-
         const std::string conversationName =
             getPurpleChatName(target);
         PurpleConversation *conversation =
@@ -393,9 +388,12 @@ bool PurpleTdClient::showTargetNotification(
             return true;
         PurpleConvChat *chat =
             purple_conversation_get_chat_data(conversation);
-        if (!chat || purple_conv_chat_has_left(chat))
+        if (!chat)
             return true;
 
+        // A send failure belongs to the exact room from which the send
+        // originated. A left conversation is still a safe display target;
+        // writing to it does not reactivate, rejoin, or present the room.
         writeConversationNotification(
             conversation, message, extraFlags, timestamp);
         return lifetime->alive;
