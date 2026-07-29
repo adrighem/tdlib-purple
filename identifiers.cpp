@@ -5,6 +5,7 @@
 
 const UserId       UserId::invalid       = UserId(0);
 const ChatId       ChatId::invalid       = ChatId(0);
+const ForumTopicId ForumTopicId::invalid = ForumTopicId(0);
 const BasicGroupId BasicGroupId::invalid = BasicGroupId(0);
 const SupergroupId SupergroupId::invalid = SupergroupId(0);
 const SecretChatId SecretChatId::invalid = SecretChatId(0);

@@ -20,7 +20,9 @@ class PurpleTdClient;
 const char  *getChatNameComponent();
 GList       *getChatJoinInfo();
 std::string  getPurpleChatName(const td::td_api::chat &chat);
+std::string  getPurpleChatName(ChatTarget target);
 GHashTable  *getChatComponents(const td::td_api::chat &chat);
+GHashTable  *getChatComponents(ChatTarget target);
 
 const char  *getChatName(GHashTable *components);
 const char  *getChatJoinString(GHashTable *components);
@@ -28,6 +30,7 @@ const char  *getChatGroupName(GHashTable *components);
 int          getChatGroupType(GHashTable *components);
 
 ChatId       getTdlibChatId(const char *chatName);
+ChatTarget   parsePurpleChatName(const char *chatName);
 
 namespace AccountOptions {
     constexpr const char *AutoDownloadLimit          = "media-size-threshold";

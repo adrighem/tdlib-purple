@@ -2,7 +2,9 @@
 #include "config.h"
 #include "format.h"
 #include <algorithm>
+#include <cerrno>
 #include <cmath>
+#include <limits>
 
 static char chatNameComponent[] = "id";
 static char joinStringKey[]     = "link";
@@ -55,17 +57,33 @@ GList *getChatJoinInfo()
 
 std::string getPurpleChatName(const td::td_api::chat &chat)
 {
-    return "chat" + std::to_string(chat.id_);
+    return getPurpleChatName(ChatTarget::chat(getId(chat)));
+}
+
+std::string getPurpleChatName(ChatTarget target)
+{
+    if (!target.valid())
+        return "";
+
+    if (target.isForumTopic() && target.forumTopicId() != ForumTopicId::general()) {
+        return "forum" + std::to_string(target.chatId().value()) +
+               "-topic" + std::to_string(target.forumTopicId().value());
+    }
+
+    return "chat" + std::to_string(target.chatId().value());
 }
 
 GHashTable *getChatComponents(const td::td_api::chat &chat)
 {
-    char name[32];
-    snprintf(name, sizeof(name)-1, "chat%" G_GINT64_FORMAT "", chat.id_);
-    name[sizeof(name)-1] = '\0';
+    return getChatComponents(ChatTarget::chat(getId(chat)));
+}
+
+GHashTable *getChatComponents(ChatTarget target)
+{
+    const std::string name = getPurpleChatName(target);
 
     GHashTable *table = g_hash_table_new_full (g_str_hash, g_str_equal, NULL, g_free);
-    g_hash_table_insert(table, chatNameComponent, g_strdup(name));
+    g_hash_table_insert(table, chatNameComponent, g_strdup(name.c_str()));
     return table;
 }
 
@@ -90,10 +108,74 @@ int getChatGroupType(GHashTable *components)
     return s ? atoi(s) : 0;
 }
 
+static bool parseCanonicalInt64(const std::string &text, int64_t &value)
+{
+    if (text.empty() || text[0] == '+')
+        return false;
+
+    errno = 0;
+    char *end = NULL;
+    const long long parsed = strtoll(text.c_str(), &end, 10);
+    static_assert(sizeof(parsed) >= sizeof(value), "long long must hold int64_t");
+    if (errno || end != text.c_str() + text.size() ||
+        parsed < std::numeric_limits<int64_t>::min() ||
+        parsed > std::numeric_limits<int64_t>::max() ||
+        std::to_string(parsed) != text) {
+        return false;
+    }
+
+    value = static_cast<int64_t>(parsed);
+    return value != 0;
+}
+
+ChatTarget parsePurpleChatName(const char *chatName)
+{
+    if (!chatName)
+        return ChatTarget();
+
+    const std::string name(chatName);
+    if (name.compare(0, 4, "chat") == 0) {
+        int64_t chatIdValue = 0;
+        if (!parseCanonicalInt64(name.substr(4), chatIdValue))
+            return ChatTarget();
+
+        const ChatId chatId = ChatId::fromString(name.c_str() + 4);
+        if (chatId.value() != chatIdValue)
+            return ChatTarget();
+        return ChatTarget::chat(chatId);
+    }
+
+    if (name.compare(0, 5, "forum") == 0) {
+        const size_t separator = name.find("-topic", 5);
+        if (separator == std::string::npos)
+            return ChatTarget();
+
+        int64_t chatIdValue = 0;
+        int64_t topicIdValue = 0;
+        if (!parseCanonicalInt64(name.substr(5, separator - 5), chatIdValue) ||
+            !parseCanonicalInt64(name.substr(separator + 6), topicIdValue) ||
+            topicIdValue <= ForumTopicId::general().value() ||
+            topicIdValue > std::numeric_limits<int32_t>::max()) {
+            return ChatTarget();
+        }
+
+        const std::string chatIdText = name.substr(5, separator - 5);
+        const ChatId chatId = ChatId::fromString(chatIdText.c_str());
+        if (chatId.value() != chatIdValue)
+            return ChatTarget();
+        return ChatTarget::forumTopic(
+            chatId,
+            ForumTopicId::fromValue(static_cast<int32_t>(topicIdValue)));
+    }
+
+    return ChatTarget();
+}
+
 ChatId getTdlibChatId(const char *chatName)
 {
-    if (chatName && !strncmp(chatName, "chat", 4))
-        return ChatId::fromString(chatName+4);
+    const ChatTarget target = parsePurpleChatName(chatName);
+    if (target.valid() && !target.isForumTopic())
+        return target.chatId();
 
     return ChatId::invalid;
 }

@@ -79,6 +79,77 @@ DEFINE_ID_CLASS(ChatId, int64_t)
     friend ChatId getChatId(const td::td_api::updateChatLastMessage &update);
 };
 
+class ForumTopicId: public Identifier<int32_t> {
+private:
+    explicit ForumTopicId(IdType id) : Identifier(id) {}
+public:
+    ForumTopicId() : ForumTopicId(0) {}
+    static ForumTopicId fromValue(int32_t id) {
+        return ForumTopicId(id > 0 ? id : 0);
+    }
+    static ForumTopicId general() {
+        return ForumTopicId(1);
+    }
+    bool valid() const { return value() > 0; }
+    bool operator==(const ForumTopicId &other) const { return value() == other.value(); }
+    bool operator!=(const ForumTopicId &other) const { return value() != other.value(); }
+    bool operator<(const ForumTopicId &other) const  { return value() < other.value(); }
+    static const ForumTopicId invalid;
+};
+
+class ChatTarget {
+private:
+    ChatTarget(ChatId chatId, ForumTopicId forumTopicId, bool isForumTopic)
+        : m_chatId(chatId),
+          m_forumTopicId(forumTopicId),
+          m_isForumTopic(isForumTopic)
+    {}
+
+public:
+    ChatTarget()
+        : ChatTarget(ChatId::invalid, ForumTopicId::invalid, false)
+    {}
+
+    static ChatTarget chat(ChatId chatId) {
+        return ChatTarget(chatId, ForumTopicId::invalid, false);
+    }
+
+    static ChatTarget forumTopic(ChatId chatId, ForumTopicId forumTopicId) {
+        return ChatTarget(chatId, forumTopicId, true);
+    }
+
+    bool valid() const {
+        return m_chatId.valid() && (!m_isForumTopic || m_forumTopicId.valid());
+    }
+
+    ChatId chatId() const { return m_chatId; }
+    ForumTopicId forumTopicId() const { return m_forumTopicId; }
+    bool isForumTopic() const { return m_isForumTopic; }
+
+    bool operator==(const ChatTarget &other) const {
+        return m_chatId == other.m_chatId &&
+               m_forumTopicId == other.m_forumTopicId &&
+               m_isForumTopic == other.m_isForumTopic;
+    }
+
+    bool operator!=(const ChatTarget &other) const {
+        return !(*this == other);
+    }
+
+    bool operator<(const ChatTarget &other) const {
+        if (m_chatId != other.m_chatId)
+            return m_chatId < other.m_chatId;
+        if (m_isForumTopic != other.m_isForumTopic)
+            return m_isForumTopic < other.m_isForumTopic;
+        return m_forumTopicId < other.m_forumTopicId;
+    }
+
+private:
+    ChatId m_chatId;
+    ForumTopicId m_forumTopicId;
+    bool m_isForumTopic;
+};
+
 DEFINE_ID_CLASS(BasicGroupId, int64_t)
     friend BasicGroupId getId(const td::td_api::basicGroup &group);
     friend BasicGroupId getBasicGroupId(const td::td_api::updateBasicGroupFullInfo &update);
