@@ -1,9 +1,113 @@
 #include "fixture.h"
+#include "client-utils.h"
 #include "libpurple-mock.h"
 #include <fmt/format.h>
 #include <td/telegram/td_api.h>
 
 using namespace td::td_api;
+
+namespace {
+
+object_ptr<user> makeDisplayNameUser(int64_t id,
+                                     const std::string &firstName = "",
+                                     const std::string &lastName = "",
+                                     const std::string &phoneNumber = "")
+{
+    object_ptr<user> result = make_object<user>();
+    result->id_ = id;
+    result->first_name_ = firstName;
+    result->last_name_ = lastName;
+    result->phone_number_ = phoneNumber;
+    result->status_ = make_object<userStatusOffline>();
+    result->type_ = make_object<userTypeRegular>();
+    return result;
+}
+
+void setUsernames(user &userInfo, std::vector<std::string> active,
+                  const std::string &editable = "")
+{
+    userInfo.usernames_ = make_object<usernames>();
+    userInfo.usernames_->active_usernames_ = std::move(active);
+    userInfo.usernames_->editable_username_ = editable;
+    if (!editable.empty())
+        userInfo.usernames_->disabled_usernames_.push_back(editable);
+}
+
+class DisplayNameTest: public testing::Test {
+protected:
+    TestTransceiver backend;
+    TdTransceiver transceiver;
+    TdAccountData accountData;
+
+    DisplayNameTest()
+        : transceiver(nullptr, nullptr, nullptr, &backend),
+          accountData(nullptr, transceiver)
+    {}
+};
+
+TEST_F(DisplayNameTest, PreservesCompleteAndPartialNames)
+{
+    object_ptr<user> complete = makeDisplayNameUser(10, "Ada", "Lovelace", "12345");
+    setUsernames(*complete, {"other"}, "disabled");
+
+    EXPECT_EQ("Ada Lovelace", makeBasicDisplayName(*complete));
+    EXPECT_EQ("Ada", makeBasicDisplayName(*makeDisplayNameUser(11, "Ada")));
+    EXPECT_EQ("Lovelace", makeBasicDisplayName(*makeDisplayNameUser(12, "", "Lovelace")));
+}
+
+TEST_F(DisplayNameTest, UsesFirstNonemptyActiveUsernameOnly)
+{
+    object_ptr<user> userInfo = makeDisplayNameUser(20, "", "", "12345");
+    setUsernames(*userInfo, {"", "primary", "secondary"}, "disabled");
+
+    EXPECT_EQ("@primary", makeBasicDisplayName(*userInfo));
+
+    object_ptr<user> noActiveUsername = makeDisplayNameUser(21, "", "", "12345");
+    setUsernames(*noActiveUsername, {"", ""}, "disabled");
+    const std::string fallback = makeBasicDisplayName(*noActiveUsername);
+
+    EXPECT_EQ("Telegram user 21", fallback);
+    EXPECT_FALSE(isPhoneNumber(fallback.c_str()));
+    EXPECT_FALSE(purpleBuddyNameToUserId(fallback.c_str()).valid());
+}
+
+TEST_F(DisplayNameTest, KeepsNeutralFallbacksDistinctAndRoutableByDisplayName)
+{
+    const int64_t firstId = 30;
+    const int64_t secondId = 31;
+    const int64_t maxId = (int64_t{1} << 52) - 1;
+    const std::string firstName = "Telegram user " + std::to_string(firstId);
+    const std::string secondName = "Telegram user " + std::to_string(secondId);
+    const std::string maxName = "Telegram user " + std::to_string(maxId);
+
+    accountData.updateUser(makeDisplayNameUser(firstId));
+    accountData.updateUser(makeDisplayNameUser(secondId));
+    accountData.updateUser(makeDisplayNameUser(maxId));
+
+    EXPECT_EQ(firstName, accountData.getDisplayName(UserId::fromString("30")));
+    EXPECT_EQ(secondName, accountData.getDisplayName(UserId::fromString("31")));
+    EXPECT_EQ(maxName,
+              accountData.getDisplayName(
+                  UserId::fromString(std::to_string(maxId).c_str())));
+    EXPECT_NE(firstName, secondName);
+    EXPECT_FALSE(purpleBuddyNameToUserId(firstName.c_str()).valid());
+
+    std::vector<const user *> matches =
+        getUsersByPurpleName(firstName.c_str(), accountData, nullptr);
+    ASSERT_EQ(1U, matches.size());
+    EXPECT_EQ(firstId, matches[0]->id_);
+
+    object_ptr<user> renamed = makeDisplayNameUser(firstId);
+    setUsernames(*renamed, {"new-primary"}, "disabled");
+    accountData.updateUser(std::move(renamed));
+
+    EXPECT_TRUE(getUsersByPurpleName(firstName.c_str(), accountData, nullptr).empty());
+    matches = getUsersByPurpleName("@new-primary", accountData, nullptr);
+    ASSERT_EQ(1U, matches.size());
+    EXPECT_EQ(firstId, matches[0]->id_);
+}
+
+} // namespace
 
 template <typename T>
 td::td_api::object_ptr<T> null_object() {
@@ -281,6 +385,56 @@ TEST_F(PrivateChatTest, ContactNameKeepsUtf8InServerAlias)
     ASSERT_EQ(nullptr, purple_buddy_get_alias_only(buddy));
     ASSERT_STREQ(fullName.c_str(), purple_buddy_get_server_alias(buddy));
     ASSERT_STREQ(fullName.c_str(), purple_buddy_get_alias(buddy));
+}
+
+TEST_F(PrivateChatTest, EmptyChatTitleUsesAndUpdatesUserDisplayFallback)
+{
+    object_ptr<user> userInfo = makeDisplayNameUser(userIds[0], "", "", userPhones[0]);
+    setUsernames(*userInfo, {"primary"}, "disabled");
+    userInfo->is_contact_ = true;
+
+    std::vector<object_ptr<Object>> updates;
+    updates.push_back(make_object<updateUser>(std::move(userInfo)));
+    updates.push_back(make_object<updateNewChat>(makeChat(
+        chatIds[0],
+        make_object<chatTypePrivate>(userIds[0]),
+        "",
+        nullptr, 0, 0, 0
+    )));
+
+    login(
+        std::move(updates),
+        make_object<users>(1, std::vector<int64_t>(1, userIds[0])),
+        make_object<error>(404, "Not Found"),
+        {
+            std::make_shared<AddBuddyEvent>(
+                purpleUserName(0), "@primary", account, nullptr, nullptr, nullptr
+            )
+        }, {},
+        {
+            std::make_shared<UserStatusEvent>(
+                account, purpleUserName(0), PURPLE_STATUS_AWAY
+            ),
+            std::make_shared<AccountSetAliasEvent>(
+                account, selfFirstName + " " + selfLastName
+            ),
+            std::make_shared<ShowAccountEvent>(account)
+        }
+    );
+
+    PurpleBuddy *buddy = purple_find_buddy(account, purpleUserName(0).c_str());
+    ASSERT_NE(nullptr, buddy);
+    ASSERT_STREQ(purpleUserName(0).c_str(), purple_buddy_get_name(buddy));
+    ASSERT_STREQ("@primary", purple_buddy_get_server_alias(buddy));
+
+    object_ptr<user> renamed = makeDisplayNameUser(userIds[0], "", "", userPhones[0]);
+    setUsernames(*renamed, {"renamed"}, "disabled");
+    renamed->is_contact_ = true;
+    tgl.update(make_object<updateUser>(std::move(renamed)));
+
+    prpl.verifyEvents(AliasBuddyEvent(purpleUserName(0), "@renamed"));
+    ASSERT_STREQ(purpleUserName(0).c_str(), purple_buddy_get_name(buddy));
+    ASSERT_STREQ("@renamed", purple_buddy_get_server_alias(buddy));
 }
 
 TEST_F(PrivateChatTest, ContactedByNew)

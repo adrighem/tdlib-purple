@@ -1,4 +1,5 @@
 #include "fixture.h"
+#include "client-utils.h"
 #include "libpurple-mock.h"
 #include <glib/gstrfuncs.h>
 #include <fmt/format.h>
@@ -914,6 +915,28 @@ TEST_F(GroupChatTest, UsersWithSameName)
     tgl.verifyNoRequests();
 }
 
+TEST_F(GroupChatTest, DeletedAndUnknownUsersAreExcludedFromMemberNames)
+{
+    TestTransceiver backend;
+    TdTransceiver transceiver(nullptr, nullptr, nullptr, &backend);
+    TdAccountData accountData(account, transceiver);
+
+    object_ptr<user> deleted = makeUser(
+        userIds[0], "Deleted", "User", "", make_object<userStatusOffline>());
+    deleted->type_ = make_object<userTypeDeleted>();
+    accountData.updateUser(std::move(deleted));
+
+    object_ptr<user> unknown = makeUser(
+        userIds[1], "Unknown", "User", "", make_object<userStatusOffline>());
+    unknown->type_ = make_object<userTypeUnknown>();
+    accountData.updateUser(std::move(unknown));
+
+    EXPECT_TRUE(getChatMemberPurpleName(
+        UserId::fromString(std::to_string(userIds[0]).c_str()), accountData).empty());
+    EXPECT_TRUE(getChatMemberPurpleName(
+        UserId::fromString(std::to_string(userIds[1]).c_str()), accountData).empty());
+}
+
 TEST_F(GroupChatTest, GroupChatWithDeletedUser_WriteToNonContact)
 {
     constexpr int64_t echoMessageId[2] = {10, 11};
@@ -1245,7 +1268,7 @@ TEST_F(GroupChatTest, Invite)
         connection, purpleChatId, NULL,
         purpleUserName(0).c_str()
     );
-    tgl.verifyRequest(addChatMember(groupChatId, userIds[0], 0));
+    tgl.verifyRequest(td::td_api::addChatMember(groupChatId, userIds[0], 0));
 
     tgl.reply(make_object<error>(100, "error"));
     prpl.verifyEvents(ConversationWriteEvent(
@@ -1258,7 +1281,7 @@ TEST_F(GroupChatTest, Invite)
         connection, purpleChatId, NULL,
         (userFirstNames[0] + " " + userLastNames[0]).c_str()
     );
-    tgl.verifyRequest(addChatMember(groupChatId, userIds[0], 0));
+    tgl.verifyRequest(td::td_api::addChatMember(groupChatId, userIds[0], 0));
     tgl.reply(make_object<error>(404, "Not Found"));
     prpl.verifyEvents(ConversationWriteEvent(
         groupChatPurpleName, NotificationWho,

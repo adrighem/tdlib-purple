@@ -289,7 +289,8 @@ void gotBuddyServerAlias(PurpleAccount *account, const char *buddyName, const ch
 void updatePrivateChat(TdAccountData &account, const td::td_api::chat *chat, const td::td_api::user &user)
 {
     std::string purpleUserName = getPurpleBuddyName(user);
-    std::string alias          = chat ? chat->title_ : makeBasicDisplayName(user);
+    std::string alias = (chat && !chat->title_.empty()) ?
+                        chat->title_ : makeBasicDisplayName(user);
 
     PurpleBuddy *buddy = purple_find_buddy(account.purpleAccount, purpleUserName.c_str());
     if (buddy == NULL) {
@@ -506,7 +507,19 @@ std::string makeBasicDisplayName(const td::td_api::user &user)
         result += ' ';
     result += user.last_name_;
 
-    return result;
+    if (!result.empty())
+        return result;
+
+    if (user.usernames_) {
+        for (const std::string &username: user.usernames_->active_usernames_) {
+            if (!username.empty()) {
+                return "@" + username;
+            }
+        }
+    }
+
+    // TRANSLATOR: Fallback display name. The argument is a numeric Telegram user identifier.
+    return formatMessage(_("Telegram user {}"), user.id_);
 }
 
 std::string getIncomingGroupchatSenderPurpleName(const td::td_api::chat &chat, const td::td_api::message &message,
@@ -636,8 +649,14 @@ std::vector<PurpleChat *> findChatsByNewGroup(const char *name, int type)
 std::string getChatMemberPurpleName(UserId userId, const TdAccountData &account)
 {
     const td::td_api::user *user = account.getUser(userId);
-    if (!user || (user->type_ && (user->type_->get_id() == td::td_api::userTypeDeleted::ID)))
+    if (!user)
         return "";
+    if (user->type_) {
+        const int32_t userType = user->type_->get_id();
+        if (userType == td::td_api::userTypeDeleted::ID ||
+            userType == td::td_api::userTypeUnknown::ID)
+            return "";
+    }
 
     std::string userName    = getPurpleBuddyName(*user);
     const char *phoneNumber = getCanonicalPhoneNumber(user->phone_number_.c_str());
