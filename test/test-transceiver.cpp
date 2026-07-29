@@ -583,6 +583,75 @@ object_ptr<supergroup> makeSupergroup(int64_t id,
     );
 }
 
+object_ptr<supergroup> makeForumSupergroup(int64_t id,
+                                           object_ptr<ChatMemberStatus> &&status,
+                                           int32_t memberCount)
+{
+    auto result = makeSupergroup(id, std::move(status), memberCount);
+    result->is_forum_ = true;
+    return result;
+}
+
+object_ptr<forumTopicInfo> makeForumTopicInfo(int64_t chatId,
+                                              int32_t forumTopicId,
+                                              const std::string &name,
+                                              bool isGeneral,
+                                              bool isClosed,
+                                              bool isHidden,
+                                              int64_t creatorUserId)
+{
+    return make_object<forumTopicInfo>(
+        chatId,
+        forumTopicId,
+        name,
+        make_object<forumTopicIcon>(0, 0),
+        0,
+        make_object<messageSenderUser>(creatorUserId),
+        isGeneral,
+        false,
+        isClosed,
+        isHidden,
+        false
+    );
+}
+
+object_ptr<forumTopic> makeForumTopic(object_ptr<forumTopicInfo> &&info,
+                                      object_ptr<message> &&lastMessage,
+                                      int64_t order,
+                                      bool isPinned)
+{
+    return make_object<forumTopic>(
+        std::move(info),
+        std::move(lastMessage),
+        order,
+        isPinned,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        make_object<chatNotificationSettings>(),
+        nullptr
+    );
+}
+
+object_ptr<forumTopics> makeForumTopicsPage(
+    int32_t totalCount,
+    std::vector<object_ptr<forumTopic>> &&topics,
+    int32_t nextOffsetDate,
+    int64_t nextOffsetMessageId,
+    int32_t nextOffsetForumTopicId)
+{
+    return make_object<forumTopics>(
+        totalCount,
+        std::move(topics),
+        nextOffsetDate,
+        nextOffsetMessageId,
+        nextOffsetForumTopicId
+    );
+}
+
 object_ptr<createChatInviteLink> makeInviteLinkRequest(int64_t chatId)
 {
     auto result = make_object<createChatInviteLink>();

@@ -223,6 +223,26 @@ object_ptr<supergroup> makeSupergroup(int64_t id,
                                       object_ptr<ChatMemberStatus> &&status,
                                       int32_t memberCount,
                                       bool isChannel = false);
+object_ptr<supergroup> makeForumSupergroup(int64_t id,
+                                           object_ptr<ChatMemberStatus> &&status,
+                                           int32_t memberCount);
+object_ptr<forumTopicInfo> makeForumTopicInfo(int64_t chatId,
+                                              int32_t forumTopicId,
+                                              const std::string &name,
+                                              bool isGeneral = false,
+                                              bool isClosed = false,
+                                              bool isHidden = false,
+                                              int64_t creatorUserId = 1);
+object_ptr<forumTopic> makeForumTopic(object_ptr<forumTopicInfo> &&info,
+                                      object_ptr<message> &&lastMessage = nullptr,
+                                      int64_t order = 0,
+                                      bool isPinned = false);
+object_ptr<forumTopics> makeForumTopicsPage(
+    int32_t totalCount,
+    std::vector<object_ptr<forumTopic>> &&topics,
+    int32_t nextOffsetDate = 0,
+    int64_t nextOffsetMessageId = 0,
+    int32_t nextOffsetForumTopicId = 0);
 object_ptr<createChatInviteLink> makeInviteLinkRequest(int64_t chatId);
 object_ptr<chatInviteLink> makeChatInviteLink(const std::string &link);
 
