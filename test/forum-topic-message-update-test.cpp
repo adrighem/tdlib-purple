@@ -379,6 +379,40 @@ TEST_F(
 
 TEST_F(
     ForumTopicMessageUpdateTest,
+    FinalSendToGeneralDoesNotReuseChildConversation)
+{
+    loginWithForumSupergroup();
+    cacheTopic();
+    displayChildMessage(FirstMessageId);
+    displayGeneralMessage(GeneralMessageId);
+
+    tgl.update(make_object<updateMessageSendSucceeded>(
+        makeMessage(
+            SecondMessageId, userIds[0], groupChatId,
+            false, MessageDate, makeTextMessage("original"),
+            make_object<messageTopicForum>(
+                ForumTopicId::general().value())),
+        FirstMessageId));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<updateMessageIsPinned>(
+        groupChatId, SecondMessageId, true));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ConversationWriteEvent(
+        groupChatPurpleName, NotificationWho,
+        "Message " + std::to_string(SecondMessageId) +
+            " was pinned",
+        PURPLE_MESSAGE_SYSTEM, 0));
+    EXPECT_NE(
+        nullptr,
+        purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT,
+            topicPurpleName().c_str(), account));
+}
+
+TEST_F(
+    ForumTopicMessageUpdateTest,
     ClosedChildUpdatesAreSuppressedWithoutGeneralFallback)
 {
     loginWithForumSupergroup();

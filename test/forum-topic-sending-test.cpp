@@ -2,6 +2,7 @@
 #include "libpurple-mock.h"
 #include "purple-info.h"
 #include "supergroup-test.h"
+#include "td-client.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -21,6 +22,25 @@ constexpr int64_t PendingMessageId = 10;
 constexpr int64_t FailedMessageId = 20;
 constexpr int32_t FailureDate = 12345;
 const char *const NotificationWho = " ";
+
+gboolean receiptConversationFocused(PurpleConversation *)
+{
+    return TRUE;
+}
+
+gboolean receiptConversationUnfocused(PurpleConversation *)
+{
+    return FALSE;
+}
+
+PurpleConversationUiOps *receiptUiOps(bool focused)
+{
+    static PurpleConversationUiOps focusedOps = {};
+    static PurpleConversationUiOps unfocusedOps = {};
+    focusedOps.has_focus = receiptConversationFocused;
+    unfocusedOps.has_focus = receiptConversationUnfocused;
+    return focused ? &focusedOps : &unfocusedOps;
+}
 
 class TempFileCleanup {
 public:
@@ -149,6 +169,63 @@ protected:
             topicPurpleName().c_str(), account);
     }
 
+    PurpleConversation *targetConversation(
+        ChatTarget target) const
+    {
+        const std::string name = getPurpleChatName(target);
+        return purple_find_conversation_with_account(
+            PURPLE_CONV_TYPE_CHAT, name.c_str(), account);
+    }
+
+    void setTargetFocused(ChatTarget target, bool focused)
+    {
+        PurpleConversation *conversation =
+            targetConversation(target);
+        ASSERT_NE(nullptr, conversation);
+        conversation->ui_ops = receiptUiOps(focused);
+    }
+
+    void flushTargetReadReceipts(ChatTarget target)
+    {
+        PurpleConversation *conversation =
+            targetConversation(target);
+        ASSERT_NE(nullptr, conversation);
+        PurpleTdClient *client = getTdClient(account);
+        ASSERT_NE(nullptr, client);
+        client->sendReadReceipts(conversation);
+    }
+
+    void queuePendingOutgoingReadReceipt(
+        int32_t purpleId, const std::string &text)
+    {
+        setTargetFocused(topicTarget(), false);
+        ASSERT_EQ(
+            0, pluginInfo().chat_send(
+                   connection, purpleId, text.c_str(),
+                   PURPLE_MESSAGE_SEND));
+        const uint64_t requestId =
+            tgl.verifyRequest(expectedTextSend(
+                groupChatId,
+                make_object<messageTopicForum>(TopicId),
+                text));
+
+        tgl.reply(requestId, makeMessage(
+            PendingMessageId, selfId, groupChatId, true, 1,
+            makeTextMessage(text),
+            make_object<messageTopicForum>(TopicId)));
+        prpl.verifyNoEvents();
+
+        tgl.update(make_object<updateNewMessage>(makeMessage(
+            PendingMessageId, selfId, groupChatId, true, 1,
+            makeTextMessage(text),
+            make_object<messageTopicForum>(TopicId))));
+        tgl.verifyNoRequests();
+        prpl.verifyEvents(ConversationWriteEvent(
+            topicPurpleName(),
+            selfFirstName + " " + selfLastName,
+            text, PURPLE_MESSAGE_SEND, 1));
+    }
+
     void deleteTopicAuthoritatively()
     {
         PurpleRoomlist *roomlist =
@@ -255,7 +332,7 @@ TEST_F(
     loginWithForumSupergroup();
     const int32_t purpleId = openTopic();
     ASSERT_GT(purpleId, 0);
-    tgl.update(make_object<updateOption>(
+    tgl.update(make_object<td::td_api::updateOption>(
         "message_text_length_max",
         make_object<optionValueInteger>(9)));
 
@@ -522,6 +599,121 @@ TEST_F(ForumTopicSendingTest, AsyncSendFailureStaysInExactChild)
         topicPurpleName(), NotificationWho,
         "Failed to send message: code 100 (later rejection)",
         PURPLE_MESSAGE_SYSTEM, 0));
+}
+
+TEST_F(
+    ForumTopicSendingTest,
+    PendingReadReceiptUsesFinalMessageIdInSameTopic)
+{
+    constexpr int64_t FinalMessageId = 11;
+
+    loginWithForumSupergroup();
+    const int32_t purpleId = openTopic();
+    ASSERT_GT(purpleId, 0);
+    queuePendingOutgoingReadReceipt(
+        purpleId, "queued receipt");
+
+    object_ptr<message> finalMessage = makeMessage(
+        FinalMessageId, selfId, groupChatId, true, 2,
+        makeTextMessage("queued receipt"),
+        make_object<messageTopicForum>(TopicId));
+    finalMessage->sending_state_ = nullptr;
+    tgl.update(make_object<updateMessageSendSucceeded>(
+        std::move(finalMessage), PendingMessageId));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    setTargetFocused(topicTarget(), true);
+    flushTargetReadReceipts(topicTarget());
+    tgl.verifyRequest(*Mock_ViewMessages(
+        groupChatId, {FinalMessageId}, true,
+        make_object<messageSourceForumTopicHistory>()));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    ForumTopicSendingTest,
+    SentPendingReceiptIsNotRecreatedForFinalMessageId)
+{
+    constexpr int64_t FinalMessageId = 11;
+
+    loginWithForumSupergroup();
+    const int32_t purpleId = openTopic();
+    ASSERT_GT(purpleId, 0);
+    queuePendingOutgoingReadReceipt(
+        purpleId, "already read");
+
+    setTargetFocused(topicTarget(), true);
+    flushTargetReadReceipts(topicTarget());
+    tgl.verifyRequest(*Mock_ViewMessages(
+        groupChatId, {PendingMessageId}, true,
+        make_object<messageSourceForumTopicHistory>()));
+    tgl.verifyNoRequests();
+
+    object_ptr<message> finalMessage = makeMessage(
+        FinalMessageId, selfId, groupChatId, true, 2,
+        makeTextMessage("already read"),
+        make_object<messageTopicForum>(TopicId));
+    finalMessage->sending_state_ = nullptr;
+    tgl.update(make_object<updateMessageSendSucceeded>(
+        std::move(finalMessage), PendingMessageId));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    setTargetFocused(topicTarget(), false);
+    object_ptr<message> finalEcho = makeMessage(
+        FinalMessageId, selfId, groupChatId, true, 3,
+        makeTextMessage("already read"),
+        make_object<messageTopicForum>(TopicId));
+    finalEcho->sending_state_ = nullptr;
+    tgl.update(make_object<updateNewMessage>(
+        std::move(finalEcho)));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ConversationWriteEvent(
+        topicPurpleName(),
+        selfFirstName + " " + selfLastName,
+        "already read",
+        static_cast<PurpleMessageFlags>(
+            PURPLE_MESSAGE_SEND |
+            PURPLE_MESSAGE_REMOTE_SEND),
+        3));
+
+    setTargetFocused(topicTarget(), true);
+    flushTargetReadReceipts(topicTarget());
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    ForumTopicSendingTest,
+    PendingReadReceiptIsDiscardedWhenFinalTopicChanges)
+{
+    constexpr int64_t FinalMessageId = 11;
+
+    loginWithForumSupergroup();
+    ASSERT_GT(openGeneral(), 0);
+    const int32_t purpleId = openTopic();
+    ASSERT_GT(purpleId, 0);
+    queuePendingOutgoingReadReceipt(
+        purpleId, "changed topic");
+
+    object_ptr<message> finalMessage = makeMessage(
+        FinalMessageId, selfId, groupChatId, true, 2,
+        makeTextMessage("changed topic"),
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value()));
+    finalMessage->sending_state_ = nullptr;
+    tgl.update(make_object<updateMessageSendSucceeded>(
+        std::move(finalMessage), PendingMessageId));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
+
+    setTargetFocused(topicTarget(), true);
+    flushTargetReadReceipts(topicTarget());
+    tgl.verifyNoRequests();
+
+    setTargetFocused(generalTarget(), true);
+    flushTargetReadReceipts(generalTarget());
+    tgl.verifyNoRequests();
 }
 
 TEST_F(

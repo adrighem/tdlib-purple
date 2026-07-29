@@ -36,24 +36,6 @@ static bool isChildForumTopic(ChatTarget target)
            target.forumTopicId() != ForumTopicId::general();
 }
 
-static bool areEquivalentConversationTargets(
-    ChatTarget first, ChatTarget second)
-{
-    if (first == second)
-        return true;
-    if (!first.valid() || !second.valid() ||
-        first.chatId() != second.chatId()) {
-        return false;
-    }
-
-    return (first.isForumTopic() &&
-            first.forumTopicId() == ForumTopicId::general() &&
-            !second.isForumTopic()) ||
-           (second.isForumTopic() &&
-            second.forumTopicId() == ForumTopicId::general() &&
-            !first.isForumTopic());
-}
-
 static bool hasSafeConversationTargetForSend(
     PurpleAccount *account, int32_t purpleChatId,
     ChatTarget expectedTarget)
@@ -440,20 +422,19 @@ ChatTarget PurpleTdClient::replacePendingMessageId(
 {
     const ChatId chatId = getChatId(message);
     const MessageId newMessageId = getId(message);
-    if (oldChatId.valid()) {
-        m_data.replaceMessageId(
-            oldChatId, oldMessageId,
-            chatId, newMessageId);
-    }
-
     ChatTarget target;
     const td::td_api::chat *chat = m_data.getChat(chatId);
     if (chat) {
         target = getMessageRoomTarget(*chat, message);
-        if (target.valid()) {
-            m_data.rememberMessageTarget(
-                target, newMessageId);
-        }
+    }
+    if (oldChatId.valid()) {
+        m_data.replaceMessageId(
+            oldChatId, oldMessageId,
+            chatId, newMessageId, target);
+    }
+    if (target.valid()) {
+        m_data.rememberMessageTarget(
+            target, newMessageId);
     }
     return target;
 }
@@ -657,8 +638,13 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
             chatIdFromTdInt(messageUpdate.chat_id_);
         purple_debug_misc(config::pluginId, "Incoming update: %zu deleted messages\n",
                           messageUpdate.message_ids_.size());
+        std::vector<MessageId> deletedMessageIds;
+        deletedMessageIds.reserve(
+            messageUpdate.message_ids_.size());
         for (td::td_api::int53 rawMessageId :
              messageUpdate.message_ids_) {
+            deletedMessageIds.push_back(
+                messageIdFromTdInt(rawMessageId));
             TdAccountData::PendingSendInfo pending;
             if (m_data.extractPendingSend(
                     chatId,
@@ -667,6 +653,8 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
                 removeTempFile(pending.tempFile);
             }
         }
+        m_data.discardPendingReadReceipts(
+            chatId, deletedMessageIds);
         if (!messageUpdate.from_cache_) {
             if (!showDeletedMessageUpdate(
                     chatId,

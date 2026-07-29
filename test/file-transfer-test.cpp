@@ -472,7 +472,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_AlreadyDownloaded)
 
     // Now with thumbnail and main file, both already downloaded
     tgl.update(make_object<updateNewMessage>(makeMessage(
-        1,
+        2,
         userIds[0],
         chatIds[0],
         false,
@@ -496,7 +496,7 @@ TEST_F(FileTransferTest, Sticker_AnimatedDisabled_AlreadyDownloaded)
         ))
     )));
 
-    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {1}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {2}, true));
     prpl.verifyEvents(ServGotImEvent(
         connection,
         purpleUserName(0),

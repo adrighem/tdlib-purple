@@ -116,7 +116,8 @@ td::td_api::object_ptr<T> null_object() {
 
 class PrivateChatTest: public CommTest {
 protected:
-    void testReadReceipt(bool shouldSend);
+    void testReadReceipt(
+        int64_t messageId, bool shouldSend);
 };
 
 TEST_F(PrivateChatTest, AddContactByPhone)
@@ -535,7 +536,7 @@ TEST_F(
             connection, purpleUserName(0),
             "Live bot topic", PURPLE_MESSAGE_RECV, 3));
     tgl.verifyRequest(*Mock_ViewMessages(
-        chatIds[0], {3, 2}, true));
+        chatIds[0], {2, 3}, true));
     tgl.verifyNoRequests();
 }
 
@@ -1874,9 +1875,9 @@ TEST_F(PrivateChatTest, RemoteSend)
     );
 }
 
-void PrivateChatTest::testReadReceipt(bool shouldSend)
+void PrivateChatTest::testReadReceipt(
+    int64_t messageId, bool shouldSend)
 {
-    const int64_t messageId = 1;
     const int32_t date      = 10001;
 
     tgl.update(make_object<updateNewMessage>(makeMessage(
@@ -1898,11 +1899,11 @@ TEST_F(PrivateChatTest, DisablingReadReceipts)
     loginWithOneContact();
 
     setUiName("BitlBee");
-    testReadReceipt(true);
+    testReadReceipt(1, true);
     purple_account_set_bool(account, "read-receipts", FALSE);
-    testReadReceipt(false);
+    testReadReceipt(2, false);
     setUiName("Spectrum");
-    testReadReceipt(false);
+    testReadReceipt(3, false);
     setUiName("pidgin");
-    testReadReceipt(true);
+    testReadReceipt(4, true);
 }

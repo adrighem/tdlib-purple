@@ -182,6 +182,67 @@ static std::string escapePlainText(const std::string &text)
     return result;
 }
 
+static std::string escapeForumTopicName(const std::string &name)
+{
+    char *escaped = g_markup_escape_text(name.c_str(), name.size());
+    std::string result = escaped ? escaped : "";
+    g_free(escaped);
+    return result;
+}
+
+static std::string getForumTopicLifecycleNotice(
+    const td::td_api::MessageContent &content)
+{
+    switch (content.get_id()) {
+        case td::td_api::messageForumTopicCreated::ID: {
+            const auto &created =
+                static_cast<const td::td_api::messageForumTopicCreated &>(
+                    content);
+            if (created.name_.empty())
+                return _("Created a topic");
+            return formatMessage(
+                _("Created topic {}"),
+                escapeForumTopicName(created.name_));
+        }
+        case td::td_api::messageForumTopicEdited::ID: {
+            const auto &edited =
+                static_cast<const td::td_api::messageForumTopicEdited &>(
+                    content);
+            if (!edited.name_.empty()) {
+                const std::string name = escapeForumTopicName(edited.name_);
+                if (edited.edit_icon_custom_emoji_id_) {
+                    return formatMessage(
+                        _("Renamed the topic to {0} and changed its icon"),
+                        {name});
+                }
+                return formatMessage(
+                    _("Renamed the topic to {}"), name);
+            }
+            if (edited.edit_icon_custom_emoji_id_)
+                return _("Changed the topic icon");
+            return _("Edited the topic");
+        }
+        case td::td_api::messageForumTopicIsClosedToggled::ID: {
+            const auto &toggled = static_cast<
+                const td::td_api::messageForumTopicIsClosedToggled &>(
+                    content);
+            return toggled.is_closed_
+                ? _("Closed the topic")
+                : _("Reopened the topic");
+        }
+        case td::td_api::messageForumTopicIsHiddenToggled::ID: {
+            const auto &toggled = static_cast<
+                const td::td_api::messageForumTopicIsHiddenToggled &>(
+                    content);
+            return toggled.is_hidden_
+                ? _("Hid the General topic")
+                : _("Unhid the General topic");
+        }
+    }
+
+    return std::string();
+}
+
 static void appendCaption(std::string &description, const td::td_api::formattedText *caption)
 {
     if (caption && !caption->text_.empty()) {
@@ -372,15 +433,36 @@ static void sendPendingReadReceipts(
 void sendConversationReadReceipts(
     TdAccountData &account, PurpleConversation *conv)
 {
-    if (!conversationHasFocus(conv))
+    if (!conv)
         return;
 
-    PurpleConversationType convType = purple_conversation_get_type(conv);
-    const char            *convName = purple_conversation_get_name(conv);
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    PurpleTdClient *client = getTdClient(purpleAccount);
+    const PurpleConversationType convType =
+        purple_conversation_get_type(conv);
+    const char *rawConvName = purple_conversation_get_name(conv);
+    const std::string convName =
+        rawConvName ? rawConvName : "";
+    const bool focused = conversationHasFocus(conv);
+
+    if ((client && getTdClient(purpleAccount) != client) ||
+        !focused) {
+        return;
+    }
+
+    conv = purple_find_conversation_with_account(
+        convType, convName.c_str(), purpleAccount);
+    if (!conv)
+        return;
+
+    if (account.deferReadReceiptFlush(convType, convName))
+        return;
 
     if (convType == PURPLE_CONV_TYPE_IM) {
-        UserId       privateChatUserId = purpleBuddyNameToUserId(convName);
-        SecretChatId secretChatId      = purpleBuddyNameToSecretChatId(convName);
+        UserId privateChatUserId =
+            purpleBuddyNameToUserId(convName.c_str());
+        SecretChatId secretChatId =
+            purpleBuddyNameToSecretChatId(convName.c_str());
         const td::td_api::chat *tdlibChat = nullptr;
 
         if (privateChatUserId.valid())
@@ -392,16 +474,15 @@ void sendConversationReadReceipts(
             sendPendingReadReceipts(
                 account, ChatTarget::chat(getId(*tdlibChat)));
     } else if (convType == PURPLE_CONV_TYPE_CHAT) {
-        const ChatTarget nameTarget = parsePurpleChatName(convName);
+        const ChatTarget nameTarget =
+            parsePurpleChatName(convName.c_str());
         PurpleConvChat *chat = purple_conversation_get_chat_data(conv);
         const ChatTarget idTarget = chat
             ? account.getChatTargetByPurpleId(
                   purple_conv_chat_get_id(chat))
             : ChatTarget();
-        if (nameTarget.valid() && idTarget.valid() &&
-            nameTarget.chatId() == idTarget.chatId() &&
-            (!nameTarget.isForumTopic() ||
-             nameTarget == idTarget)) {
+        if (areEquivalentConversationTargets(
+                nameTarget, idTarget)) {
             if (nameTarget.isForumTopic()) {
                 sendPendingReadReceipts(account, nameTarget);
             } else {
@@ -410,15 +491,20 @@ void sendConversationReadReceipts(
                     ChatTarget::forumTopic(
                         nameTarget.chatId(),
                         ForumTopicId::general()));
+                if (client &&
+                    getTdClient(purpleAccount) != client) {
+                    return;
+                }
                 sendPendingReadReceipts(account, nameTarget);
             }
         }
     }
 }
 
-PurpleConversation *showMessageTextIm(TdAccountData &account, const char *purpleUserName,
-                                      const char *text, const char *notification,
-                                      time_t timestamp, PurpleMessageFlags flags)
+static PurpleConversation *writeMessageTextIm(
+    TdAccountData &account, const char *purpleUserName,
+    const char *text, const char *notification,
+    time_t timestamp, PurpleMessageFlags flags)
 {
     PurpleConversation *conv = NULL;
     PurpleAccount *purpleAccount = account.purpleAccount;
@@ -487,11 +573,33 @@ PurpleConversation *showMessageTextIm(TdAccountData &account, const char *purple
             return NULL;
     }
 
-    if (conv != NULL)
-        sendConversationReadReceipts(account, conv);
+    return conv;
+}
+
+PurpleConversation *showMessageTextIm(
+    TdAccountData &account, const char *purpleUserName,
+    const char *text, const char *notification,
+    time_t timestamp, PurpleMessageFlags flags)
+{
+    PurpleAccount *purpleAccount = account.purpleAccount;
+    PurpleTdClient *client = getTdClient(purpleAccount);
+    const ContinuationGuard canContinue = client
+        ? ContinuationGuard(
+              [purpleAccount, client]() {
+                  return getTdClient(purpleAccount) == client;
+              })
+        : ContinuationGuard();
+
+    PurpleConversation *conv = writeMessageTextIm(
+        account, purpleUserName, text, notification,
+        timestamp, flags);
     if (canContinue && !canContinue())
         return NULL;
 
+    if (conv)
+        sendConversationReadReceipts(account, conv);
+    if (canContinue && !canContinue())
+        return NULL;
     return conv;
 }
 
@@ -611,11 +719,6 @@ static PurpleConversation *showMessageTextChat(
         purple_find_conversation_with_account(
             PURPLE_CONV_TYPE_CHAT,
             getPurpleChatName(target).c_str(), purpleAccount);
-
-    if (baseConv != NULL)
-        sendConversationReadReceipts(account, baseConv);
-    if (canContinue && !canContinue())
-        return NULL;
 
     return baseConv;
 }
@@ -738,6 +841,22 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
     if (!newText.empty())
         text = newText.c_str();
 
+    const bool hasDisplayedContent = text || notification;
+    const auto finishDisplay =
+        [&](PurpleConversation *conv) {
+            if (!hasDisplayedContent || !conv)
+                return true;
+
+            account.rememberDisplayedMessage(
+                message.target, message.id, conv,
+                getSenderDisplayName(
+                    chat, message, purpleAccount),
+                message.timestamp, flags,
+                message.readReceiptEligible);
+            sendConversationReadReceipts(account, conv);
+            return !canContinue || canContinue();
+        };
+
     const td::td_api::user *privateUser = account.getUserByPrivateChat(chat);
     if (privateUser) {
         std::string userName = getPurpleBuddyName(*privateUser);
@@ -747,26 +866,26 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
         if (!purple_find_buddy(account.purpleAccount, userName.c_str()))
             userName = account.getDisplayName(*privateUser);
         PurpleConversation *conv =
-            showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
+            writeMessageTextIm(
+                account, userName.c_str(), text, notification,
+                message.timestamp, flags);
         if (canContinue && !canContinue())
             return false;
-        if (text || notification)
-            account.rememberDisplayedMessage(message.target, message.id, conv,
-                                             getSenderDisplayName(chat, message, purpleAccount),
-                                             message.timestamp, flags);
+        if (!finishDisplay(conv))
+            return false;
     }
 
     SecretChatId secretChatId = getSecretChatId(chat);
     if (secretChatId.valid()) {
         std::string userName = getSecretChatBuddyName(secretChatId);
         PurpleConversation *conv =
-            showMessageTextIm(account, userName.c_str(), text, notification, message.timestamp, flags);
+            writeMessageTextIm(
+                account, userName.c_str(), text, notification,
+                message.timestamp, flags);
         if (canContinue && !canContinue())
             return false;
-        if (text || notification)
-            account.rememberDisplayedMessage(message.target, message.id, conv,
-                                             getSenderDisplayName(chat, message, purpleAccount),
-                                             message.timestamp, flags);
+        if (!finishDisplay(conv))
+            return false;
     }
 
     if (getBasicGroupId(chat).valid() || getSupergroupId(chat).valid()) {
@@ -775,10 +894,8 @@ bool showMessageText(TdAccountData &account, const td::td_api::chat &chat, const
                 account, chat, message, text, notification, flags);
         if (canContinue && !canContinue())
             return false;
-        if (text || notification)
-            account.rememberDisplayedMessage(message.target, message.id, conv,
-                                             getSenderDisplayName(chat, message, purpleAccount),
-                                             message.timestamp, flags);
+        if (!finishDisplay(conv))
+            return false;
     }
 
     return true;
@@ -1327,6 +1444,20 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
             showMessageText(account, chat, messageInfo, NULL, notice.c_str());
             break;
         }
+        case td::td_api::messageForumTopicCreated::ID:
+        case td::td_api::messageForumTopicEdited::ID:
+        case td::td_api::messageForumTopicIsClosedToggled::ID:
+        case td::td_api::messageForumTopicIsHiddenToggled::ID: {
+            std::string notice =
+                getForumTopicLifecycleNotice(*message.content_);
+            notice = makeNoticeWithSender(
+                chat, messageInfo, notice.c_str(),
+                account.purpleAccount);
+            showMessageText(
+                account, chat, messageInfo, NULL,
+                notice.c_str());
+            break;
+        }
         case td::td_api::messageCall::ID:
             showCallMessage(chat, messageInfo, static_cast<td::td_api::messageCall &>(*message.content_), account);
             break;
@@ -1352,12 +1483,31 @@ void showMessages(std::vector<IncomingMessage>& messages, TdAccountData &account
 {
     PurpleAccount *purpleAccount = account.purpleAccount;
     PurpleTdClient *client = getTdClient(purpleAccount);
+    account.beginReadReceiptBatch();
     for (IncomingMessage &readyMessage: messages) {
         if (!readyMessage.message) continue;
         const td::td_api::chat *chat = account.getChat(getChatId(*readyMessage.message));
         if (chat)
             showMessage(
                 *chat, readyMessage, account.transceiver, account);
+        if (client && getTdClient(purpleAccount) != client)
+            return;
+    }
+
+    std::vector<TdAccountData::ReadReceiptConversation>
+        conversations;
+    if (!account.finishReadReceiptBatch(conversations))
+        return;
+
+    for (const auto &identity : conversations) {
+        if (client && getTdClient(purpleAccount) != client)
+            return;
+        PurpleConversation *conversation =
+            purple_find_conversation_with_account(
+                identity.type, identity.name.c_str(),
+                purpleAccount);
+        if (conversation)
+            sendConversationReadReceipts(account, conversation);
         if (client && getTdClient(purpleAccount) != client)
             return;
     }
@@ -1702,6 +1852,8 @@ void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
             "Refusing incoming message with invalid room target\n");
         return;
     }
+    const bool readReceiptEligible =
+        isReadReceiptsEnabled(account.purpleAccount);
     bool forumTopicDisplayAccepted = false;
     if (target.isForumTopic() &&
         target.forumTopicId() != ForumTopicId::general()) {
@@ -1733,13 +1885,12 @@ void handleIncomingMessage(TdAccountData &account, const td::td_api::chat &chat,
     account.rememberMessageTarget(
         target, getId(*message));
 
-    if (isReadReceiptsEnabled(account.purpleAccount))
-        account.addPendingReadReceipt(target, getId(*message));
-
     IncomingMessage fullMessage;
     makeFullMessage(chat, std::move(message), fullMessage, account);
     fullMessage.messageInfo.forumTopicDisplayAccepted =
         forumTopicDisplayAccepted;
+    fullMessage.messageInfo.readReceiptEligible =
+        readReceiptEligible;
 
     if (isMessageReady(fullMessage, account)) {
         IncomingMessage readyMessage = account.pendingMessages.addReadyMessage(std::move(fullMessage), action);

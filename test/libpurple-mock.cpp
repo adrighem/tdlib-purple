@@ -1739,8 +1739,9 @@ PurpleConversationUiOps *purple_conversation_get_ui_ops(const PurpleConversation
 
 gboolean purple_conversation_has_focus(PurpleConversation *conv)
 {
-    // A bit like real libpurple
-    return (conv->ui_ops != NULL);
+    if (!conv || !conv->ui_ops || !conv->ui_ops->has_focus)
+        return FALSE;
+    return conv->ui_ops->has_focus(conv);
 }
 
 gulong purple_signal_connect(void *instance, const char *signal,

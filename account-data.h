@@ -141,6 +141,7 @@ struct TgMessageInfo {
     bool        outgoing = false;
     bool        sentLocally = false; // For outgoing messages, whether sent by this very client
     bool        forumTopicDisplayAccepted = false;
+    bool        readReceiptEligible = false;
     MessageId   repliedMessageId;
     td::td_api::object_ptr<td::td_api::message> repliedMessage;
     std::string forwardedFrom;
@@ -156,6 +157,7 @@ struct TgMessageInfo {
         sentLocally = other.sentLocally;
         forumTopicDisplayAccepted =
             other.forumTopicDisplayAccepted;
+        readReceiptEligible = other.readReceiptEligible;
         repliedMessageId = other.repliedMessageId;
         repliedMessage = nullptr;
         forwardedFrom = other.forwardedFrom;
@@ -579,11 +581,26 @@ public:
 
     PendingMessageQueue        pendingMessages;
 
-    void                       addPendingReadReceipt(ChatTarget target,
-                                                     MessageId messageId);
+    struct ReadReceiptConversation {
+        PurpleConversationType type =
+            PURPLE_CONV_TYPE_UNKNOWN;
+        std::string            name;
+    };
+
+    void                       beginReadReceiptBatch();
+    bool                       deferReadReceiptFlush(
+                                      PurpleConversationType type,
+                                      const std::string &name);
+    bool                       finishReadReceiptBatch(
+                                      std::vector<ReadReceiptConversation>
+                                          &conversations);
     void                       extractPendingReadReceipts(
                                       ChatTarget target,
                                       std::vector<MessageId> &messageIds);
+    void                       discardPendingReadReceipts(
+                                      ChatId chatId,
+                                      const std::vector<MessageId>
+                                          &messageIds);
     void                       rememberMessageTarget(
                                       ChatTarget target,
                                       MessageId messageId);
@@ -591,14 +608,16 @@ public:
                                       ChatId oldChatId,
                                       MessageId oldMessageId,
                                       ChatId newChatId,
-                                      MessageId newMessageId);
+                                      MessageId newMessageId,
+                                      ChatTarget newTarget);
     void                       rememberDisplayedMessage(
                                       ChatTarget target,
                                       MessageId messageId,
                                       PurpleConversation *conv,
                                       const std::string &sender,
                                       time_t timestamp,
-                                      PurpleMessageFlags flags);
+                                      PurpleMessageFlags flags,
+                                      bool queueReadReceipt);
     bool                       isForumSensitiveChat(
                                       ChatId chatId) const;
     bool                       shouldUseLegacyMessageUpdateFallback(
@@ -651,6 +670,7 @@ private:
         time_t                 timestamp = 0;
         PurpleMessageFlags     flags =
             static_cast<PurpleMessageFlags>(0);
+        bool                   readReceiptQueued = false;
     };
 
     using ChatMap = std::map<ChatId, ChatInfo>;
@@ -697,11 +717,19 @@ private:
     int32_t                         allocatePurpleChatId();
     int32_t                         allocateForumTopicPurpleId(ForumTopicState &topic);
     bool                            isForumChat(ChatId chatId) const;
+    bool                            hasPendingReadReceipt(
+                                        ChatTarget target,
+                                        MessageId messageId) const;
     void                            pruneMessageRoutes(
-                                        ChatId chatId);
+                                        ChatId chatId,
+                                        MessageId protectedMessageId =
+                                            MessageId());
 
-    // Read receipts not sent immediately due to away status (grouped per exact room)
+    // Successfully displayed messages awaiting receipt delivery, grouped per exact room.
     std::map<ChatTarget, std::vector<MessageId>> m_pendingReadReceipts;
+    unsigned m_readReceiptBatchDepth = 0;
+    std::vector<ReadReceiptConversation>
+        m_deferredReadReceiptConversations;
 
     std::map<ChatId, MessageRouteMap>
         m_messageRoutes;

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <ctype.h>
+#include <iterator>
 #include <limits>
 
 // Unknown forum updates fail closed, so evicting old routes cannot misroute them.
@@ -843,6 +844,13 @@ void TdAccountData::deleteChat(ChatId id)
         if (topic.target.chatId() == id)
             tombstoneForumTopic(topic, generation);
     }
+    for (auto receipts = m_pendingReadReceipts.begin();
+         receipts != m_pendingReadReceipts.end();) {
+        if (receipts->first.chatId() == id)
+            receipts = m_pendingReadReceipts.erase(receipts);
+        else
+            ++receipts;
+    }
     m_messageRoutes.erase(id);
     m_chatInfo.erase(id);
 }
@@ -916,6 +924,15 @@ bool TdAccountData::tombstoneForumTopic(
     topic.deleted = true;
     topic.active = false;
     topic.metadataGeneration = generation;
+    m_pendingReadReceipts.erase(topic.target);
+    auto chatMessages =
+        m_messageRoutes.find(topic.target.chatId());
+    if (chatMessages != m_messageRoutes.end()) {
+        for (auto &message : chatMessages->second) {
+            if (message.second.target == topic.target)
+                message.second.readReceiptQueued = false;
+        }
+    }
     return changed;
 }
 
@@ -1381,11 +1398,49 @@ void TdAccountData::removeActiveCall()
     m_callId = 0;
 }
 
-void TdAccountData::addPendingReadReceipt(
-    ChatTarget target, MessageId messageId)
+void TdAccountData::beginReadReceiptBatch()
 {
-    if (target.valid() && messageId.valid())
-        m_pendingReadReceipts[target].push_back(messageId);
+    ++m_readReceiptBatchDepth;
+}
+
+bool TdAccountData::deferReadReceiptFlush(
+    PurpleConversationType type, const std::string &name)
+{
+    if (m_readReceiptBatchDepth == 0)
+        return false;
+
+    auto existing = std::find_if(
+        m_deferredReadReceiptConversations.begin(),
+        m_deferredReadReceiptConversations.end(),
+        [type, &name](const ReadReceiptConversation &conversation) {
+            return conversation.type == type &&
+                   conversation.name == name;
+        });
+    if (existing == m_deferredReadReceiptConversations.end()) {
+        ReadReceiptConversation conversation;
+        conversation.type = type;
+        conversation.name = name;
+        m_deferredReadReceiptConversations.push_back(
+            std::move(conversation));
+    }
+    return true;
+}
+
+bool TdAccountData::finishReadReceiptBatch(
+    std::vector<ReadReceiptConversation> &conversations)
+{
+    conversations.clear();
+    if (m_readReceiptBatchDepth == 0)
+        return false;
+
+    --m_readReceiptBatchDepth;
+    if (m_readReceiptBatchDepth != 0)
+        return false;
+
+    conversations =
+        std::move(m_deferredReadReceiptConversations);
+    m_deferredReadReceiptConversations.clear();
+    return true;
 }
 
 void TdAccountData::extractPendingReadReceipts(
@@ -1399,6 +1454,59 @@ void TdAccountData::extractPendingReadReceipts(
 
     messageIds = std::move(receipts->second);
     m_pendingReadReceipts.erase(receipts);
+}
+
+void TdAccountData::discardPendingReadReceipts(
+    ChatId chatId, const std::vector<MessageId> &messageIds)
+{
+    if (!chatId.valid() || messageIds.empty())
+        return;
+
+    for (auto receipts = m_pendingReadReceipts.begin();
+         receipts != m_pendingReadReceipts.end();) {
+        if (receipts->first.chatId() != chatId) {
+            ++receipts;
+            continue;
+        }
+
+        auto &pending = receipts->second;
+        pending.erase(
+            std::remove_if(
+                pending.begin(), pending.end(),
+                [&messageIds](MessageId messageId) {
+                    return std::find(
+                               messageIds.begin(),
+                               messageIds.end(),
+                               messageId) != messageIds.end();
+                }),
+            pending.end());
+        if (pending.empty())
+            receipts = m_pendingReadReceipts.erase(receipts);
+        else
+            ++receipts;
+    }
+
+    auto chatMessages = m_messageRoutes.find(chatId);
+    if (chatMessages == m_messageRoutes.end())
+        return;
+    for (MessageId messageId : messageIds) {
+        auto message = chatMessages->second.find(messageId);
+        if (message != chatMessages->second.end())
+            message->second.readReceiptQueued = false;
+    }
+}
+
+bool TdAccountData::hasPendingReadReceipt(
+    ChatTarget target, MessageId messageId) const
+{
+    if (!target.valid() || !messageId.valid())
+        return false;
+
+    auto receipts = m_pendingReadReceipts.find(target);
+    return receipts != m_pendingReadReceipts.end() &&
+           std::find(
+               receipts->second.begin(), receipts->second.end(),
+               messageId) != receipts->second.end();
 }
 
 void TdAccountData::rememberMessageTarget(
@@ -1415,6 +1523,8 @@ void TdAccountData::rememberMessageTarget(
         inserted.first->second;
     if (record.target.valid() &&
         record.target != target) {
+        discardPendingReadReceipts(
+            target.chatId(), {messageId});
         record = MessageRouteInfo();
     }
     record.target = target;
@@ -1424,14 +1534,12 @@ void TdAccountData::rememberMessageTarget(
 
 void TdAccountData::replaceMessageId(
     ChatId oldChatId, MessageId oldMessageId,
-    ChatId newChatId, MessageId newMessageId)
+    ChatId newChatId, MessageId newMessageId,
+    ChatTarget newTarget)
 {
     if (!oldChatId.valid() || !newChatId.valid() ||
         !oldMessageId.valid() ||
         !newMessageId.valid())
-        return;
-    if (oldChatId == newChatId &&
-        oldMessageId == newMessageId)
         return;
 
     auto chatMessages = m_messageRoutes.find(oldChatId);
@@ -1444,10 +1552,41 @@ void TdAccountData::replaceMessageId(
         return;
 
     MessageRouteInfo oldInfo =
-        std::move(oldRecord->second);
+        oldRecord->second;
+    const bool validNewTarget =
+        newTarget.valid() &&
+        newTarget.chatId() == newChatId;
+    const bool equivalentTarget =
+        validNewTarget &&
+        areEquivalentConversationTargets(
+            oldInfo.target, newTarget);
+    const bool receiptWasPending =
+        hasPendingReadReceipt(
+            oldInfo.target, oldMessageId);
+    discardPendingReadReceipts(
+        oldChatId, {oldMessageId});
+    if (equivalentTarget) {
+        oldInfo.readReceiptQueued =
+            oldInfo.readReceiptQueued ||
+            receiptWasPending;
+    } else {
+        oldInfo = MessageRouteInfo();
+    }
+    oldInfo.target =
+        validNewTarget ? newTarget : ChatTarget();
+
     messages.erase(oldRecord);
     if (messages.empty())
         m_messageRoutes.erase(chatMessages);
+
+    if (equivalentTarget && receiptWasPending) {
+        auto &pending = m_pendingReadReceipts[newTarget];
+        if (std::find(
+                pending.begin(), pending.end(),
+                newMessageId) == pending.end()) {
+            pending.push_back(newMessageId);
+        }
+    }
 
     MessageRouteMap &newMessages =
         m_messageRoutes[newChatId];
@@ -1455,7 +1594,7 @@ void TdAccountData::replaceMessageId(
     if (newRecord == newMessages.end()) {
         newMessages[newMessageId] =
             std::move(oldInfo);
-        pruneMessageRoutes(newChatId);
+        pruneMessageRoutes(newChatId, newMessageId);
     } else if (
         newRecord->second.conversationType ==
             PURPLE_CONV_TYPE_UNKNOWN &&
@@ -1463,13 +1602,21 @@ void TdAccountData::replaceMessageId(
          newRecord->second.target ==
              oldInfo.target)) {
         newRecord->second = std::move(oldInfo);
+    } else if (
+        oldInfo.readReceiptQueued &&
+        newRecord->second.target == newTarget) {
+        newRecord->second.readReceiptQueued = true;
+    } else if (oldInfo.readReceiptQueued) {
+        discardPendingReadReceipts(
+            newChatId, {newMessageId});
     }
 }
 
 void TdAccountData::rememberDisplayedMessage(
     ChatTarget target, MessageId messageId,
     PurpleConversation *conv, const std::string &sender,
-    time_t timestamp, PurpleMessageFlags flags)
+    time_t timestamp, PurpleMessageFlags flags,
+    bool queueReadReceipt)
 {
     if (!target.valid() || !messageId.valid() || !conv)
         return;
@@ -1480,6 +1627,12 @@ void TdAccountData::rememberDisplayedMessage(
         messageId, MessageRouteInfo());
     MessageRouteInfo &record =
         inserted.first->second;
+    if (record.target.valid() &&
+        record.target != target) {
+        discardPendingReadReceipts(
+            target.chatId(), {messageId});
+        record = MessageRouteInfo();
+    }
     record.target = target;
     record.conversationType =
         purple_conversation_get_type(conv);
@@ -1490,11 +1643,20 @@ void TdAccountData::rememberDisplayedMessage(
     record.sender = sender;
     record.timestamp = timestamp;
     record.flags = flags;
-    if (inserted.second)
-        pruneMessageRoutes(target.chatId());
+    if (queueReadReceipt && !record.readReceiptQueued) {
+        record.readReceiptQueued = true;
+        auto &pending = m_pendingReadReceipts[target];
+        if (std::find(
+                pending.begin(), pending.end(),
+                messageId) == pending.end()) {
+            pending.push_back(messageId);
+        }
+    }
+    pruneMessageRoutes(target.chatId(), messageId);
 }
 
-void TdAccountData::pruneMessageRoutes(ChatId chatId)
+void TdAccountData::pruneMessageRoutes(
+    ChatId chatId, MessageId protectedMessageId)
 {
     auto chatMessages = m_messageRoutes.find(chatId);
     if (chatMessages == m_messageRoutes.end())
@@ -1506,6 +1668,15 @@ void TdAccountData::pruneMessageRoutes(ChatId chatId)
             messages.upper_bound(MessageId());
         if (oldestServerMessage == messages.end())
             oldestServerMessage = messages.begin();
+        if (oldestServerMessage->first ==
+            protectedMessageId) {
+            auto replacement = std::next(oldestServerMessage);
+            if (replacement == messages.end())
+                replacement = messages.begin();
+            if (replacement->first == protectedMessageId)
+                break;
+            oldestServerMessage = replacement;
+        }
         messages.erase(oldestServerMessage);
     }
 }

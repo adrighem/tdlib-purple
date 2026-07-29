@@ -64,6 +64,10 @@ static std::string messageTypeToString(const td::td_api::MessageContent &content
     C(messageChatUpgradeTo)
     C(messageChatUpgradeFrom)
     C(messagePinMessage)
+    C(messageForumTopicCreated)
+    C(messageForumTopicEdited)
+    C(messageForumTopicIsClosedToggled)
+    C(messageForumTopicIsHiddenToggled)
     C(messageScreenshotTaken)
     C(messageChatSetTheme)
     C(messageCustomServiceAction)
@@ -239,6 +243,26 @@ ChatTarget getMessageRoomTarget(
         return ChatTarget::chat(target.chatId());
 
     return target;
+}
+
+bool areEquivalentConversationTargets(
+    ChatTarget first, ChatTarget second)
+{
+    if (first == second)
+        return true;
+    if (!first.valid() || !second.valid() ||
+        first.chatId() != second.chatId()) {
+        return false;
+    }
+
+    // General retains the legacy Purple room identity for compatibility.
+    // Child topics must always keep their exact, separate room identity.
+    return (first.isForumTopic() &&
+            first.forumTopicId() == ForumTopicId::general() &&
+            !second.isForumTopic()) ||
+           (second.isForumTopic() &&
+            second.forumTopicId() == ForumTopicId::general() &&
+            !first.isForumTopic());
 }
 
 PurpleConvChat *getChatConversation(

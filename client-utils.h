@@ -29,6 +29,8 @@ bool                isEligibleForumParent(
 ChatTarget          getMessageRoomTarget(
                         const td::td_api::chat &chat,
                         const td::td_api::message &message);
+bool                areEquivalentConversationTargets(
+                        ChatTarget first, ChatTarget second);
 PurpleConvChat *    getChatConversation(TdAccountData &account, const td::td_api::chat &chat,
                                         ChatTarget target, int chatPurpleId,
                                         const std::string &displayTitle,

@@ -279,8 +279,8 @@ TEST_F(MessageOrderTest, DownloadOrdering)
         ),
         ServGotImEvent(connection, purpleUserName(0), "followUp", PURPLE_MESSAGE_RECV, date[1])
     );
-    // TODO: third read receipt is technically premature but who cares
-    tgl.verifyRequest(*Mock_ViewMessages(chatIds[0], {messageId[0], messageId[1], messageId[2]}, true));
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[0], {messageId[0], messageId[1]}, true));
 
     tgl.reply(download2ReqId, make_object<file>(
         fileId[0], 10000, 10000,
@@ -294,4 +294,6 @@ TEST_F(MessageOrderTest, DownloadOrdering)
             PURPLE_MESSAGE_RECV, date[2]
         )
     );
+    tgl.verifyRequest(*Mock_ViewMessages(
+        chatIds[0], {messageId[2]}, true));
 }
