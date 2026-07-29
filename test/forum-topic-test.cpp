@@ -40,6 +40,54 @@ TEST(ForumTopicIdentityTest, AcceptsOnlyPositiveTopicIds)
               ForumTopicId::fromValue(std::numeric_limits<int32_t>::max()).value());
 }
 
+TEST(ForumTopicIdentityTest, DerivesLegacyTargetWithoutForumTopic)
+{
+    const int64_t chatIdValue = -7000;
+    const ChatId chatId = ChatId::fromString("-7000");
+    object_ptr<message> withoutTopic = makeMessage(
+        1, 2, chatIdValue, false, 3, makeTextMessage("No topic"));
+    object_ptr<message> threadTopic = makeMessage(
+        2, 2, chatIdValue, false, 3, makeTextMessage("Thread"),
+        make_object<messageTopicThread>(99));
+
+    ASSERT_FALSE(withoutTopic->topic_id_);
+    ASSERT_EQ(ChatTarget::chat(chatId), getChatTarget(*withoutTopic));
+    ASSERT_EQ(ChatTarget::chat(chatId), getChatTarget(*threadTopic));
+}
+
+TEST(ForumTopicIdentityTest, DerivesExactForumTargetIncludingGeneral)
+{
+    const int64_t chatIdValue = -7000;
+    const ChatId chatId = ChatId::fromString("-7000");
+    object_ptr<message> general = makeMessage(
+        1, 2, chatIdValue, false, 3, makeTextMessage("General"),
+        make_object<messageTopicForum>(
+            ForumTopicId::general().value()));
+    object_ptr<message> child = makeMessage(
+        2, 2, chatIdValue, false, 3, makeTextMessage("Child"),
+        make_object<messageTopicForum>(42));
+
+    ASSERT_EQ(
+        ChatTarget::forumTopic(chatId, ForumTopicId::general()),
+        getChatTarget(*general));
+    ASSERT_EQ(
+        ChatTarget::forumTopic(chatId, ForumTopicId::fromValue(42)),
+        getChatTarget(*child));
+}
+
+TEST(ForumTopicIdentityTest, RejectsMalformedForumTopicIds)
+{
+    const int32_t invalidTopicIds[] = {0, -1};
+    for (int32_t topicId : invalidTopicIds) {
+        object_ptr<message> message = makeMessage(
+            1, 2, -7000, false, 3, makeTextMessage("Invalid"),
+            make_object<messageTopicForum>(topicId));
+
+        ASSERT_EQ(ChatTarget(), getChatTarget(*message));
+        ASSERT_FALSE(getChatTarget(*message).valid());
+    }
+}
+
 TEST(ForumTopicIdentityTest, FormatsCanonicalStableRoomNames)
 {
     const ChatId chatId = ChatId::fromString("-7000");

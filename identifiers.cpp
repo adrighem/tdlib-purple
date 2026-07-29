@@ -118,6 +118,25 @@ ChatId getChatId(const td::td_api::message &message)
     return ChatId(message.chat_id_);
 }
 
+ChatTarget getChatTarget(const td::td_api::message &message)
+{
+    const ChatId chatId = getChatId(message);
+    if (!message.topic_id_ ||
+        message.topic_id_->get_id() != td::td_api::messageTopicForum::ID) {
+        return ChatTarget::chat(chatId);
+    }
+
+    const td::td_api::messageTopicForum &forumTopic =
+        static_cast<const td::td_api::messageTopicForum &>(
+            *message.topic_id_);
+    const ForumTopicId topicId =
+        ForumTopicId::fromValue(forumTopic.forum_topic_id_);
+    if (!topicId.valid())
+        return ChatTarget();
+
+    return ChatTarget::forumTopic(chatId, topicId);
+}
+
 ChatId getChatId(const td::td_api::updateChatAction &update)
 {
     return ChatId(update.chat_id_);

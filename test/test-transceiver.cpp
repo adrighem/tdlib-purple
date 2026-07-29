@@ -442,12 +442,14 @@ object_ptr<preliminaryUploadFile> uploadFile(object_ptr<InputFile> &&file,
 }
 
 object_ptr<message> makeMessage(std::int64_t id_, std::int32_t sender_user_id_, std::int64_t chat_id_,
-                                bool is_outgoing_, std::int32_t date_, object_ptr<MessageContent> &&content_)
+                                bool is_outgoing_, std::int32_t date_, object_ptr<MessageContent> &&content_,
+                                object_ptr<MessageTopic> &&topic_id_)
 {
     auto result = make_object<message>();
     result->id_ = id_;
     result->sender_id_ = make_object<messageSenderUser>(sender_user_id_);
     result->chat_id_ = chat_id_;
+    result->topic_id_ = std::move(topic_id_);
     result->sending_state_ = is_outgoing_ ? make_object<messageSendingStatePending>(0) : nullptr;
     result->is_outgoing_ = is_outgoing_;
     result->date_ = date_;

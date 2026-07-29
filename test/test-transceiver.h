@@ -178,7 +178,8 @@ object_ptr<preliminaryUploadFile> uploadFile(object_ptr<InputFile> &&file,
                                              std::int32_t priority);
 
 object_ptr<message> makeMessage(std::int64_t id_, std::int32_t sender_user_id_, std::int64_t chat_id_,
-                                bool is_outgoing_, std::int32_t date_, object_ptr<MessageContent> &&content_);
+                                bool is_outgoing_, std::int32_t date_, object_ptr<MessageContent> &&content_,
+                                object_ptr<MessageTopic> &&topic_id_ = nullptr);
 object_ptr<messageReplyToMessage> makeMessageReplyTo(std::int64_t chat_id, std::int64_t message_id);
 object_ptr<messageText> makeTextMessage(const std::string &text);
 object_ptr<photoSize> makePhotoSize(std::string const &type,
