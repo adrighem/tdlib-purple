@@ -107,3 +107,120 @@ jobs:
 
       - name: Test installation
         run: DESTDIR=tdprpl_destdir cmake --build build --target install
+
+  build_and_test_purple3:
+    runs-on: ubuntu-24.04
+    container:
+      image: >-
+        docker.io/pidgin/builders@sha256:23b80f85838f999b385046fe606393cf7cb4279eb0adb53d0717535812f022a1
+
+    env:
+      PIDGIN_REVISION: "a412f2ead95d60249ca0397b8dfb466b853fad36"
+      PIDGIN_ARCHIVE_SHA256: >-
+        c52e3edda874d7c05a927bd2c9c8a5502f6606dca3eb933e80549a63b04d4a43
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          persist-credentials: false
+
+      - name: Fetch pinned Pidgin source
+        run: |
+          env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/github/home USER=root LANG=C LC_ALL=C \
+            PIDGIN_REVISION="${PIDGIN_REVISION}" \
+            PIDGIN_ARCHIVE_SHA256="${PIDGIN_ARCHIVE_SHA256}" \
+            sh -eu <<'EOF'
+          mkdir -p /tmp/pidgin-source
+          archive_url=https://keep.imfreedom.org/pidgin/pidgin/archive
+          wget -q "${archive_url}/${PIDGIN_REVISION}.tar.gz" \
+            -O /tmp/pidgin.tar.gz
+          printf '%s  %s\n' \
+            "${PIDGIN_ARCHIVE_SHA256}" /tmp/pidgin.tar.gz |
+            sha256sum --check --status
+          tar -xzf /tmp/pidgin.tar.gz \
+            --strip-components=1 \
+            -C /tmp/pidgin-source
+          EOF
+
+      - name: Build pinned Purple 3
+        run: |
+          env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/github/home USER=root LANG=C LC_ALL=C \
+            sh -eu <<'EOF'
+          meson setup /tmp/pidgin-build /tmp/pidgin-source \
+            --buildtype=debug \
+            -Dauto_features=disabled \
+            -Dgtkui=false \
+            -Dintrospection=false \
+            -Ddoc=false \
+            -Dgplugin:doc=false \
+            -Dgplugin:help2man=false \
+            -Dgplugin:introspection=false \
+            -Dgplugin:install-gplugin-query=false \
+            -Dgplugin:install-gplugin-gtk4-viewer=false \
+            -Dgplugin:lua=false \
+            -Dgplugin:python3=false \
+            -Dgplugin:vapi=false \
+            -Dbirb:doc=false \
+            -Dbirb:introspection=false \
+            -Dhasl:doc=false \
+            -Dhasl:introspection=false \
+            -Dseagull:doc=false \
+            -Dseagull:introspection=false
+          meson compile -C /tmp/pidgin-build purple3
+          EOF
+
+      - name: Build and test Purple 3 adapter
+        run: |
+          env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/github/home USER=root LANG=C LC_ALL=C \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            sh -eu <<'EOF'
+          meson devenv -C /tmp/pidgin-build \
+            --workdir "${GITHUB_WORKSPACE}" \
+            cmake -S purple3 -B /tmp/tdlib-purple3-debug -G Ninja \
+              -DCMAKE_BUILD_TYPE=Debug
+          meson devenv -C /tmp/pidgin-build \
+            --workdir "${GITHUB_WORKSPACE}" \
+            cmake --build /tmp/tdlib-purple3-debug
+          meson devenv -C /tmp/pidgin-build \
+            --workdir "${GITHUB_WORKSPACE}" \
+            ctest --test-dir /tmp/tdlib-purple3-debug \
+              --output-on-failure \
+              --no-tests=error
+          EOF
+
+      - name: Test configured Purple 3 adapter without GLib assertions
+        run: |
+          env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/github/home USER=root LANG=C LC_ALL=C \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            sh -eu <<'EOF'
+          umask 077
+          test_credential_dir=/tmp/tdlib-purple3-test-credentials
+          mkdir "${test_credential_dir}"
+          printf '%s\n' 1 \
+            > "${test_credential_dir}/api-id"
+          printf '%032d\n' 0 \
+            > "${test_credential_dir}/api-hash"
+          meson devenv -C /tmp/pidgin-build \
+            --workdir "${GITHUB_WORKSPACE}" \
+            cmake -S purple3 -B /tmp/tdlib-purple3-release -G Ninja \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_C_FLAGS=-DG_DISABLE_ASSERT \
+              -DTDLIB_PURPLE_API_ID_FILE="${test_credential_dir}/api-id" \
+              -DTDLIB_PURPLE_API_HASH_FILE="${test_credential_dir}/api-hash"
+          meson devenv -C /tmp/pidgin-build \
+            --workdir "${GITHUB_WORKSPACE}" \
+            cmake --build /tmp/tdlib-purple3-release
+          meson devenv -C /tmp/pidgin-build \
+            --workdir "${GITHUB_WORKSPACE}" \
+            ctest --test-dir /tmp/tdlib-purple3-release \
+              --output-on-failure \
+              --no-tests=error
+          EOF

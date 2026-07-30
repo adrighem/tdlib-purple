@@ -24,11 +24,18 @@
 #include <gplugin.h>
 #include <purple.h>
 
+#include "telegram-application-credentials-state.h"
+
 #define TELEGRAM_TDLIB_PLUGIN_ID "telegram-tdlib"
 #define TELEGRAM_TDLIB_LEGACY_SETTING_PHONE_NUMBER "phone-number"
 #define TELEGRAM_TDLIB_LEGACY_SETTING_API_ID "api-id"
 #define TELEGRAM_TDLIB_LEGACY_SETTING_API_HASH "api-hash"
 #define TELEGRAM_TDLIB_SETTING_ENABLE_SECRET_CHATS "enable-secret-chats"
+#if TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
+#define PURPLE3_SMOKE_PROVIDER_STATE_ERROR G_IO_ERROR_NOT_SUPPORTED
+#else
+#define PURPLE3_SMOKE_PROVIDER_STATE_ERROR G_IO_ERROR_NOT_INITIALIZED
+#endif
 
 typedef struct {
     GMainLoop *loop;
@@ -566,9 +573,18 @@ purple3_smoke_assert_unrelated_account_not_migrated(PurpleCore *core)
 }
 
 static void
-purple3_smoke_assert_connect_not_supported(PurpleConnection *connection,
-                                           GCancellable *cancellable,
-                                           int expected_error_code)
+purple3_smoke_assert_provider_state_error(const GError *error)
+{
+    g_assert_error(
+        error,
+        G_IO_ERROR,
+        PURPLE3_SMOKE_PROVIDER_STATE_ERROR);
+}
+
+static void
+purple3_smoke_assert_connect_error(PurpleConnection *connection,
+                                   GCancellable *cancellable,
+                                   int expected_error_code)
 {
     Purple3SmokeAsyncWait *wait = NULL;
     GError *error = NULL;
@@ -669,8 +685,8 @@ purple3_smoke_assert_connection_lifecycle(PurpleProtocol *protocol)
         G_OBJECT(connection_cancellable_weak),
         &connection_cancellable_weak);
 
-    purple3_smoke_assert_connect_not_supported(
-        connection, NULL, G_IO_ERROR_NOT_SUPPORTED);
+    purple3_smoke_assert_connect_error(
+        connection, NULL, PURPLE3_SMOKE_PROVIDER_STATE_ERROR);
     purple3_smoke_assert_disconnect_succeeds(
         connection, NULL);
 
@@ -682,7 +698,7 @@ purple3_smoke_assert_connection_lifecycle(PurpleProtocol *protocol)
     g_object_add_weak_pointer(G_OBJECT(cancellable), &cancellable_weak);
     g_cancellable_cancel(cancellable);
 
-    purple3_smoke_assert_connect_not_supported(
+    purple3_smoke_assert_connect_error(
         connection, cancellable, G_IO_ERROR_CANCELLED);
     purple3_smoke_assert_disconnect_succeeds(connection, cancellable);
     purple3_smoke_assert_disconnect_succeeds(connection, cancellable);
@@ -784,7 +800,7 @@ purple3_smoke_assert_account_connect_failure_releases_connection(void)
     g_assert_null(purple_account_get_connection(account));
 
     error = purple_account_get_error(account);
-    g_assert_error(error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED);
+    purple3_smoke_assert_provider_state_error(error);
 
     wait.timeout_id = g_timeout_add(
         25, purple3_smoke_account_connect_quiescence_cb, &wait);

@@ -5,6 +5,9 @@ project(tdlib-purple-purple3 VERSION ${VERSION} LANGUAGES C)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(Purple3 REQUIRED IMPORTED_TARGET purple-3)
+include(
+    "${CMAKE_CURRENT_SOURCE_DIR}/../cmake/TelegramApplicationCredentials.cmake"
+)
 find_program(
     GLIB_COMPILE_RESOURCES
     NAMES glib-compile-resources
@@ -35,6 +38,25 @@ function(tdlib_purple3_target_defaults target)
     endif()
 endfunction()
 
+function(tdlib_purple3_test_target_defaults target)
+    tdlib_purple3_target_defaults(${target})
+
+    # GLib turns g_test_init() into an immediate failure when assertions are
+    # disabled. Tests must retain their assertions even in a release build.
+    if (CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
+        target_compile_options(${target} PRIVATE -UG_DISABLE_ASSERT)
+    elseif (MSVC)
+        target_compile_options(${target} PRIVATE /UG_DISABLE_ASSERT)
+    endif()
+endfunction()
+
+tdlib_purple_configure_application_credentials(
+    "tdlib-purple-purple3"
+    TDLIB_PURPLE3_CREDENTIALS_PROVIDER_SOURCE
+    TDLIB_PURPLE3_CREDENTIALS_REFRESH_TARGET
+    TDLIB_PURPLE3_CREDENTIALS_STATE_HEADER
+)
+
 set(PURPLE3_RESOURCES_C
     "${CMAKE_CURRENT_BINARY_DIR}/telegram-purple3-resources.c"
 )
@@ -58,11 +80,20 @@ add_custom_command(
 
 add_library(telegram-tdlib-purple3 MODULE
     "${PURPLE3_RESOURCES_C}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../credentials/telegram-application-credentials.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../credentials/telegram-application-credentials.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../credentials/telegram-application-credentials-private.h"
+    "${TDLIB_PURPLE3_CREDENTIALS_PROVIDER_SOURCE}"
+    telegram-purple3-application-credentials.c
+    telegram-purple3-application-credentials.h
     telegram-purple3-connection.c
     telegram-purple3-connection.h
     telegram-purple3-plugin.c
     telegram-purple3-protocol.c
     telegram-purple3-protocol.h
+)
+target_include_directories(telegram-tdlib-purple3 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/../credentials"
 )
 target_compile_definitions(telegram-tdlib-purple3 PRIVATE
     GETTEXT_PACKAGE="tdlib-purple"
@@ -74,21 +105,106 @@ set_target_properties(telegram-tdlib-purple3 PROPERTIES
     OUTPUT_NAME telegram-tdlib
 )
 tdlib_purple3_target_defaults(telegram-tdlib-purple3)
+if (NOT "${TDLIB_PURPLE3_CREDENTIALS_REFRESH_TARGET}" STREQUAL "")
+    add_dependencies(
+        telegram-tdlib-purple3
+        "${TDLIB_PURPLE3_CREDENTIALS_REFRESH_TARGET}"
+    )
+endif()
 
 include(CTest)
 if (BUILD_TESTING)
+    set(
+        PURPLE3_APPLICATION_CREDENTIALS_CORE
+        "${CMAKE_CURRENT_SOURCE_DIR}/../credentials/telegram-application-credentials.c"
+        telegram-purple3-application-credentials.c
+    )
+
+    add_executable(purple3-application-credentials-test
+        ${PURPLE3_APPLICATION_CREDENTIALS_CORE}
+        test/application-credentials-test.c
+        test/application-credentials-test-backend.c
+        test/application-credentials-test-backend.h
+    )
+    target_include_directories(purple3-application-credentials-test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../credentials"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    )
+    target_compile_definitions(
+        purple3-application-credentials-test
+        PRIVATE GETTEXT_PACKAGE="tdlib-purple"
+    )
+    target_link_libraries(
+        purple3-application-credentials-test
+        PRIVATE PkgConfig::Purple3
+    )
+    tdlib_purple3_test_target_defaults(
+        purple3-application-credentials-test
+    )
+
+    add_executable(purple3-application-credentials-stub-test
+        ${PURPLE3_APPLICATION_CREDENTIALS_CORE}
+        "${CMAKE_CURRENT_SOURCE_DIR}/../credentials/telegram-application-credentials-stub.c"
+        test/application-credentials-stub-test.c
+    )
+    target_include_directories(
+        purple3-application-credentials-stub-test
+        PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../credentials"
+    )
+    target_compile_definitions(
+        purple3-application-credentials-stub-test
+        PRIVATE GETTEXT_PACKAGE="tdlib-purple"
+    )
+    target_link_libraries(
+        purple3-application-credentials-stub-test
+        PRIVATE PkgConfig::Purple3
+    )
+    tdlib_purple3_test_target_defaults(
+        purple3-application-credentials-stub-test
+    )
+
     add_executable(purple3-plugin-smoke
+        "${TDLIB_PURPLE3_CREDENTIALS_STATE_HEADER}"
         test/plugin-smoke.c
     )
+    target_include_directories(purple3-plugin-smoke PRIVATE
+        "${CMAKE_CURRENT_BINARY_DIR}/.private"
+    )
     target_link_libraries(purple3-plugin-smoke PRIVATE PkgConfig::Purple3)
-    tdlib_purple3_target_defaults(purple3-plugin-smoke)
+    tdlib_purple3_test_target_defaults(purple3-plugin-smoke)
     add_dependencies(purple3-plugin-smoke telegram-tdlib-purple3)
+    if (NOT "${TDLIB_PURPLE3_CREDENTIALS_REFRESH_TARGET}" STREQUAL "")
+        add_dependencies(
+            purple3-plugin-smoke
+            "${TDLIB_PURPLE3_CREDENTIALS_REFRESH_TARGET}"
+        )
+    endif()
 
     set(PURPLE3_TEST_PROFILE "${CMAKE_CURRENT_BINARY_DIR}/test-profile")
     file(MAKE_DIRECTORY
         "${PURPLE3_TEST_PROFILE}/cache"
         "${PURPLE3_TEST_PROFILE}/config"
         "${PURPLE3_TEST_PROFILE}/data"
+    )
+
+    add_test(
+        NAME purple3-application-credentials
+        COMMAND purple3-application-credentials-test
+    )
+    add_test(
+        NAME purple3-application-credentials-stub
+        COMMAND purple3-application-credentials-stub-test
+    )
+    set_tests_properties(
+        purple3-application-credentials
+        purple3-application-credentials-stub
+        PROPERTIES
+            TIMEOUT 10
+            ENVIRONMENT
+                "G_DEBUG=fatal-warnings;LC_ALL=C;LANG=C;LANGUAGE=C"
     )
 
     add_test(

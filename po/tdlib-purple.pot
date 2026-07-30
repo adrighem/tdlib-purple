@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tdlib-purple\n"
 "Report-Msgid-Bugs-To: https://github.com/ars3niy/tdlib-purple/issues/new \n"
-"POT-Creation-Date: 2026-07-30 14:52+0200\n"
+"POT-Creation-Date: 2026-07-30 15:00+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -235,7 +235,11 @@ msgstr ""
 msgid "Download limit"
 msgstr ""
 
-#: ../purple3/telegram-purple3-connection.c:55
+#: ../purple3/telegram-purple3-application-credentials.c:32
+msgid "Telegram application credentials are unavailable in this build."
+msgstr ""
+
+#: ../purple3/telegram-purple3-connection.c:63
 msgid "Telegram connectivity is not implemented in the Purple 3 adapter yet."
 msgstr ""
 

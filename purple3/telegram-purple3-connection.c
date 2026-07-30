@@ -19,6 +19,7 @@
 #include <gio/gio.h>
 #include <glib/gi18n-lib.h>
 
+#include "telegram-purple3-application-credentials.h"
 #include "telegram-purple3-connection.h"
 
 struct _TelegramTdlibConnection {
@@ -41,6 +42,8 @@ telegram_tdlib_connection_connect_async(PurpleConnection *connection,
                                         GAsyncReadyCallback callback,
                                         gpointer data)
 {
+    TdlibPurpleApplicationCredentials credentials = {0};
+    GError *credentials_error = NULL;
     GTask *task = NULL;
 
     task = g_task_new(connection, cancellable, callback, data);
@@ -48,14 +51,21 @@ telegram_tdlib_connection_connect_async(PurpleConnection *connection,
         task, &telegram_tdlib_connection_connect_tag);
 
     if (!g_task_return_error_if_cancelled(task)) {
-        g_task_return_new_error_literal(
-            task,
-            G_IO_ERROR,
-            G_IO_ERROR_NOT_SUPPORTED,
-            _("Telegram connectivity is not implemented in the Purple 3 "
-              "adapter yet."));
+        if (!telegram_tdlib_copy_application_credentials(
+                &credentials, &credentials_error))
+        {
+            g_task_return_error(task, credentials_error);
+        } else {
+            g_task_return_new_error_literal(
+                task,
+                G_IO_ERROR,
+                G_IO_ERROR_NOT_SUPPORTED,
+                _("Telegram connectivity is not implemented in the Purple 3 "
+                  "adapter yet."));
+        }
     }
 
+    credentials = (TdlibPurpleApplicationCredentials){0};
     g_clear_object(&task);
 }
 
