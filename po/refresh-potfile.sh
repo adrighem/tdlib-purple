@@ -4,7 +4,12 @@ set -e
 
 cd "$(dirname $0)"
 
-POTFILES_DIFF="$(diff -u0 <(grep -Pv '^#' POTFILES.in) <(cd .. && ls -1 *.cpp) || true)"
+POTFILES_DIFF="$(
+    diff -u0 \
+        <(grep -Pv '^#' POTFILES.in) \
+        <(cd .. && { ls -1 *.cpp; ls -1 purple3/*.c; } | sort) \
+        || true
+)"
 if [ -n "${POTFILES_DIFF}" ]
 then
     echo "WARNING: po/POTFILES.in may need an update:"

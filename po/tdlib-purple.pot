@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tdlib-purple\n"
 "Report-Msgid-Bugs-To: https://github.com/ars3niy/tdlib-purple/issues/new \n"
-"POT-Creation-Date: 2026-07-29 20:12+0200\n"
+"POT-Creation-Date: 2026-07-30 11:03+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -233,6 +233,23 @@ msgstr ""
 #. TRANSLATOR: Title of a buddy-window error message
 #: ../purple-info.cpp:197
 msgid "Download limit"
+msgstr ""
+
+#: ../purple3/telegram-purple3-plugin.c:48
+msgid "Protocol"
+msgstr ""
+
+#: ../purple3/telegram-purple3-plugin.c:49
+msgid "Telegram protocol plugin using TDLib"
+msgstr ""
+
+#: ../purple3/telegram-purple3-plugin.c:50
+#: ../purple3/telegram-purple3-protocol.c:93
+msgid "Telegram protocol support using TDLib"
+msgstr ""
+
+#: ../purple3/telegram-purple3-protocol.c:52
+msgid "Telegram connectivity is not implemented in the Purple 3 adapter yet."
 msgstr ""
 
 #: ../receiving.cpp:202

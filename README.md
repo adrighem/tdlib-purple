@@ -67,6 +67,14 @@ Manual CMake builds need CMake 3.16 or newer and TDLib 1.8.65 or an API-compatib
 
 The repository and release packages intentionally do not embed Telegram API credentials. Register an application through [my.telegram.org](https://my.telegram.org), then enter its API ID and API hash in the Telegram account's Advanced settings in Pidgin. Do not put these values in source files, CMake command lines, logs, or bug reports.
 
+## Purple 3 Development
+
+Experimental Purple 3 work lives in the isolated [`purple3`](purple3)
+adapter. The current bootstrap registers and cleanly loads the
+`telegram-tdlib` protocol, but does not connect to Telegram yet. See
+[`purple3/README.md`](purple3/README.md) for the local build, test, and Pidgin
+development launch commands.
+
 ## Reporting Issues
 
 Bug reports and fixes are welcome. Please include:
