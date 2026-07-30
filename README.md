@@ -73,7 +73,29 @@ cmake -S . -B /path/to/private-build \
   -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
 ```
 
-The generator validates both files and refreshes the private generated source on every build. Rebuilding after rotating or removing the files updates the plugin. The generated source, object files, and final plugin contain extractable application credentials, so protect the build directory and binary and never commit or publish them.
+The two files must be distinct, owner-readable regular files outside the
+source tree, not symbolic links. On Unix, they must be owned by the user
+running the build and have no group or other permission bits. The API ID must
+be a canonical positive decimal integer no greater than `2147483647`; the API
+hash must contain exactly 32 hexadecimal characters.
+
+CMake caches the file paths, but not their contents. Omitting the `-D` options
+during a later reconfiguration does not clear them. Use a fresh build
+directory, or set both variables to empty, to return a build to credentialless
+mode:
+
+```sh
+cmake -S . -B /path/to/private-build \
+  -DTDLIB_PURPLE_API_ID_FILE= \
+  -DTDLIB_PURPLE_API_HASH_FILE=
+```
+
+The generator refreshes the private source on every build. Rebuilding after
+rotating either value embeds the new pair. Removing both files switches to the
+credentialless provider; removing only one stops the build. Generated source,
+object files, and the final plugin contain extractable application
+credentials. Protect the build directory and binary, and remember that older
+objects or binaries can retain an earlier pair.
 
 The repository and release packages intentionally use a credentialless provider. Such builds still load normally. On Purple 2, existing accounts can continue to use a complete API ID and API hash pair from the Advanced settings as a compatibility override. A partial or malformed override fails before any TDLib request is sent. Do not put credential values in source files, CMake command lines, logs, or bug reports.
 

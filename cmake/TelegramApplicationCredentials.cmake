@@ -66,11 +66,25 @@ function(
     output_source
     output_refresh_target
 )
+    set(_state_output_variable)
+    if (ARGC GREATER 3)
+        set(_state_output_variable "${ARGV3}")
+    endif()
+
     set(_private_directory "${CMAKE_CURRENT_BINARY_DIR}/.private")
     set(
         _provider_source
         "${_private_directory}/telegram-application-credentials-embedded.c"
     )
+    set(_state_header)
+    set(_state_arguments)
+    if (NOT "${_state_output_variable}" STREQUAL "")
+        set(
+            _state_header
+            "${_private_directory}/telegram-application-credentials-state.h"
+        )
+        list(APPEND _state_arguments "--state-output" "${_state_header}")
+    endif()
 
     set(_id_configured TRUE)
     set(_hash_configured TRUE)
@@ -118,6 +132,7 @@ function(
             "${_TDLIB_PURPLE_CREDENTIALS_STUB}"
             "--output"
             "${_provider_source}"
+            ${_state_arguments}
         RESULT_VARIABLE _generator_result
         OUTPUT_QUIET
         ERROR_VARIABLE _generator_diagnostic
@@ -146,8 +161,10 @@ function(
             "${_TDLIB_PURPLE_CREDENTIALS_STUB}"
             "--output"
             "${_provider_source}"
+            ${_state_arguments}
         BYPRODUCTS
             "${_provider_source}"
+            ${_state_header}
         DEPENDS
             "${_TDLIB_PURPLE_CREDENTIALS_GENERATOR}"
             "${_TDLIB_PURPLE_CREDENTIALS_STUB}"
@@ -160,7 +177,16 @@ function(
         "${_provider_source}"
         PROPERTIES GENERATED TRUE
     )
+    if (NOT "${_state_header}" STREQUAL "")
+        set_source_files_properties(
+            "${_state_header}"
+            PROPERTIES GENERATED TRUE
+        )
+    endif()
 
     set("${output_source}" "${_provider_source}" PARENT_SCOPE)
     set("${output_refresh_target}" "${_refresh_target}" PARENT_SCOPE)
+    if (NOT "${_state_output_variable}" STREQUAL "")
+        set("${_state_output_variable}" "${_state_header}" PARENT_SCOPE)
+    endif()
 endfunction()
