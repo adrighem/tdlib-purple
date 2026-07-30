@@ -2,7 +2,8 @@
 
 #include <glib.h>
 
-#include <deque>
+#include <algorithm>
+#include <list>
 #include <map>
 #include <mutex>
 #include <utility>
@@ -27,16 +28,87 @@ GMainContext *captureThreadDefaultContext()
 
 } // namespace
 
+struct TimeoutToken;
+
+enum class TimeoutKind {
+    Terminal,
+    Notification
+};
+
+enum class TimeoutAttachment {
+    Immediate,
+    AfterSend
+};
+
+enum class TerminalCallbackMode {
+    PendingResponse,
+    Explicit
+};
+
 class TdTransportState {
 public:
+    struct TimeoutInfo {
+        GSource *source = nullptr;
+        TimeoutToken *token = nullptr;
+        TdTransport::TimeoutCallback notificationCallback;
+        TdTransport::ResponseCallback terminalCallback;
+        TimeoutKind kind = TimeoutKind::Notification;
+        TerminalCallbackMode terminalCallbackMode =
+            TerminalCallbackMode::PendingResponse;
+
+        TimeoutInfo() = default;
+        TimeoutInfo(const TimeoutInfo &) = delete;
+        TimeoutInfo &operator=(const TimeoutInfo &) = delete;
+
+        TimeoutInfo(TimeoutInfo &&other) noexcept
+            : source(other.source),
+              token(other.token),
+              notificationCallback(
+                  std::move(other.notificationCallback)),
+              terminalCallback(
+                  std::move(other.terminalCallback)),
+              kind(other.kind),
+              terminalCallbackMode(other.terminalCallbackMode)
+        {
+            other.source = nullptr;
+            other.token = nullptr;
+            other.kind = TimeoutKind::Notification;
+            other.terminalCallbackMode =
+                TerminalCallbackMode::PendingResponse;
+        }
+
+        TimeoutInfo &operator=(TimeoutInfo &&) = delete;
+
+        void swap(TimeoutInfo &other) noexcept
+        {
+            std::swap(source, other.source);
+            std::swap(token, other.token);
+            notificationCallback.swap(
+                other.notificationCallback);
+            terminalCallback.swap(other.terminalCallback);
+            std::swap(kind, other.kind);
+            std::swap(
+                terminalCallbackMode,
+                other.terminalCallbackMode);
+        }
+    };
+
+    struct PendingRequest {
+        TdTransport::ResponseCallback responseCallback;
+        TimeoutInfo timeout;
+    };
+
     struct PendingDelivery {
         uint64_t requestId;
         TdTransport::ObjectPtr object;
+        TdTransport::ResponseCallback responseCallback;
+        TimeoutInfo canceledTimeout;
     };
 
     TdTransportState(
         TdTransport::SendCallback send,
-        TdTransport::UpdateCallback update)
+        TdTransport::UpdateCallback update,
+        TdTransport::TimeoutSourceFactory timeoutFactory)
         : context(captureThreadDefaultContext())
     {
         if (send) {
@@ -48,6 +120,11 @@ public:
             updateCallback =
                 std::make_shared<TdTransport::UpdateCallback>(
                     std::move(update));
+        }
+        if (timeoutFactory) {
+            timeoutSourceFactory =
+                std::make_shared<TdTransport::TimeoutSourceFactory>(
+                    std::move(timeoutFactory));
         }
     }
 
@@ -65,13 +142,71 @@ public:
     // until every source has run its destroy notifier.
     unsigned attachedSourceCount = 0;
     std::shared_ptr<TdTransportState> sourceLifetime;
-    std::deque<PendingDelivery> queue;
+    std::list<PendingDelivery> queue;
     std::shared_ptr<TdTransport::SendCallback> sendCallback;
     std::shared_ptr<TdTransport::UpdateCallback> updateCallback;
-    std::map<uint64_t, TdTransport::ResponseCallback> responseCallbacks;
+    std::shared_ptr<TdTransport::TimeoutSourceFactory>
+        timeoutSourceFactory;
+    std::map<uint64_t, PendingRequest> requests;
+};
+
+struct TimeoutToken {
+    std::weak_ptr<TdTransportState> state;
+    uint64_t requestId;
 };
 
 namespace {
+
+void destroyTimeoutSource(GSource *source)
+{
+    if (!source)
+        return;
+
+    g_source_destroy(source);
+    g_source_unref(source);
+}
+
+class OwnedTimeoutSource {
+public:
+    explicit OwnedTimeoutSource(GSource *source = nullptr)
+        : m_source(source)
+    {
+    }
+
+    ~OwnedTimeoutSource()
+    {
+        clear();
+    }
+
+    OwnedTimeoutSource(const OwnedTimeoutSource &) = delete;
+    OwnedTimeoutSource &operator=(const OwnedTimeoutSource &) = delete;
+
+    GSource *get() const
+    {
+        return m_source;
+    }
+
+    void adopt(GSource *source)
+    {
+        m_source = source;
+    }
+
+    GSource *release()
+    {
+        GSource *source = m_source;
+        m_source = nullptr;
+        return source;
+    }
+
+    void clear()
+    {
+        destroyTimeoutSource(m_source);
+        m_source = nullptr;
+    }
+
+private:
+    GSource *m_source;
+};
 
 void releaseSourceLifetime(gpointer userData)
 {
@@ -92,27 +227,33 @@ void releaseSourceLifetime(gpointer userData)
 bool dispatchOne(const std::shared_ptr<TdTransportState> &state)
 {
     TdTransportState::PendingDelivery delivery;
+    OwnedTimeoutSource timeoutSource;
     std::shared_ptr<TdTransport::UpdateCallback> updateCallback;
-    TdTransport::ResponseCallback responseCallback;
 
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         if (state->stopped || state->queue.empty())
             return false;
 
-        delivery = std::move(state->queue.front());
+        delivery.requestId = state->queue.front().requestId;
+        delivery.object = std::move(state->queue.front().object);
+        delivery.responseCallback.swap(
+            state->queue.front().responseCallback);
+        delivery.canceledTimeout.swap(
+            state->queue.front().canceledTimeout);
         state->queue.pop_front();
 
         if (delivery.requestId == 0) {
             updateCallback = state->updateCallback;
-        } else {
-            auto callback = state->responseCallbacks.find(delivery.requestId);
-            if (callback != state->responseCallbacks.end()) {
-                responseCallback = std::move(callback->second);
-                state->responseCallbacks.erase(callback);
-            }
         }
     }
+
+    // Source destruction and its destroy notifier must run on the captured
+    // context, never concurrently with a timeout callback.
+    timeoutSource.adopt(delivery.canceledTimeout.source);
+    delivery.canceledTimeout.source = nullptr;
+    delivery.canceledTimeout.token = nullptr;
+    timeoutSource.clear();
 
     if (!delivery.object)
         return true;
@@ -121,8 +262,8 @@ bool dispatchOne(const std::shared_ptr<TdTransportState> &state)
         if (delivery.requestId == 0) {
             if (updateCallback)
                 (*updateCallback)(std::move(delivery.object));
-        } else if (responseCallback) {
-            responseCallback(
+        } else if (delivery.responseCallback) {
+            delivery.responseCallback(
                 delivery.requestId, std::move(delivery.object));
         }
     } catch (...) {
@@ -203,9 +344,250 @@ void scheduleDispatchLocked(
     g_source_attach(source, state->context);
 }
 
-void enqueueDelivery(
+void deleteTimeoutToken(gpointer userData)
+{
+    delete static_cast<TimeoutToken *>(userData);
+}
+
+gboolean timeoutExpired(gpointer userData)
+{
+    TimeoutToken *token = static_cast<TimeoutToken *>(userData);
+    const uint64_t requestId = token->requestId;
+    std::shared_ptr<TdTransportState> state = token->state.lock();
+    if (!state)
+        return FALSE;
+
+    GSource *sourceToRelease = nullptr;
+    TimeoutKind kind = TimeoutKind::Notification;
+    TdTransport::ResponseCallback responseCallback;
+    TdTransport::ResponseCallback discardedResponseCallback;
+    TdTransport::TimeoutCallback notificationCallback;
+
+    try {
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            auto request = state->requests.find(requestId);
+            if (state->stopped ||
+                request == state->requests.end() ||
+                request->second.timeout.token != token) {
+                return FALSE;
+            }
+
+            kind = request->second.timeout.kind;
+            sourceToRelease = request->second.timeout.source;
+            request->second.timeout.source = nullptr;
+            request->second.timeout.token = nullptr;
+
+            if (kind == TimeoutKind::Terminal) {
+                if (request->second.timeout.terminalCallbackMode ==
+                    TerminalCallbackMode::Explicit) {
+                    responseCallback.swap(
+                        request->second.timeout.terminalCallback);
+                    discardedResponseCallback.swap(
+                        request->second.responseCallback);
+                } else {
+                    responseCallback.swap(
+                        request->second.responseCallback);
+                }
+                state->requests.erase(request);
+            } else {
+                notificationCallback.swap(
+                    request->second.timeout.notificationCallback);
+                request->second.timeout.kind =
+                    TimeoutKind::Notification;
+            }
+        }
+
+        // Drop the creator's source reference. The context retains the source
+        // for the duration of this dispatch and destroys it after FALSE is
+        // returned.
+        if (sourceToRelease)
+            g_source_unref(sourceToRelease);
+
+        try {
+            if (kind == TimeoutKind::Terminal) {
+                if (responseCallback)
+                    responseCallback(requestId, nullptr);
+            } else if (notificationCallback) {
+                notificationCallback(requestId);
+            }
+        } catch (...) {
+            // Never let an application callback unwind through GLib.
+        }
+    } catch (...) {
+        // GLib callbacks must not throw. If internal bookkeeping ever fails,
+        // shutdown or a later response will release the creator reference.
+    }
+
+    return FALSE;
+}
+
+GSource *createTimeoutSource(
+    const std::shared_ptr<TdTransportState> &state,
+    unsigned timeoutSeconds)
+{
+    std::shared_ptr<TdTransport::TimeoutSourceFactory> factory;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->stopped)
+            return nullptr;
+        factory = state->timeoutSourceFactory;
+    }
+
+    GSource *source = nullptr;
+    try {
+        if (factory) {
+            source = (*factory)(timeoutSeconds);
+        } else if (timeoutSeconds == 0) {
+            source = g_idle_source_new();
+        } else {
+            source = g_timeout_source_new_seconds(timeoutSeconds);
+        }
+    } catch (...) {
+        return nullptr;
+    }
+
+    if (!source)
+        return nullptr;
+
+    // A source factory transfers one reference and must return a fresh source.
+    // Do not mutate an invalid source that may already belong to another
+    // context.
+    if (g_source_is_destroyed(source) ||
+        g_source_get_context(source) != nullptr) {
+        g_source_unref(source);
+        return nullptr;
+    }
+
+    return source;
+}
+
+bool installTimeout(
     const std::shared_ptr<TdTransportState> &state,
     uint64_t requestId,
+    unsigned timeoutSeconds,
+    TdTransportState::TimeoutInfo timeout,
+    TimeoutAttachment attachment)
+{
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        auto request = state->requests.find(requestId);
+        if (state->stopped ||
+            request == state->requests.end() ||
+            request->second.timeout.source) {
+            return false;
+        }
+    }
+
+    OwnedTimeoutSource source(
+        createTimeoutSource(state, timeoutSeconds));
+    if (!source.get())
+        return false;
+
+    TimeoutToken *token = nullptr;
+    try {
+        token = new TimeoutToken{
+            std::weak_ptr<TdTransportState>(state), requestId};
+    } catch (...) {
+        return false;
+    }
+
+    g_source_set_priority(source.get(), G_PRIORITY_DEFAULT);
+    g_source_set_callback(
+        source.get(), timeoutExpired, token, deleteTimeoutToken);
+    timeout.source = source.get();
+    timeout.token = token;
+
+    bool installed = false;
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        auto request = state->requests.find(requestId);
+        if (!state->stopped &&
+            request != state->requests.end() &&
+            !request->second.timeout.source) {
+            request->second.timeout.swap(timeout);
+
+            if (attachment == TimeoutAttachment::AfterSend ||
+                g_source_attach(source.get(), state->context) != 0) {
+                installed = true;
+            } else {
+                request->second.timeout.swap(timeout);
+            }
+        }
+    }
+
+    if (installed)
+        source.release();
+
+    return installed;
+}
+
+bool installTerminalTimeout(
+    const std::shared_ptr<TdTransportState> &state,
+    uint64_t requestId,
+    unsigned timeoutSeconds,
+    TimeoutAttachment attachment,
+    TerminalCallbackMode callbackMode,
+    TdTransport::ResponseCallback timeoutCallback =
+        TdTransport::ResponseCallback())
+{
+    TdTransportState::TimeoutInfo timeout;
+    timeout.kind = TimeoutKind::Terminal;
+    timeout.terminalCallbackMode = callbackMode;
+    timeout.terminalCallback = std::move(timeoutCallback);
+    return installTimeout(
+        state,
+        requestId,
+        timeoutSeconds,
+        std::move(timeout),
+        attachment);
+}
+
+bool installNotificationTimeout(
+    const std::shared_ptr<TdTransportState> &state,
+    uint64_t requestId,
+    unsigned timeoutSeconds,
+    TdTransport::TimeoutCallback timeoutCallback)
+{
+    TdTransportState::TimeoutInfo timeout;
+    timeout.kind = TimeoutKind::Notification;
+    timeout.notificationCallback = std::move(timeoutCallback);
+    return installTimeout(
+        state,
+        requestId,
+        timeoutSeconds,
+        std::move(timeout),
+        TimeoutAttachment::Immediate);
+}
+
+bool attachPreparedTimeout(
+    const std::shared_ptr<TdTransportState> &state,
+    uint64_t requestId)
+{
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->stopped)
+        return false;
+
+    auto request = state->requests.find(requestId);
+    if (request == state->requests.end()) {
+        // A synchronous response already claimed and canceled the
+        // still-unattached source.
+        return true;
+    }
+
+    GSource *source = request->second.timeout.source;
+    if (!source || g_source_is_destroyed(source))
+        return false;
+
+    GMainContext *attachedContext = g_source_get_context(source);
+    if (attachedContext)
+        return attachedContext == state->context;
+
+    return g_source_attach(source, state->context) != 0;
+}
+
+void enqueueUpdate(
+    const std::shared_ptr<TdTransportState> &state,
     TdTransport::ObjectPtr object)
 {
     if (!object)
@@ -215,19 +597,128 @@ void enqueueDelivery(
     if (state->stopped)
         return;
 
-    state->queue.push_back(
-        TdTransportState::PendingDelivery{
-            requestId, std::move(object)});
+    state->queue.emplace_back();
+    state->queue.back().requestId = 0;
+    state->queue.back().object = std::move(object);
     scheduleDispatchLocked(state);
+}
+
+void receiveObject(
+    const std::shared_ptr<TdTransportState> &state,
+    uint64_t requestId,
+    TdTransport::ObjectPtr object)
+{
+    if (!object)
+        return;
+
+    if (requestId == 0) {
+        enqueueUpdate(state, std::move(object));
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->stopped)
+            return;
+
+        auto request = state->requests.find(requestId);
+        if (request == state->requests.end())
+            return;
+
+        state->queue.emplace_back();
+        state->queue.back().requestId = requestId;
+        state->queue.back().object = std::move(object);
+        state->queue.back().responseCallback.swap(
+            request->second.responseCallback);
+        state->queue.back().canceledTimeout.swap(
+            request->second.timeout);
+        state->requests.erase(request);
+        scheduleDispatchLocked(state);
+    }
+
+    // Claiming the request at ingress makes a received response win over a
+    // ready timeout even when its main-context delivery is still queued. The
+    // queued delivery cancels it on that context, or an already-selected
+    // timeout callback observes the missing request and becomes a no-op.
+}
+
+uint64_t reserveRequest(
+    const std::shared_ptr<TdTransportState> &state,
+    TdTransport::ResponseCallback responseCallback,
+    std::shared_ptr<TdTransport::SendCallback> &sender)
+{
+    std::lock_guard<std::mutex> lock(state->mutex);
+    if (state->stopped || !state->sendCallback)
+        return 0;
+
+    sender = state->sendCallback;
+    do {
+        ++state->lastRequestId;
+    } while (state->lastRequestId == 0 ||
+             state->requests.count(state->lastRequestId) != 0);
+
+    const uint64_t requestId = state->lastRequestId;
+    auto inserted = state->requests.emplace(
+        requestId, TdTransportState::PendingRequest());
+    inserted.first->second.responseCallback.swap(responseCallback);
+    return requestId;
+}
+
+void cancelRequest(
+    const std::shared_ptr<TdTransportState> &state,
+    uint64_t requestId)
+{
+    TdTransportState::PendingRequest canceledRequest;
+    TdTransportState::PendingDelivery canceledDelivery;
+    OwnedTimeoutSource timeoutSource;
+
+    {
+        std::lock_guard<std::mutex> lock(state->mutex);
+        auto request = state->requests.find(requestId);
+        if (request != state->requests.end()) {
+            canceledRequest.responseCallback.swap(
+                request->second.responseCallback);
+            canceledRequest.timeout.swap(request->second.timeout);
+            state->requests.erase(request);
+            timeoutSource.adopt(canceledRequest.timeout.source);
+            canceledRequest.timeout.source = nullptr;
+            canceledRequest.timeout.token = nullptr;
+        } else {
+            auto delivery = std::find_if(
+                state->queue.begin(),
+                state->queue.end(),
+                [requestId](
+                    const TdTransportState::PendingDelivery &candidate) {
+                    return candidate.requestId == requestId;
+                });
+            if (delivery != state->queue.end()) {
+                canceledDelivery.requestId = delivery->requestId;
+                canceledDelivery.object = std::move(delivery->object);
+                canceledDelivery.responseCallback.swap(
+                    delivery->responseCallback);
+                canceledDelivery.canceledTimeout.swap(
+                    delivery->canceledTimeout);
+                timeoutSource.adopt(
+                    canceledDelivery.canceledTimeout.source);
+                canceledDelivery.canceledTimeout.source = nullptr;
+                canceledDelivery.canceledTimeout.token = nullptr;
+                state->queue.erase(delivery);
+            }
+        }
+    }
+    // Callback captures and the timeout source are released after unlocking.
 }
 
 } // namespace
 
 TdTransport::TdTransport(
     SendCallback sendCallback,
-    UpdateCallback updateCallback)
+    UpdateCallback updateCallback,
+    TimeoutSourceFactory timeoutSourceFactory)
     : m_state(std::make_shared<TdTransportState>(
-          std::move(sendCallback), std::move(updateCallback)))
+          std::move(sendCallback),
+          std::move(updateCallback),
+          std::move(timeoutSourceFactory)))
 {
 }
 
@@ -241,41 +732,114 @@ uint64_t TdTransport::send(
     ResponseCallback responseCallback)
 {
     std::shared_ptr<TdTransportState> state = m_state;
+    if (!function)
+        return 0;
+
     std::shared_ptr<SendCallback> sendCallback;
-    uint64_t requestId = 0;
-
-    {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        if (state->stopped || !state->sendCallback || !function)
-            return 0;
-
-        sendCallback = state->sendCallback;
-        do {
-            ++state->lastRequestId;
-        } while (state->lastRequestId == 0 ||
-                 state->responseCallbacks.count(state->lastRequestId) != 0);
-
-        requestId = state->lastRequestId;
-        if (responseCallback) {
-            state->responseCallbacks.emplace(
-                requestId, std::move(responseCallback));
-        }
-    }
+    const uint64_t requestId = reserveRequest(
+        state, std::move(responseCallback), sendCallback);
+    if (requestId == 0)
+        return 0;
 
     try {
         (*sendCallback)(requestId, std::move(function));
     } catch (...) {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        state->responseCallbacks.erase(requestId);
+        cancelRequest(state, requestId);
         return 0;
     }
 
     return requestId;
 }
 
+uint64_t TdTransport::sendWithTimeout(
+    FunctionPtr function,
+    ResponseCallback responseCallback,
+    unsigned timeoutSeconds)
+{
+    std::shared_ptr<TdTransportState> state = m_state;
+    if (!function)
+        return 0;
+
+    std::shared_ptr<SendCallback> sendCallback;
+    const uint64_t requestId = reserveRequest(
+        state, std::move(responseCallback), sendCallback);
+    if (requestId == 0)
+        return 0;
+
+    // Publish the timer before the backend can synchronously respond, but do
+    // not attach it until send returns. This prevents a nested or concurrent
+    // context dispatch from timing out a request that has not been sent yet.
+    if (!installTerminalTimeout(
+            state,
+            requestId,
+            timeoutSeconds,
+            TimeoutAttachment::AfterSend,
+            TerminalCallbackMode::PendingResponse)) {
+        cancelRequest(state, requestId);
+        return 0;
+    }
+
+    try {
+        (*sendCallback)(requestId, std::move(function));
+    } catch (...) {
+        cancelRequest(state, requestId);
+        return 0;
+    }
+
+    if (!attachPreparedTimeout(state, requestId)) {
+        cancelRequest(state, requestId);
+        return 0;
+    }
+
+    return requestId;
+}
+
+bool TdTransport::setResponseTimeout(
+    uint64_t requestId,
+    unsigned timeoutSeconds)
+{
+    return installTerminalTimeout(
+        m_state,
+        requestId,
+        timeoutSeconds,
+        TimeoutAttachment::Immediate,
+        TerminalCallbackMode::PendingResponse);
+}
+
+bool TdTransport::setResponseTimeout(
+    uint64_t requestId,
+    unsigned timeoutSeconds,
+    ResponseCallback timeoutCallback)
+{
+    return installTerminalTimeout(
+        m_state,
+        requestId,
+        timeoutSeconds,
+        TimeoutAttachment::Immediate,
+        TerminalCallbackMode::Explicit,
+        std::move(timeoutCallback));
+}
+
+bool TdTransport::setNotificationTimeout(
+    uint64_t requestId,
+    unsigned timeoutSeconds,
+    TimeoutCallback timeoutCallback)
+{
+    return installNotificationTimeout(
+        m_state,
+        requestId,
+        timeoutSeconds,
+        std::move(timeoutCallback));
+}
+
 void TdTransport::receive(uint64_t requestId, ObjectPtr object)
 {
-    enqueueDelivery(m_state, requestId, std::move(object));
+    try {
+        receiveObject(m_state, requestId, std::move(object));
+    } catch (...) {
+        // Never let allocation or callback-bookkeeping failures escape a
+        // backend receive boundary.
+    }
 }
 
 TdTransport::ReceiveCallback TdTransport::receiver() const
@@ -286,7 +850,11 @@ TdTransport::ReceiveCallback TdTransport::receiver() const
         if (!state)
             return;
 
-        enqueueDelivery(state, requestId, std::move(object));
+        try {
+            receiveObject(state, requestId, std::move(object));
+        } catch (...) {
+            // Stable backend receivers must remain exception-safe.
+        }
     };
 }
 
@@ -294,10 +862,11 @@ void TdTransport::shutdown()
 {
     std::shared_ptr<TdTransportState> state = m_state;
     GSource *source = nullptr;
-    std::deque<TdTransportState::PendingDelivery> queuedDeliveries;
-    std::map<uint64_t, ResponseCallback> responseCallbacks;
+    std::list<TdTransportState::PendingDelivery> queuedDeliveries;
+    std::map<uint64_t, TdTransportState::PendingRequest> requests;
     std::shared_ptr<SendCallback> sendCallback;
     std::shared_ptr<UpdateCallback> updateCallback;
+    std::shared_ptr<TimeoutSourceFactory> timeoutSourceFactory;
 
     {
         std::lock_guard<std::mutex> lock(state->mutex);
@@ -308,13 +877,27 @@ void TdTransport::shutdown()
         source = state->dispatchSource;
         state->dispatchSource = nullptr;
         queuedDeliveries.swap(state->queue);
-        responseCallbacks.swap(state->responseCallbacks);
+        requests.swap(state->requests);
         sendCallback.swap(state->sendCallback);
         updateCallback.swap(state->updateCallback);
+        timeoutSourceFactory.swap(state->timeoutSourceFactory);
     }
 
     if (source) {
         g_source_destroy(source);
         g_source_unref(source);
+    }
+
+    for (auto &delivery: queuedDeliveries) {
+        destroyTimeoutSource(delivery.canceledTimeout.source);
+        delivery.canceledTimeout.source = nullptr;
+        delivery.canceledTimeout.token = nullptr;
+    }
+
+    for (auto &request: requests) {
+        GSource *timeoutSource = request.second.timeout.source;
+        request.second.timeout.source = nullptr;
+        request.second.timeout.token = nullptr;
+        destroyTimeoutSource(timeoutSource);
     }
 }

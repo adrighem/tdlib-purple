@@ -36,11 +36,17 @@ protected:
 
     std::unique_ptr<TdTransport> makeTransport(
         TdTransport::SendCallback sendCallback,
-        TdTransport::UpdateCallback updateCallback = TdTransport::UpdateCallback())
+        TdTransport::UpdateCallback updateCallback =
+            TdTransport::UpdateCallback(),
+        TdTransport::TimeoutSourceFactory timeoutSourceFactory =
+            TdTransport::TimeoutSourceFactory())
     {
         g_main_context_push_thread_default(m_context);
         std::unique_ptr<TdTransport> transport(
-            new TdTransport(std::move(sendCallback), std::move(updateCallback)));
+            new TdTransport(
+                std::move(sendCallback),
+                std::move(updateCallback),
+                std::move(timeoutSourceFactory)));
         g_main_context_pop_thread_default(m_context);
         return transport;
     }
@@ -53,6 +59,13 @@ protected:
 
     GMainContext *m_context;
 };
+
+TdTransport::TimeoutSourceFactory immediateTimeoutSourceFactory()
+{
+    return [](unsigned) {
+        return g_idle_source_new();
+    };
+}
 
 TEST_F(TdTransportTest, RoutesOutOfOrderResponsesToTheirMatchingCallbacks)
 {
@@ -458,6 +471,554 @@ TEST_F(TdTransportTest, ConcurrentProducerAndContextDrainLoseNoDeliveries)
     drainContext(m_context);
 
     EXPECT_EQ(deliveryCount, callbackCount);
+}
+
+TEST_F(TdTransportTest, QueuedResponseBeatsReadyTerminalTimeout)
+{
+    unsigned callbackCount = 0;
+    bool receivedObject = false;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->sendWithTimeout(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object> object) {
+            ++callbackCount;
+            receivedObject = object != nullptr;
+        },
+        1);
+
+    transport->receive(requestId, make_object<ok>());
+    drainContext(m_context);
+
+    EXPECT_EQ(1u, callbackCount);
+    EXPECT_TRUE(receivedObject);
+}
+
+TEST_F(TdTransportTest, TerminalTimeoutDropsLateAndDuplicateResponses)
+{
+    std::vector<bool> receivedObjects;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->sendWithTimeout(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object> object) {
+            receivedObjects.push_back(object != nullptr);
+        },
+        1);
+
+    drainContext(m_context);
+    transport->receive(requestId, make_object<ok>());
+    transport->receive(requestId, make_object<ok>());
+    drainContext(m_context);
+
+    EXPECT_EQ((std::vector<bool>{false}), receivedObjects);
+}
+
+TEST_F(TdTransportTest, SynchronousResponseCancelsPreinstalledTimeout)
+{
+    TdTransport *transportPtr = nullptr;
+    unsigned callbackCount = 0;
+    bool receivedObject = false;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [&](uint64_t requestId, object_ptr<td::td_api::Function>) {
+            transportPtr->receive(requestId, make_object<ok>());
+        },
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    transportPtr = transport.get();
+
+    transport->sendWithTimeout(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object> object) {
+            ++callbackCount;
+            receivedObject = object != nullptr;
+        },
+        1);
+
+    EXPECT_EQ(0u, callbackCount);
+    drainContext(m_context);
+    EXPECT_EQ(1u, callbackCount);
+    EXPECT_TRUE(receivedObject);
+}
+
+TEST_F(TdTransportTest, TimeoutCannotFireBeforeBackendSendReturns)
+{
+    bool senderReturned = false;
+    bool callbackCalled = false;
+    bool callbackObservedSenderReturn = false;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [&](uint64_t, object_ptr<td::td_api::Function>) {
+            g_main_context_iteration(m_context, FALSE);
+            senderReturned = true;
+        },
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+
+    ASSERT_NE(
+        0u,
+        transport->sendWithTimeout(
+            make_object<getMe>(),
+            [&](uint64_t, object_ptr<Object>) {
+                callbackCalled = true;
+                callbackObservedSenderReturn = senderReturned;
+            },
+            1));
+
+    EXPECT_FALSE(callbackCalled);
+    drainContext(m_context);
+    EXPECT_TRUE(callbackCalled);
+    EXPECT_TRUE(callbackObservedSenderReturn);
+}
+
+TEST_F(TdTransportTest, NotificationTimeoutPreservesNormalResponse)
+{
+    unsigned timeoutCount = 0;
+    unsigned responseCount = 0;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->send(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object>) {
+            ++responseCount;
+        });
+
+    ASSERT_TRUE(transport->setNotificationTimeout(
+        requestId, 1, [&](uint64_t) {
+            ++timeoutCount;
+        }));
+    drainContext(m_context);
+    EXPECT_EQ(1u, timeoutCount);
+    EXPECT_EQ(0u, responseCount);
+
+    transport->receive(requestId, make_object<ok>());
+    transport->receive(requestId, make_object<ok>());
+    drainContext(m_context);
+    EXPECT_EQ(1u, timeoutCount);
+    EXPECT_EQ(1u, responseCount);
+}
+
+TEST_F(TdTransportTest, ResponseCancelsNotificationAndReleasesCapture)
+{
+    std::shared_ptr<int> capture = std::make_shared<int>(1);
+    std::weak_ptr<int> weakCapture = capture;
+    unsigned responseCount = 0;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->send(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object>) {
+            ++responseCount;
+        });
+
+    ASSERT_TRUE(transport->setNotificationTimeout(
+        requestId, 1, [capture](uint64_t) {}));
+    capture.reset();
+    EXPECT_FALSE(weakCapture.expired());
+
+    transport->receive(requestId, make_object<ok>());
+    EXPECT_FALSE(weakCapture.expired());
+    drainContext(m_context);
+    EXPECT_TRUE(weakCapture.expired());
+    EXPECT_EQ(1u, responseCount);
+}
+
+TEST_F(TdTransportTest, NullResponseDoesNotBeatRealResponseOrTimeout)
+{
+    unsigned callbackCount = 0;
+    bool receivedObject = false;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->sendWithTimeout(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object> object) {
+            ++callbackCount;
+            receivedObject = object != nullptr;
+        },
+        1);
+
+    transport->receive(requestId, nullptr);
+    transport->receive(requestId, make_object<ok>());
+    drainContext(m_context);
+    EXPECT_EQ(1u, callbackCount);
+    EXPECT_TRUE(receivedObject);
+}
+
+TEST_F(TdTransportTest, NullResponseLeavesTerminalTimeoutActive)
+{
+    unsigned callbackCount = 0;
+    bool receivedObject = true;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->sendWithTimeout(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object> object) {
+            ++callbackCount;
+            receivedObject = object != nullptr;
+        },
+        1);
+
+    transport->receive(requestId, nullptr);
+    drainContext(m_context);
+    EXPECT_EQ(1u, callbackCount);
+    EXPECT_FALSE(receivedObject);
+}
+
+TEST_F(TdTransportTest, TerminalTimeoutCallbackMayDestroyTransport)
+{
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    transport->sendWithTimeout(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object>) {
+            transport.reset();
+        },
+        1);
+
+    drainContext(m_context);
+    EXPECT_EQ(nullptr, transport);
+}
+
+TEST_F(TdTransportTest, NotificationTimeoutCallbackMayDestroyTransport)
+{
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->send(
+        make_object<getMe>(),
+        [](uint64_t, object_ptr<Object>) {});
+    ASSERT_TRUE(transport->setNotificationTimeout(
+        requestId, 1, [&](uint64_t) {
+            transport.reset();
+        }));
+
+    drainContext(m_context);
+    EXPECT_EQ(nullptr, transport);
+}
+
+TEST_F(TdTransportTest, ShutdownCancelsTimeoutAndReleasesCaptures)
+{
+    std::shared_ptr<int> responseCapture = std::make_shared<int>(1);
+    std::shared_ptr<int> factoryCapture = std::make_shared<int>(2);
+    std::weak_ptr<int> weakResponseCapture = responseCapture;
+    std::weak_ptr<int> weakFactoryCapture = factoryCapture;
+    TdTransport::TimeoutSourceFactory factory =
+        [factoryCapture](unsigned) {
+            return g_idle_source_new();
+        };
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        std::move(factory));
+    transport->sendWithTimeout(
+        make_object<getMe>(),
+        [responseCapture](uint64_t, object_ptr<Object>) {},
+        1);
+    responseCapture.reset();
+    factoryCapture.reset();
+
+    EXPECT_FALSE(weakResponseCapture.expired());
+    EXPECT_FALSE(weakFactoryCapture.expired());
+    transport->shutdown();
+    transport->shutdown();
+
+    EXPECT_TRUE(weakResponseCapture.expired());
+    EXPECT_TRUE(weakFactoryCapture.expired());
+    EXPECT_FALSE(g_main_context_pending(m_context));
+}
+
+TEST_F(TdTransportTest, RejectsDuplicateAndCompletedRequestTimers)
+{
+    std::shared_ptr<int> rejectedCapture = std::make_shared<int>(1);
+    std::weak_ptr<int> weakRejectedCapture = rejectedCapture;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->send(
+        make_object<getMe>(),
+        [](uint64_t, object_ptr<Object>) {});
+
+    ASSERT_TRUE(transport->setNotificationTimeout(
+        requestId, 1, [](uint64_t) {}));
+    EXPECT_FALSE(transport->setNotificationTimeout(
+        requestId, 1, [rejectedCapture](uint64_t) {}));
+    rejectedCapture.reset();
+    EXPECT_TRUE(weakRejectedCapture.expired());
+
+    transport->receive(requestId, make_object<ok>());
+    drainContext(m_context);
+    EXPECT_FALSE(transport->setResponseTimeout(requestId, 1));
+    EXPECT_FALSE(transport->setResponseTimeout(requestId + 100, 1));
+}
+
+TEST_F(TdTransportTest, TimeoutUsesCapturedContext)
+{
+    bool callbackCalled = false;
+    bool ownedCapturedContext = false;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {});
+    transport->sendWithTimeout(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object>) {
+            callbackCalled = true;
+            ownedCapturedContext =
+                g_main_context_is_owner(m_context);
+        },
+        0);
+
+    g_main_context_iteration(nullptr, FALSE);
+    EXPECT_FALSE(callbackCalled);
+    drainContext(m_context);
+    EXPECT_TRUE(callbackCalled);
+    EXPECT_TRUE(ownedCapturedContext);
+}
+
+TEST_F(TdTransportTest, ThrowingTimeoutDoesNotStopLaterTimeout)
+{
+    unsigned finalTimeoutCount = 0;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t firstId = transport->send(
+        make_object<getMe>(),
+        [](uint64_t, object_ptr<Object>) {});
+    const uint64_t secondId = transport->send(
+        make_object<getMe>(),
+        [](uint64_t, object_ptr<Object>) {});
+
+    ASSERT_TRUE(transport->setNotificationTimeout(
+        firstId, 1, [](uint64_t) {
+            throw std::runtime_error("synthetic timeout failure");
+        }));
+    ASSERT_TRUE(transport->setNotificationTimeout(
+        secondId, 1, [&](uint64_t) {
+            ++finalTimeoutCount;
+        }));
+
+    EXPECT_NO_THROW(drainContext(m_context));
+    EXPECT_EQ(1u, finalTimeoutCount);
+}
+
+TEST_F(TdTransportTest, ExistingRequestCanReceiveTerminalTimeout)
+{
+    unsigned callbackCount = 0;
+    bool receivedObject = true;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->send(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object> object) {
+            ++callbackCount;
+            receivedObject = object != nullptr;
+        });
+
+    ASSERT_TRUE(transport->setResponseTimeout(requestId, 1));
+    drainContext(m_context);
+    EXPECT_EQ(1u, callbackCount);
+    EXPECT_FALSE(receivedObject);
+}
+
+TEST_F(TdTransportTest, TerminalTimeoutCanOverrideResponseCallback)
+{
+    unsigned responseCount = 0;
+    unsigned timeoutCount = 0;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+    const uint64_t requestId = transport->send(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object>) {
+            ++responseCount;
+        });
+
+    ASSERT_TRUE(transport->setResponseTimeout(
+        requestId,
+        1,
+        [&](uint64_t, object_ptr<Object> object) {
+            EXPECT_EQ(nullptr, object);
+            ++timeoutCount;
+        }));
+    drainContext(m_context);
+    transport->receive(requestId, make_object<ok>());
+    drainContext(m_context);
+
+    EXPECT_EQ(0u, responseCount);
+    EXPECT_EQ(1u, timeoutCount);
+}
+
+TEST_F(TdTransportTest, FailedTimeoutSourcePreventsSend)
+{
+    unsigned sendCount = 0;
+    std::shared_ptr<int> capture = std::make_shared<int>(1);
+    std::weak_ptr<int> weakCapture = capture;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [&](uint64_t, object_ptr<td::td_api::Function>) {
+            ++sendCount;
+        },
+        TdTransport::UpdateCallback(),
+        [](unsigned) -> GSource * {
+            return nullptr;
+        });
+
+    const uint64_t requestId = transport->sendWithTimeout(
+        make_object<getMe>(),
+        [capture](uint64_t, object_ptr<Object>) {},
+        1);
+    capture.reset();
+
+    EXPECT_EQ(0u, requestId);
+    EXPECT_EQ(0u, sendCount);
+    EXPECT_TRUE(weakCapture.expired());
+}
+
+TEST_F(TdTransportTest, ThrowingSenderRollsBackPreinstalledTimeout)
+{
+    unsigned callbackCount = 0;
+    std::shared_ptr<int> capture = std::make_shared<int>(1);
+    std::weak_ptr<int> weakCapture = capture;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {
+            throw std::runtime_error("synthetic send failure");
+        },
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+
+    const uint64_t requestId = transport->sendWithTimeout(
+        make_object<getMe>(),
+        [&, capture](uint64_t, object_ptr<Object>) {
+            ++callbackCount;
+        },
+        1);
+    capture.reset();
+
+    EXPECT_EQ(0u, requestId);
+    EXPECT_TRUE(weakCapture.expired());
+    drainContext(m_context);
+    EXPECT_EQ(0u, callbackCount);
+    EXPECT_FALSE(g_main_context_pending(m_context));
+}
+
+TEST_F(TdTransportTest, ResponseAndTimeoutRaceInvokesExactlyOnce)
+{
+    const unsigned iterationCount = 500;
+    unsigned callbackCount = 0;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        immediateTimeoutSourceFactory());
+
+    for (unsigned iteration = 0;
+         iteration < iterationCount;
+         ++iteration) {
+        const uint64_t requestId = transport->sendWithTimeout(
+            make_object<getMe>(),
+            [&](uint64_t, object_ptr<Object>) {
+                ++callbackCount;
+            },
+            1);
+        ASSERT_NE(0u, requestId);
+
+        std::atomic_bool start(false);
+        std::thread responder([&]() {
+            while (!start.load())
+                std::this_thread::yield();
+            transport->receive(requestId, make_object<ok>());
+        });
+        start = true;
+        g_main_context_iteration(m_context, FALSE);
+        responder.join();
+        drainContext(m_context);
+
+        ASSERT_EQ(iteration + 1, callbackCount);
+    }
+}
+
+TEST_F(TdTransportTest, RejectsInvalidAndThrowingTimeoutSources)
+{
+    GSource *attachedSource = nullptr;
+    std::unique_ptr<TdTransport> attachedTransport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        [&](unsigned) {
+            attachedSource = g_idle_source_new();
+            g_source_attach(attachedSource, m_context);
+            return attachedSource;
+        });
+    EXPECT_EQ(
+        0u,
+        attachedTransport->sendWithTimeout(
+            make_object<getMe>(),
+            [](uint64_t, object_ptr<Object>) {},
+            1));
+    ASSERT_NE(nullptr, attachedSource);
+    g_source_destroy(attachedSource);
+
+    std::unique_ptr<TdTransport> destroyedTransport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        [](unsigned) {
+            GSource *source = g_idle_source_new();
+            g_source_destroy(source);
+            return source;
+        });
+    EXPECT_EQ(
+        0u,
+        destroyedTransport->sendWithTimeout(
+            make_object<getMe>(),
+            [](uint64_t, object_ptr<Object>) {},
+            1));
+
+    std::unique_ptr<TdTransport> throwingTransport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        [](unsigned) -> GSource * {
+            throw std::runtime_error("synthetic factory failure");
+        });
+    EXPECT_EQ(
+        0u,
+        throwingTransport->sendWithTimeout(
+            make_object<getMe>(),
+            [](uint64_t, object_ptr<Object>) {},
+            1));
+}
+
+TEST_F(TdTransportTest, PassesTimeoutIntervalToFactoryUnchanged)
+{
+    unsigned observedTimeout = 0;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        TdTransport::UpdateCallback(),
+        [&](unsigned timeoutSeconds) {
+            observedTimeout = timeoutSeconds;
+            return g_idle_source_new();
+        });
+
+    ASSERT_NE(
+        0u,
+        transport->sendWithTimeout(
+            make_object<getMe>(),
+            [](uint64_t, object_ptr<Object>) {},
+            37));
+    EXPECT_EQ(37u, observedTimeout);
 }
 
 } // namespace
