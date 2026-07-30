@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tdlib-purple\n"
 "Report-Msgid-Bugs-To: https://github.com/ars3niy/tdlib-purple/issues/new \n"
-"POT-Creation-Date: 2026-07-30 12:01+0200\n"
+"POT-Creation-Date: 2026-07-30 13:15+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -239,61 +239,22 @@ msgstr ""
 msgid "Telegram connectivity is not implemented in the Purple 3 adapter yet."
 msgstr ""
 
-#: ../purple3/telegram-purple3-plugin.c:49
+#: ../purple3/telegram-purple3-plugin.c:171
 msgid "Protocol"
 msgstr ""
 
-#: ../purple3/telegram-purple3-plugin.c:50
+#: ../purple3/telegram-purple3-plugin.c:172
 msgid "Telegram protocol plugin using TDLib"
 msgstr ""
 
-#: ../purple3/telegram-purple3-plugin.c:51
-#: ../purple3/telegram-purple3-protocol.c:204
+#: ../purple3/telegram-purple3-plugin.c:173
+#: ../purple3/telegram-purple3-protocol.c:121
 msgid "Telegram protocol support using TDLib"
 msgstr ""
 
-#. TRANSLATOR: Buddy infobox, key
-#: ../purple3/telegram-purple3-protocol.c:52 ../tdlib-purple.cpp:412
-msgid "Phone number"
-msgstr ""
-
-#: ../purple3/telegram-purple3-protocol.c:55
-msgid "International format, for example +15551234567"
-msgstr ""
-
-#: ../purple3/telegram-purple3-protocol.c:61 ../tdlib-purple.cpp:1121
-msgid "API ID"
-msgstr ""
-
-#: ../purple3/telegram-purple3-protocol.c:64
-msgid "Numeric Telegram API ID from my.telegram.org"
-msgstr ""
-
 #. TRANSLATOR: Account settings, key (boolean)
-#: ../purple3/telegram-purple3-protocol.c:70 ../tdlib-purple.cpp:1097
+#: ../purple3/telegram-purple3-protocol.c:49 ../tdlib-purple.cpp:1097
 msgid "Enable secret chats (takes effect at reconnect)"
-msgstr ""
-
-#: ../purple3/telegram-purple3-protocol.c:98
-msgid "A phone number is required."
-msgstr ""
-
-#: ../purple3/telegram-purple3-protocol.c:109
-msgid "A Telegram API ID is required."
-msgstr ""
-
-#: ../purple3/telegram-purple3-protocol.c:118
-msgid ""
-"The Telegram API ID must be a positive decimal number without signs, spaces, "
-"or leading zeros."
-msgstr ""
-
-#: ../purple3/telegram-purple3-protocol.c:131
-msgid "The Telegram API ID must contain decimal digits only."
-msgstr ""
-
-#: ../purple3/telegram-purple3-protocol.c:143
-msgid "The Telegram API ID must be between 1 and 2147483647."
 msgstr ""
 
 #: ../receiving.cpp:202
@@ -1107,6 +1068,11 @@ msgid "Username"
 msgstr ""
 
 #. TRANSLATOR: Buddy infobox, key
+#: ../tdlib-purple.cpp:412
+msgid "Phone number"
+msgstr ""
+
+#. TRANSLATOR: Buddy infobox, key
 #: ../tdlib-purple.cpp:423
 msgid "Internal id"
 msgstr ""
@@ -1228,6 +1194,10 @@ msgstr ""
 #. TRANSLATOR: Account settings, key (boolean)
 #: ../tdlib-purple.cpp:1110
 msgid "Show self-destructing messages anyway"
+msgstr ""
+
+#: ../tdlib-purple.cpp:1121
+msgid "API ID"
 msgstr ""
 
 #: ../tdlib-purple.cpp:1125
