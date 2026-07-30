@@ -41,6 +41,35 @@ def _is_within(path, root):
         return False
 
 
+def _paths_alias(first, second, tolerate_second_errors=False):
+    try:
+        first_absolute = os.path.normcase(os.path.abspath(first))
+        second_absolute = os.path.normcase(os.path.abspath(second))
+        if first_absolute == second_absolute:
+            return True
+
+        first_resolved = os.path.normcase(
+            str(first.resolve(strict=False))
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        raise OSError("could not compare output paths") from error
+
+    try:
+        second_resolved = os.path.normcase(
+            str(second.resolve(strict=False))
+        )
+        if first_resolved == second_resolved:
+            return True
+
+        return os.path.samefile(first, second)
+    except FileNotFoundError:
+        return False
+    except (OSError, RuntimeError, ValueError) as error:
+        if tolerate_second_errors:
+            return False
+        raise OSError("could not compare output paths") from error
+
+
 def _read_private_ascii_file(path, invalid_value_code):
     try:
         if path.is_symlink():
@@ -120,6 +149,20 @@ def _render_provider(api_id, api_hash):
         "{\n"
         "    return &credentials;\n"
         "}\n"
+    ).encode("ascii")
+
+
+def _render_provider_state(available):
+    value = 1 if available else 0
+    return (
+        "/* Generated provider state. Contains no credentials. */\n"
+        "#ifndef TDLIB_PURPLE_APPLICATION_CREDENTIALS_STATE_H\n"
+        "#define TDLIB_PURPLE_APPLICATION_CREDENTIALS_STATE_H\n"
+        "\n"
+        "#define TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE "
+        f"{value}\n"
+        "\n"
+        "#endif\n"
     ).encode("ascii")
 
 
@@ -216,40 +259,90 @@ def generate_provider(
     source_root,
     stub_path,
     output_path,
+    state_output_path=None,
 ):
     output_path = Path(output_path)
     stub_path = Path(stub_path)
+    if api_id_path is not None:
+        api_id_path = Path(api_id_path)
+    if api_hash_path is not None:
+        api_hash_path = Path(api_hash_path)
+    if state_output_path is not None:
+        state_output_path = Path(state_output_path)
+
+    output_paths = [output_path]
+    if state_output_path is not None:
+        output_paths.append(state_output_path)
+    read_paths = [stub_path]
+    if api_id_path is not None:
+        read_paths.append(api_id_path)
+    if api_hash_path is not None:
+        read_paths.append(api_hash_path)
+
+    protected_output_indexes = set()
+    outputs_alias = False
+    try:
+        for index, candidate in enumerate(output_paths):
+            for other_output in output_paths[index + 1:]:
+                if _paths_alias(candidate, other_output):
+                    outputs_alias = True
+            for read_path in read_paths:
+                if _paths_alias(
+                        candidate, read_path, tolerate_second_errors=True):
+                    protected_output_indexes.add(index)
+    except OSError:
+        return "CREDENTIAL_OUTPUT_ERROR"
+
+    if outputs_alias or protected_output_indexes:
+        for index, candidate in enumerate(output_paths):
+            if index not in protected_output_indexes:
+                _remove_private_output(candidate)
+        return "CREDENTIAL_OUTPUT_ERROR"
+
+    def remove_outputs():
+        _remove_private_output(output_path)
+        if state_output_path is not None:
+            _remove_private_output(state_output_path)
+
+    def write_outputs(provider, available):
+        try:
+            _write_private_output(output_path, provider)
+            if state_output_path is not None:
+                _write_private_output(
+                    state_output_path,
+                    _render_provider_state(available),
+                )
+        except OSError:
+            remove_outputs()
+            raise
 
     try:
         stub = stub_path.read_bytes()
     except OSError:
-        _remove_private_output(output_path)
+        remove_outputs()
         return "CREDENTIAL_OUTPUT_ERROR"
 
     def fail(code):
         try:
-            _write_private_output(output_path, stub)
+            write_outputs(stub, False)
         except OSError:
-            _remove_private_output(output_path)
             return "CREDENTIAL_OUTPUT_ERROR"
         return code
 
     try:
         if api_id_path is None and api_hash_path is None:
-            _write_private_output(output_path, stub)
+            write_outputs(stub, False)
             return None
 
         if api_id_path is None or api_hash_path is None:
             return fail("CREDENTIAL_PATHS_INCOMPLETE")
 
-        api_id_path = Path(api_id_path)
-        api_hash_path = Path(api_hash_path)
         source_root = Path(source_root)
 
         id_exists = _path_exists(api_id_path)
         hash_exists = _path_exists(api_hash_path)
         if not id_exists and not hash_exists:
-            _write_private_output(output_path, stub)
+            write_outputs(stub, False)
             return None
         if not id_exists or not hash_exists:
             return fail("CREDENTIAL_INPUT_MISSING")
@@ -287,12 +380,8 @@ def generate_provider(
         return fail("CREDENTIAL_API_HASH_INVALID")
 
     try:
-        _write_private_output(
-            output_path,
-            _render_provider(api_id, api_hash),
-        )
+        write_outputs(_render_provider(api_id, api_hash), True)
     except OSError:
-        _remove_private_output(output_path)
         return "CREDENTIAL_OUTPUT_ERROR"
 
     return None
@@ -305,6 +394,7 @@ def _parse_arguments():
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--stub", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--state-output")
     return parser.parse_args()
 
 
@@ -317,6 +407,7 @@ def main():
             source_root=arguments.source_root,
             stub_path=arguments.stub,
             output_path=arguments.output,
+            state_output_path=arguments.state_output,
         )
     except Exception:
         error = "CREDENTIAL_OUTPUT_ERROR"

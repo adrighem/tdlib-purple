@@ -56,6 +56,7 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
         self.private = self.root / "private"
         self.private.mkdir(mode=0o700)
         self.output = self.private / "credentials.c"
+        self.state_output = self.private / "credentials-state.h"
         self.api_id = self.root / "api-id"
         self.api_hash = self.root / "api-hash"
         self.synthetic_id = "123456"
@@ -75,12 +76,25 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
             source_root=source_root or self.root / "source",
             stub_path=STUB_PATH,
             output_path=self.output,
+            state_output_path=self.state_output,
         )
+
+    def assert_state(self, available):
+        state = self.state_output.read_text(encoding="ascii")
+        self.assertEqual(
+            state,
+            GENERATOR._render_provider_state(available).decode("ascii"),
+        )
+        self.assertNotIn(self.synthetic_id, state)
+        self.assertNotIn(self.synthetic_hash, state)
+        self.assertNotIn(str(self.api_id), state)
+        self.assertNotIn(str(self.api_hash), state)
 
     def assert_stub(self):
         output = self.output.read_text(encoding="ascii")
         self.assertIn("return NULL;", output)
         self.assertNotIn(self.synthetic_hash, output)
+        self.assert_state(False)
 
     def test_neither_path_generates_unavailable_stub(self):
         self.assertIsNone(self.generate())
@@ -96,7 +110,9 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
         self.assertIn("tdlib_purple_application_credentials_embedded", output)
         self.assertNotIn(self.synthetic_hash, output)
         self.assertEqual(self.output.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.state_output.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.output.parent.stat().st_mode & 0o777, 0o700)
+        self.assert_state(True)
 
     def test_crlf_is_accepted(self):
         self.write_private(self.api_id, self.synthetic_id + "\r\n")
@@ -275,26 +291,41 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
         self.write_private(self.api_hash, self.synthetic_hash)
         self.assertIsNone(self.generate(self.api_id, self.api_hash))
         first_timestamp = self.output.stat().st_mtime_ns
+        first_state_timestamp = self.state_output.stat().st_mtime_ns
 
         time.sleep(0.01)
         self.assertIsNone(self.generate(self.api_id, self.api_hash))
 
         self.assertEqual(self.output.stat().st_mtime_ns, first_timestamp)
+        self.assertEqual(
+            self.state_output.stat().st_mtime_ns,
+            first_state_timestamp,
+        )
 
     def test_rotation_and_removal_replace_generated_provider(self):
         self.write_private(self.api_id, self.synthetic_id)
         self.write_private(self.api_hash, self.synthetic_hash)
         self.assertIsNone(self.generate(self.api_id, self.api_hash))
         first_output = self.output.read_bytes()
+        first_state_timestamp = self.state_output.stat().st_mtime_ns
 
         self.write_private(self.api_hash, "b2" * 16)
         self.assertIsNone(self.generate(self.api_id, self.api_hash))
         self.assertNotEqual(self.output.read_bytes(), first_output)
+        self.assertEqual(
+            self.state_output.stat().st_mtime_ns,
+            first_state_timestamp,
+        )
 
         self.api_id.unlink()
         self.api_hash.unlink()
         self.assertIsNone(self.generate(self.api_id, self.api_hash))
         self.assert_stub()
+
+        self.write_private(self.api_id, self.synthetic_id)
+        self.write_private(self.api_hash, self.synthetic_hash)
+        self.assertIsNone(self.generate(self.api_id, self.api_hash))
+        self.assert_state(True)
 
     def test_missing_stub_removes_previous_generated_output(self):
         self.write_private(self.api_id, self.synthetic_id)
@@ -307,9 +338,102 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
             source_root=self.root / "source",
             stub_path=self.root / "missing-stub.c",
             output_path=self.output,
+            state_output_path=self.state_output,
         )
 
         self.assertEqual(result, "CREDENTIAL_OUTPUT_ERROR")
+        self.assertFalse(self.output.exists())
+        self.assertFalse(self.state_output.exists())
+
+    def test_duplicate_output_path_is_rejected_and_scrubbed(self):
+        self.write_private(self.api_id, self.synthetic_id)
+        self.write_private(self.api_hash, self.synthetic_hash)
+        self.output.write_text("stale provider\n", encoding="ascii")
+        self.output.chmod(0o600)
+
+        result = GENERATOR.generate_provider(
+            api_id_path=self.api_id,
+            api_hash_path=self.api_hash,
+            source_root=self.root / "source",
+            stub_path=STUB_PATH,
+            output_path=self.output,
+            state_output_path=self.output,
+        )
+
+        self.assertEqual(result, "CREDENTIAL_OUTPUT_ERROR")
+        self.assertFalse(self.output.exists())
+
+    def test_outputs_cannot_replace_inputs_or_stub(self):
+        for output_name in ("provider", "state"):
+            for protected_name in ("api-id", "api-hash", "stub"):
+                with self.subTest(
+                        output=output_name, protected=protected_name):
+                    case_root = self.root / (
+                        output_name + "-" + protected_name
+                    )
+                    case_root.mkdir(mode=0o700)
+                    private = case_root / "private"
+                    private.mkdir(mode=0o700)
+                    api_id = case_root / "api-id"
+                    api_hash = case_root / "api-hash"
+                    stub = case_root / "stub.c"
+                    provider = private / "provider.c"
+                    state = private / "state.h"
+
+                    self.write_private(api_id, self.synthetic_id)
+                    self.write_private(api_hash, self.synthetic_hash)
+                    stub.write_bytes(STUB_PATH.read_bytes())
+                    stub.chmod(0o600)
+                    protected = {
+                        "api-id": api_id,
+                        "api-hash": api_hash,
+                        "stub": stub,
+                    }[protected_name]
+                    if output_name == "provider":
+                        provider = protected
+                        state.write_text("stale state\n", encoding="ascii")
+                        state.chmod(0o600)
+                        safe_output = state
+                    else:
+                        state = protected
+                        provider.write_text(
+                            "stale provider\n", encoding="ascii"
+                        )
+                        provider.chmod(0o600)
+                        safe_output = provider
+                    original_inputs = {
+                        path: path.read_bytes()
+                        for path in (api_id, api_hash, stub)
+                    }
+
+                    result = GENERATOR.generate_provider(
+                        api_id_path=api_id,
+                        api_hash_path=api_hash,
+                        source_root=case_root / "source",
+                        stub_path=stub,
+                        output_path=provider,
+                        state_output_path=state,
+                    )
+
+                    self.assertEqual(result, "CREDENTIAL_OUTPUT_ERROR")
+                    for path, content in original_inputs.items():
+                        self.assertEqual(path.read_bytes(), content)
+                    self.assertFalse(safe_output.exists())
+
+    @unittest.skipIf(os.name == "nt", "hard links vary on Windows")
+    def test_output_hard_link_alias_is_rejected(self):
+        self.write_private(self.api_id, self.synthetic_id)
+        self.write_private(self.api_hash, self.synthetic_hash)
+        os.link(self.api_id, self.state_output)
+        original_id = self.api_id.read_bytes()
+        self.output.write_text("stale provider\n", encoding="ascii")
+        self.output.chmod(0o600)
+
+        result = self.generate(self.api_id, self.api_hash)
+
+        self.assertEqual(result, "CREDENTIAL_OUTPUT_ERROR")
+        self.assertEqual(self.api_id.read_bytes(), original_id)
+        self.assertEqual(self.state_output.read_bytes(), original_id)
         self.assertFalse(self.output.exists())
 
     def test_symlinked_output_parent_is_rejected_without_following_it(self):
@@ -355,6 +479,8 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
                 str(STUB_PATH),
                 "--output",
                 str(self.output),
+                "--state-output",
+                str(self.state_output),
             ),
             check=False,
             capture_output=True,
@@ -395,14 +521,16 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
                 "pkg_check_modules(GLib REQUIRED IMPORTED_TARGET glib-2.0)\n"
                 f'include("{module_path}")\n'
                 "tdlib_purple_configure_application_credentials(\n"
-                "    fixture PROVIDER_SOURCE REFRESH_TARGET)\n"
+                "    fixture PROVIDER_SOURCE REFRESH_TARGET "
+                "PROVIDER_STATE_HEADER)\n"
                 "add_executable(probe\n"
                 "    main.c\n"
                 f'    "{credentials_dir}/'
                 'telegram-application-credentials.c"\n'
                 "    \"${PROVIDER_SOURCE}\")\n"
                 "target_include_directories(probe PRIVATE\n"
-                f'    "{credentials_dir}")\n'
+                f'    "{credentials_dir}"\n'
+                '    "${CMAKE_CURRENT_BINARY_DIR}/.private")\n'
                 "target_link_libraries(probe PRIVATE PkgConfig::GLib)\n"
                 "add_dependencies(probe \"${REFRESH_TARGET}\")\n"
             ),
@@ -411,6 +539,7 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
         (self.source / "main.c").write_text(
             (
                 '#include "telegram-application-credentials.h"\n'
+                '#include "telegram-application-credentials-state.h"\n'
                 "#include <stdlib.h>\n"
                 "#include <string.h>\n"
                 "\n"
@@ -418,6 +547,11 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
                 "{\n"
                 "    const TdlibPurpleApplicationCredentials *credentials =\n"
                 "        tdlib_purple_application_credentials_get();\n"
+                "    if ((credentials != NULL) !=\n"
+                "            (TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE "
+                "!= 0)) {\n"
+                "        return 4;\n"
+                "    }\n"
                 "    if (argc == 2 && strcmp(argv[1], \"unavailable\") == 0) {\n"
                 "        return credentials == NULL ? 0 : 1;\n"
                 "    }\n"
@@ -519,6 +653,11 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
                 self.api_hash.unlink()
                 self.build_target()
                 self.run_probe("unavailable")
+
+                self.write_private(self.api_id, "777777")
+                self.write_private(self.api_hash, "d4" * 16)
+                self.build_target()
+                self.run_probe("777777")
 
     def test_half_removed_pair_fails_then_both_removed_build_stub(self):
         for generator in BUILD_GENERATORS:
