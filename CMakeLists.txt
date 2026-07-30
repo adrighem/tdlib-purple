@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
 
 set(VERSION 1.1.1) # x-release-please-version
-project(tdlib-purple VERSION ${VERSION} LANGUAGES CXX)
+project(tdlib-purple VERSION ${VERSION} LANGUAGES C CXX)
 
 find_package(Td REQUIRED)
 math(EXPR TDLIB_VERSION_NUMBER "10000*${Td_VERSION_MAJOR} + 100*${Td_VERSION_MINOR} + ${Td_VERSION_PATCH}")
@@ -18,9 +18,8 @@ set(NoBundledLottie FALSE CACHE BOOL "Do not use bundled rlottie library")
 set(NoLottie FALSE CACHE BOOL "Disable animated sticker conversion")
 set(NoTranslations FALSE CACHE BOOL "Disable translation support")
 set(NoVoip FALSE CACHE BOOL "Disable voice call support")
-set(API_ID "" CACHE STRING "API id")
-set(API_HASH "" CACHE STRING "API hash")
-set(STUFF "" CACHE STRING "")
+
+include(cmake/TelegramApplicationCredentials.cmake)
 
 if (NOT NoPkgConfig)
     include(FindPkgConfig)
@@ -49,7 +48,13 @@ endif (NOT NoWebp)
 configure_file(buildopt.h.in buildopt.h)
 configure_file(config.cpp.in config.cpp)
 
-set(TDLIB_PURPLE_PLUGIN_SOURCES
+tdlib_purple_configure_application_credentials(
+    "tdlib-purple"
+    TDLIB_PURPLE_CREDENTIALS_PROVIDER_SOURCE
+    TDLIB_PURPLE_CREDENTIALS_REFRESH_TARGET
+)
+
+set(TDLIB_PURPLE_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/tdlib-purple.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-client-auth.cpp
@@ -66,9 +71,21 @@ set(TDLIB_PURPLE_PLUGIN_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/forum-topics.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/identifiers.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/secret-chat.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/credentials/telegram-application-credentials.c
+)
+
+set(TDLIB_PURPLE_PLUGIN_SOURCES
+    ${TDLIB_PURPLE_COMMON_SOURCES}
+    ${TDLIB_PURPLE_CREDENTIALS_PROVIDER_SOURCE}
 )
 
 add_library(telegram-tdlib SHARED ${TDLIB_PURPLE_PLUGIN_SOURCES})
+if (NOT "${TDLIB_PURPLE_CREDENTIALS_REFRESH_TARGET}" STREQUAL "")
+    add_dependencies(
+        telegram-tdlib
+        "${TDLIB_PURPLE_CREDENTIALS_REFRESH_TARGET}"
+    )
+endif()
 
 # libpurple uses the deprecated glib-type `GParameter` and the deprecated glib-macro `G_CONST_RETURN`, which
 # spams the console with useless warnings that we can do nothing about.
@@ -78,6 +95,7 @@ target_compile_definitions(telegram-tdlib PRIVATE GLIB_DISABLE_DEPRECATION_WARNI
 target_include_directories(telegram-tdlib
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/credentials
         ${CMAKE_BINARY_DIR}
 )
 target_include_directories(telegram-tdlib SYSTEM PRIVATE ${Purple_INCLUDE_DIRS})
@@ -102,7 +120,7 @@ if (NOT NoWebp)
     target_link_libraries(telegram-tdlib PRIVATE ${libwebp_LIBRARIES} ${libpng_LIBRARIES})
 endif (NOT NoWebp)
 
-target_compile_features(telegram-tdlib PRIVATE cxx_std_14)
+target_compile_features(telegram-tdlib PRIVATE c_std_11 cxx_std_14)
 
 find_package(fmt CONFIG QUIET)
 if (fmt_FOUND)

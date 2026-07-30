@@ -63,15 +63,19 @@ To uninstall a local build installed this way:
 
 For manual CMake builds, use `sudo cmake --build build --target uninstall` from the repository root, or `sudo make uninstall` inside a Makefile-generated build directory.
 
-Manual CMake builds need CMake 3.16 or newer and TDLib 1.8.65 or an API-compatible newer release. CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for local builds. The pinned TDLib submodule is the supported and tested schema.
+Manual CMake builds need CMake 3.16 or newer, Python 3.8 or newer, and TDLib 1.8.65 or an API-compatible newer release. CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for local builds. The pinned TDLib submodule is the supported and tested schema.
 
-The production Purple 2 plugin and release packages intentionally do not embed
-Telegram API credentials. Register an application through
-[my.telegram.org](https://my.telegram.org), then enter its API ID and API hash
-in the Telegram account's Advanced settings in Pidgin. Do not put these values
-in source files, CMake command lines, logs, or bug reports. The experimental
-Purple 3 adapter is designing QR-first onboarding with application-level
-credentials instead of account settings.
+For a private build that supplies the Telegram application credentials to every account, keep the API ID and API hash in separate owner-only files and pass only their paths to CMake:
+
+```sh
+cmake -S . -B /path/to/private-build \
+  -DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
+  -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
+```
+
+The generator validates both files and refreshes the private generated source on every build. Rebuilding after rotating or removing the files updates the plugin. The generated source, object files, and final plugin contain extractable application credentials, so protect the build directory and binary and never commit or publish them.
+
+The repository and release packages intentionally use a credentialless provider. Such builds still load normally. On Purple 2, existing accounts can continue to use a complete API ID and API hash pair from the Advanced settings as a compatibility override. A partial or malformed override fails before any TDLib request is sent. Do not put credential values in source files, CMake command lines, logs, or bug reports.
 
 ## Purple 3 Development
 

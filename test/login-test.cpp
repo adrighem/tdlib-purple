@@ -1,4 +1,6 @@
 #include "fixture.h"
+#include "application-credentials-test-backend.h"
+#include "purple-info.h"
 #include <td/telegram/Client.h>
 #include <td/telegram/td_api.h>
 
@@ -28,6 +30,100 @@ TEST_F(LoginTest, Login)
     login({}, nullptr, make_object<error>(404, "Not Found"));
 }
 
+TEST_F(LoginTest, CompleteAccountCredentialsOverrideApplicationCredentials)
+{
+    const int32_t overrideApiId = 7654321;
+    const std::string overrideApiHash =
+        "fedcba9876543210fedcba9876543210";
+    tdlib_purple_test_application_credentials_set_unavailable();
+    purple_account_set_string(
+        account, AccountOptions::ApiId,
+        std::to_string(overrideApiId).c_str());
+    purple_account_set_string(
+        account, AccountOptions::ApiHash, overrideApiHash.c_str());
+
+    pluginInfo().login(account);
+    prpl.verifyEvents(
+        ConnectionSetStateEvent(connection, PURPLE_CONNECTING),
+        ConnectionUpdateProgressEvent(connection, 1, 2)
+    );
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitTdlibParameters>()));
+    auto expectedParameters = makeDefaultParams();
+    expectedParameters->api_id_ = overrideApiId;
+    expectedParameters->api_hash_ = overrideApiHash;
+    tgl.verifyRequestsV(
+        make_object<disableProxy>(),
+        make_object<getProxies>(),
+        std::move(expectedParameters)
+    );
+}
+
+TEST_F(LoginTest, ApplicationCredentialsAreSnapshottedAtLogin)
+{
+    pluginInfo().login(account);
+    prpl.verifyEvents(
+        ConnectionSetStateEvent(connection, PURPLE_CONNECTING),
+        ConnectionUpdateProgressEvent(connection, 1, 2)
+    );
+
+    const std::string replacementHash =
+        "abcdef0123456789abcdef0123456789";
+    tdlib_purple_test_application_credentials_set(
+        7654321, replacementHash.data(), replacementHash.size());
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitTdlibParameters>()));
+    tgl.verifyRequestsV(
+        make_object<disableProxy>(),
+        make_object<getProxies>(),
+        makeDefaultParams()
+    );
+}
+
+TEST_F(LoginTest, IncompleteAccountCredentialsRejectLoginBeforeTdlib)
+{
+    purple_account_set_string(account, AccountOptions::ApiId, "7654321");
+
+    pluginInfo().login(account);
+
+    EXPECT_EQ(purple_connection_get_protocol_data(connection), nullptr);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection,
+        "Telegram application credentials are missing or invalid"));
+}
+
+TEST_F(LoginTest, MalformedAccountCredentialsRejectLoginBeforeTdlib)
+{
+    purple_account_set_string(account, AccountOptions::ApiId, "not-an-id");
+    purple_account_set_string(
+        account, AccountOptions::ApiHash,
+        "fedcba9876543210fedcba9876543210");
+
+    pluginInfo().login(account);
+
+    EXPECT_EQ(purple_connection_get_protocol_data(connection), nullptr);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection,
+        "Telegram application credentials are missing or invalid"));
+}
+
+TEST_F(LoginTest, UnavailableApplicationCredentialsRejectLoginBeforeTdlib)
+{
+    tdlib_purple_test_application_credentials_set_unavailable();
+
+    pluginInfo().login(account);
+
+    EXPECT_EQ(purple_connection_get_protocol_data(connection), nullptr);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection,
+        "Telegram application credentials are missing or invalid"));
+}
+
 TEST_F(LoginTest, ConnectionReadyBeforeAuthReady)
 {
     pluginInfo().login(account);
@@ -50,8 +146,8 @@ TEST_F(LoginTest, ConnectionReadyBeforeAuthReady)
             false,
             false,
             true, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",
@@ -118,8 +214,8 @@ TEST_F(LoginTest, RegisterNewAccount_WithAlias_ConnectionReadyBeforeAuthReady)
             false,
             false,
             true, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",
@@ -215,8 +311,8 @@ TEST_F(LoginTest, RegisterNewAccount_NoAlias)
             false,
             false,
             true, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",
@@ -308,8 +404,8 @@ TEST_F(LoginTest, TwoFactorAuthentication)
             false,
             false,
             true, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",
@@ -481,8 +577,8 @@ TEST_F(LoginTest, AddedProxyCofiguration)
             false,
             false,
             true, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",
@@ -533,8 +629,8 @@ TEST_F(LoginTest, ChangedProxyCofiguration)
             false,
             false,
             true, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",
@@ -576,8 +672,8 @@ TEST_F(LoginTest, RemovedProxyCofiguration)
             false,
             false,
             true, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",
@@ -617,8 +713,8 @@ TEST_F(LoginTest, getChatsSequence)
             false,
             false,
             true, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",
@@ -706,8 +802,8 @@ TEST_F(LoginTest, KeepInlineDownloads)
             false,
             false,
             true, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",

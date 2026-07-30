@@ -26,6 +26,9 @@ public:
     const std::string selfLastName      = "Newton";
     const std::string selfPurpleName    = "id1";
     const std::string replyPattern      = "<b>&gt; {} wrote:</b>\n&gt; {}\n{}";
+    const int32_t     applicationApiId  = 1234567;
+    const std::string applicationApiHash =
+        "0123456789abcdef0123456789abcdef";
 
     const int32_t     userIds[2]        = {100, 101};
     const int64_t     chatIds[2]        = {1000, 1001};

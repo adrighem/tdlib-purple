@@ -2,9 +2,6 @@
 #include "purple-info.h"
 #include "config.h"
 #include "format.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 void PurpleTdClient::processAuthorizationState(td::td_api::AuthorizationState &authState)
 {
@@ -143,35 +140,18 @@ std::string PurpleTdClient::getBaseDatabasePath()
     return std::string(purple_user_dir()) + G_DIR_SEPARATOR_S + config::configSubdir;
 }
 
-static void stuff(td::td_api::setTdlibParameters &parameters)
-{
-    std::string s(config::stuff);
-    for (size_t i = 0; i < s.length(); i++)
-        s[i] -= 16;
-    size_t i = s.find('i');
-    if (i == std::string::npos)
-        return;
-    s[i] = ' ';
-    sscanf(s.c_str(), "%" G_GINT32_FORMAT, &parameters.api_id_);
-    parameters.api_hash_ = s.c_str()+i+1;
-}
-
 void PurpleTdClient::sendTdlibParameters()
 {
     auto parameters = td::td_api::make_object<td::td_api::setTdlibParameters>();
     const char *username = purple_account_get_username(m_account);
-    const char *api_id = purple_account_get_string(m_account, AccountOptions::ApiId, "");
-    const char *api_hash = purple_account_get_string(m_account, AccountOptions::ApiHash, "");
 
     parameters->database_directory_ = getBaseDatabasePath() + G_DIR_SEPARATOR_S + username;
     parameters->use_chat_info_database_ = true;
     parameters->use_message_database_ = true;
     parameters->use_secret_chats_ = (purple_account_get_bool(m_account, AccountOptions::EnableSecretChats,
                                                              AccountOptions::EnableSecretChatsDefault) != FALSE);
-    parameters->api_id_ = atoi((api_id == nullptr || strlen(api_id) == 0) ? config::api_id : api_id);
-    parameters->api_hash_ = (api_hash == nullptr || strlen(api_hash) == 0) ? config::api_hash : api_hash;
-    if (*config::stuff)
-        stuff(*parameters);
+    parameters->api_id_ = m_applicationCredentials.api_id;
+    parameters->api_hash_ = m_applicationCredentials.api_hash;
     parameters->system_language_code_ = "en";
     parameters->device_model_ = "Desktop";
     parameters->system_version_ = "Unknown";

@@ -1,4 +1,5 @@
 #include "fixture.h"
+#include "application-credentials-test-backend.h"
 #include "libpurple-mock.h"
 #include "tdlib-purple.h"
 #include "purple-events.h"
@@ -25,6 +26,10 @@ CommTest::CommTest()
 : prpl(g_purpleEvents)
 {
     fixture_init();
+    tdlib_purple_test_application_credentials_set(
+        applicationApiId,
+        applicationApiHash.data(),
+        applicationApiHash.size());
     account = purple_account_new(("+" + selfPhoneNumber).c_str(), "prpl-telegram");
     connection = new PurpleConnection;
     connection->state = PURPLE_DISCONNECTED;
@@ -200,7 +205,9 @@ object_ptr<Object> CommTest::standardPrivateChat(unsigned index, object_ptr<Chat
 object_ptr<setTdlibParameters> CommTest::makeDefaultParams()
 {
     return make_object<setTdlibParameters>(
-        false, "purple_user_dir/tdlib/+1234567", "", "", false, false, false, true, 0, "", "en", "Desktop", "1.0", "1.0"
+        false, "purple_user_dir/tdlib/+1234567", "", "", false, false,
+        false, true, applicationApiId, applicationApiHash, "en",
+        "Desktop", "1.0", "1.0"
     );
 }
 

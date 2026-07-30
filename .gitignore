@@ -1,4 +1,8 @@
 build/
+/build-*/
+.private/
+__pycache__/
+*.py[cod]
 /.ga_cache/
 /td_repo/
 /td_destdir/

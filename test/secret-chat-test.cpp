@@ -129,8 +129,8 @@ TEST_F(SecretChatTest, SecretChatsDisabled)
             false,
             false,
             false, // use secret chats
-            0,
-            "",
+            applicationApiId,
+            applicationApiHash,
             "",
             "",
             "",

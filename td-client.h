@@ -4,6 +4,7 @@
 #include "account-data.h"
 #include "client-utils.h"
 #include "forum-topics.h"
+#include "telegram-application-credentials.h"
 #include <td/telegram/Log.h>
 #include <purple.h>
 #include <map>
@@ -18,7 +19,10 @@ enum class BasicGroupMembership: uint8_t {
 
 class PurpleTdClient {
 public:
-    PurpleTdClient(PurpleAccount *acct, ITransceiverBackend *testBackend);
+    PurpleTdClient(
+        PurpleAccount *acct,
+        ITransceiverBackend *testBackend,
+        const TdlibPurpleApplicationCredentials &applicationCredentials);
     ~PurpleTdClient();
 
     static void disableTdlibLogging();
@@ -219,6 +223,7 @@ private:
     void        verifyRecoveryEmailResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
 
     PurpleAccount        *m_account;
+    TdlibPurpleApplicationCredentials m_applicationCredentials;
     TdTransceiver         m_transceiver;
     TdAccountData         m_data;
     std::shared_ptr<LifetimeState> m_lifetime;
