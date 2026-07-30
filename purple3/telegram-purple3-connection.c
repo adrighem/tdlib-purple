@@ -64,6 +64,9 @@ telegram_tdlib_connection_connect_finish(PurpleConnection *connection,
                                          GAsyncResult *result,
                                          GError **error)
 {
+    PurpleAccount *account = NULL;
+    gboolean success = FALSE;
+
     g_return_val_if_fail(
         TELEGRAM_TDLIB_IS_CONNECTION(connection), FALSE);
     g_return_val_if_fail(
@@ -73,7 +76,23 @@ telegram_tdlib_connection_connect_finish(PurpleConnection *connection,
             result, &telegram_tdlib_connection_connect_tag),
         FALSE);
 
-    return g_task_propagate_boolean(G_TASK(result), error);
+    success = g_task_propagate_boolean(G_TASK(result), error);
+    if (!success) {
+        /*
+         * PurpleAccount and PurpleConnection own each other. Purple's failed
+         * connect callback currently marks the account disconnected without
+         * clearing its connection, so break the cycle while the GTask still
+         * keeps this connection alive. Do not clear a newer connection.
+         */
+        account = purple_connection_get_account(connection);
+        if (PURPLE_IS_ACCOUNT(account) &&
+            purple_account_get_connection(account) == connection)
+        {
+            purple_account_set_connection(account, NULL);
+        }
+    }
+
+    return success;
 }
 
 static void

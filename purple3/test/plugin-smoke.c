@@ -46,6 +46,16 @@ typedef struct {
     gboolean valid;
 } Purple3SmokeValidationCase;
 
+typedef struct {
+    GMainLoop *loop;
+    gpointer connection_weak;
+    guint timeout_id;
+    guint connection_notify_count;
+    gboolean saw_connection;
+    gboolean saw_connecting;
+    gboolean timed_out;
+} Purple3SmokeAccountConnectWait;
+
 struct _Purple3SmokeUi {
     PurpleUi parent;
 };
@@ -72,6 +82,29 @@ static gboolean
 purple3_smoke_async_quiescence_cb(gpointer data)
 {
     Purple3SmokeAsyncWait *wait = data;
+
+    wait->timeout_id = 0;
+    g_main_loop_quit(wait->loop);
+
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean
+purple3_smoke_account_connect_timeout_cb(gpointer data)
+{
+    Purple3SmokeAccountConnectWait *wait = data;
+
+    wait->timeout_id = 0;
+    wait->timed_out = TRUE;
+    g_main_loop_quit(wait->loop);
+
+    return G_SOURCE_REMOVE;
+}
+
+static gboolean
+purple3_smoke_account_connect_quiescence_cb(gpointer data)
+{
+    Purple3SmokeAccountConnectWait *wait = data;
 
     wait->timeout_id = 0;
     g_main_loop_quit(wait->loop);
@@ -554,6 +587,112 @@ purple3_smoke_assert_connection_lifecycle(PurpleProtocol *protocol)
 }
 
 static void
+purple3_smoke_account_connection_notify_cb(
+    PurpleAccount *account,
+    G_GNUC_UNUSED GParamSpec *pspec,
+    gpointer data)
+{
+    Purple3SmokeAccountConnectWait *wait = data;
+    PurpleConnection *connection =
+        purple_account_get_connection(account);
+
+    wait->connection_notify_count++;
+    if (connection != NULL) {
+        g_assert_false(wait->saw_connection);
+        wait->saw_connection = TRUE;
+        wait->connection_weak = connection;
+        g_object_add_weak_pointer(
+            G_OBJECT(connection), &wait->connection_weak);
+    }
+}
+
+static void
+purple3_smoke_account_state_notify_cb(
+    PurpleAccount *account,
+    G_GNUC_UNUSED GParamSpec *pspec,
+    gpointer data)
+{
+    Purple3SmokeAccountConnectWait *wait = data;
+    PurpleConnectionState state =
+        purple_account_get_connection_state(account);
+
+    if (state == PURPLE_CONNECTION_STATE_CONNECTING) {
+        wait->saw_connecting = TRUE;
+    } else if (
+        state == PURPLE_CONNECTION_STATE_DISCONNECTED &&
+        purple_account_get_error(account) != NULL)
+    {
+        g_main_loop_quit(wait->loop);
+    }
+}
+
+static void
+purple3_smoke_assert_account_connect_failure_releases_connection(void)
+{
+    Purple3SmokeAccountConnectWait wait = {0};
+    PurpleAccount *account = NULL;
+    GError *error = NULL;
+    gulong connection_handler = 0;
+    gulong state_handler = 0;
+    gpointer account_weak = NULL;
+
+    account = purple3_smoke_account_new("+15550000000", "1");
+    account_weak = account;
+    g_object_add_weak_pointer(G_OBJECT(account), &account_weak);
+
+    wait.loop = g_main_loop_new(NULL, FALSE);
+    connection_handler = g_signal_connect(
+        account,
+        "notify::connection",
+        G_CALLBACK(purple3_smoke_account_connection_notify_cb),
+        &wait);
+    state_handler = g_signal_connect(
+        account,
+        "notify::connection-state",
+        G_CALLBACK(purple3_smoke_account_state_notify_cb),
+        &wait);
+
+    purple_account_set_enabled(account, TRUE);
+    purple_account_connect(account);
+
+    wait.timeout_id = g_timeout_add_seconds(
+        2, purple3_smoke_account_connect_timeout_cb, &wait);
+    g_main_loop_run(wait.loop);
+    if (wait.timeout_id != 0) {
+        g_source_remove(wait.timeout_id);
+        wait.timeout_id = 0;
+    }
+
+    g_assert_false(wait.timed_out);
+    g_assert_true(wait.saw_connecting);
+    g_assert_true(wait.saw_connection);
+    g_assert_cmpuint(wait.connection_notify_count, ==, 2);
+    g_assert_cmpint(
+        purple_account_get_connection_state(account),
+        ==,
+        PURPLE_CONNECTION_STATE_DISCONNECTED);
+    g_assert_null(purple_account_get_connection(account));
+
+    error = purple_account_get_error(account);
+    g_assert_error(error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED);
+
+    wait.timeout_id = g_timeout_add(
+        25, purple3_smoke_account_connect_quiescence_cb, &wait);
+    g_main_loop_run(wait.loop);
+    if (wait.timeout_id != 0) {
+        g_source_remove(wait.timeout_id);
+        wait.timeout_id = 0;
+    }
+    g_assert_null(wait.connection_weak);
+
+    g_signal_handler_disconnect(account, connection_handler);
+    g_signal_handler_disconnect(account, state_handler);
+    g_clear_pointer(&wait.loop, g_main_loop_unref);
+    g_clear_object(&account);
+    g_assert_null(account_weak);
+}
+
+static void
 test_plugin_load_and_unload(void)
 {
     GError *error = NULL;
@@ -612,6 +751,7 @@ test_plugin_load_and_unload(void)
     purple3_smoke_assert_default_account_settings(protocol);
     purple3_smoke_assert_account_validation(protocol);
     purple3_smoke_assert_connection_lifecycle(protocol);
+    purple3_smoke_assert_account_connect_failure_releases_connection();
 
     /*
      * The protocol owns no test account, connection, setting, cancellable, or
