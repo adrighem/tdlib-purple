@@ -11,9 +11,15 @@ The current milestone only:
 - builds against the `purple-3` pkg-config interface
 - loads and unloads through GPlugin
 - registers and removes a native `PurpleProtocol`
-- provides empty account settings so the Pidgin account editor is safe
+- provides a required phone-number setting, validated API-ID setting, and
+  advanced secret-chat option
+- creates a protocol-specific asynchronous `PurpleConnection`
 
-It does not authenticate or connect to Telegram yet.
+The connection currently reports a clear not-supported error because the
+Purple-neutral TDLib authentication transport is the next implementation
+phase. The Telegram API hash is deliberately not a Purple account setting:
+Purple 3 persists string settings as visible plaintext, so the authentication
+phase will store it through Purple's credential manager instead.
 
 ## Build against a Pidgin development checkout
 
@@ -55,7 +61,7 @@ PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
 ```
 
 Open the account editor and confirm that `Telegram (tdlib)` is available in the
-protocol chooser. `--nologin` prevents existing accounts from connecting while
-the Purple 3 connection adapter is still unimplemented. If an account is
-enabled accidentally, the bootstrap refuses the connection with a clear
-not-supported error.
+protocol chooser and shows Phone number, API ID, and the advanced secret-chat
+option. `--nologin` prevents existing accounts from connecting while TDLib
+authentication is still unimplemented. If an account is enabled accidentally,
+the adapter refuses the connection with a clear not-supported error.

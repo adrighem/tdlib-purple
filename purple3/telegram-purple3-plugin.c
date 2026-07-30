@@ -24,6 +24,7 @@
 #include <gplugin-native.h>
 #include <purple.h>
 
+#include "telegram-purple3-connection.h"
 #include "telegram-purple3-protocol.h"
 
 #define TELEGRAM_TDLIB_PLUGIN_ID "telegram-tdlib"
@@ -80,6 +81,7 @@ telegram_tdlib_load(GPluginPlugin *plugin, GError **error)
         return FALSE;
     }
 
+    telegram_tdlib_connection_register(GPLUGIN_NATIVE_PLUGIN(plugin));
     telegram_tdlib_protocol_register(GPLUGIN_NATIVE_PLUGIN(plugin));
     telegram_tdlib_protocol = telegram_tdlib_protocol_new();
 

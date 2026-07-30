@@ -8,6 +8,7 @@ format.cpp
 forum-topics.cpp
 identifiers.cpp
 purple-info.cpp
+purple3/telegram-purple3-connection.c
 purple3/telegram-purple3-plugin.c
 purple3/telegram-purple3-protocol.c
 receiving.cpp

@@ -8,8 +8,10 @@ pkg_check_modules(Purple3 REQUIRED IMPORTED_TARGET purple-3)
 find_program(
     GLIB_COMPILE_RESOURCES
     NAMES glib-compile-resources
-    REQUIRED
 )
+if (NOT GLIB_COMPILE_RESOURCES)
+    message(FATAL_ERROR "glib-compile-resources was not found")
+endif()
 
 option(
     TDLIB_PURPLE3_WARNINGS_AS_ERRORS
@@ -56,6 +58,8 @@ add_custom_command(
 
 add_library(telegram-tdlib-purple3 MODULE
     "${PURPLE3_RESOURCES_C}"
+    telegram-purple3-connection.c
+    telegram-purple3-connection.h
     telegram-purple3-plugin.c
     telegram-purple3-protocol.c
     telegram-purple3-protocol.h
@@ -92,7 +96,8 @@ if (BUILD_TESTING)
         COMMAND purple3-plugin-smoke
     )
     set_tests_properties(purple3-plugin-smoke PROPERTIES
+        TIMEOUT 10
         ENVIRONMENT
-            "PURPLE_PLUGIN_PATH=${CMAKE_CURRENT_BINARY_DIR};PURPLE_PLUGINS_SKIP=1;GSETTINGS_BACKEND=memory;HOME=${PURPLE3_TEST_PROFILE};XDG_CACHE_HOME=${PURPLE3_TEST_PROFILE}/cache;XDG_CONFIG_HOME=${PURPLE3_TEST_PROFILE}/config;XDG_DATA_HOME=${PURPLE3_TEST_PROFILE}/data"
+            "PURPLE_PLUGIN_PATH=${CMAKE_CURRENT_BINARY_DIR};PURPLE_PLUGINS_SKIP=1;GSETTINGS_BACKEND=memory;HOME=${PURPLE3_TEST_PROFILE};XDG_CACHE_HOME=${PURPLE3_TEST_PROFILE}/cache;XDG_CONFIG_HOME=${PURPLE3_TEST_PROFILE}/config;XDG_DATA_HOME=${PURPLE3_TEST_PROFILE}/data;LC_ALL=C;LANG=C;LANGUAGE=C"
     )
 endif()
