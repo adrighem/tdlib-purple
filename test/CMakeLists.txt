@@ -31,14 +31,17 @@ add_executable(tests EXCLUDE_FROM_ALL
     printout.cpp
     purple-events.cpp
     fixture.cpp
+    application-credentials-test.cpp
+    application-credentials-test-backend.c
 
-    ${TDLIB_PURPLE_PLUGIN_SOURCES}
+    ${TDLIB_PURPLE_COMMON_SOURCES}
 )
 
-target_compile_features(tests PRIVATE cxx_std_17)
+target_compile_features(tests PRIVATE c_std_11 cxx_std_17)
 target_include_directories(tests
     PRIVATE
         ${CMAKE_SOURCE_DIR}
+        ${CMAKE_SOURCE_DIR}/credentials
         ${CMAKE_BINARY_DIR}
 )
 target_include_directories(tests SYSTEM PRIVATE ${Purple_INCLUDE_DIRS})
@@ -76,4 +79,14 @@ if (NOT NoVoip)
     target_link_libraries(tests PRIVATE ${tgvoip_LIBRARIES})
 endif (NOT NoVoip)
 
-add_custom_target(run-tests ${CMAKE_CURRENT_BINARY_DIR}/tests DEPENDS tests)
+add_custom_target(
+    run-tests
+    COMMAND
+        "${Python3_EXECUTABLE}"
+        "-B"
+        "${CMAKE_SOURCE_DIR}/credentials/test/test_generate_application_credentials.py"
+    COMMAND
+        "${CMAKE_CURRENT_BINARY_DIR}/tests"
+    DEPENDS tests
+    USES_TERMINAL
+)

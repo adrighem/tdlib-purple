@@ -4,6 +4,7 @@
 #include "purple-info.h"
 #include "format.h"
 #include "buildopt.h"
+#include "telegram-application-credentials.h"
 #include <purple.h>
 
 #include <cstdint>
@@ -342,11 +343,51 @@ deleting_conversation_cb(PurpleConversation *conv, gpointer data)
         tdClient->closeConversation(conversationName);
 }
 
+static gboolean
+resolveApplicationCredentials(
+    PurpleAccount *account,
+    TdlibPurpleApplicationCredentials *credentials)
+{
+    const char *apiId = purple_account_get_string(
+        account, AccountOptions::ApiId, "");
+    const char *apiHash = purple_account_get_string(
+        account, AccountOptions::ApiHash, "");
+    const gboolean apiIdIsEmpty = (apiId == NULL || apiId[0] == '\0');
+    const gboolean apiHashIsEmpty =
+        (apiHash == NULL || apiHash[0] == '\0');
+
+    if (apiIdIsEmpty != apiHashIsEmpty)
+        return FALSE;
+
+    if (!apiIdIsEmpty) {
+        return
+            tdlib_purple_application_credentials_parse_compatibility_override(
+                apiId, apiHash, credentials);
+    }
+
+    const TdlibPurpleApplicationCredentials *applicationCredentials =
+        tdlib_purple_application_credentials_get();
+    if (applicationCredentials == NULL)
+        return FALSE;
+
+    *credentials = *applicationCredentials;
+    return TRUE;
+}
+
 static void tgprpl_login (PurpleAccount *acct)
 {
     purple_debug_misc(config::pluginId, "version %s, test backend: %p\n", config::versionString, g_testBackend);
-    PurpleConnection *gc       = purple_account_get_connection (acct);
-    PurpleTdClient   *tdClient = new PurpleTdClient(acct, g_testBackend);
+    PurpleConnection *gc = purple_account_get_connection(acct);
+    TdlibPurpleApplicationCredentials applicationCredentials = {};
+    if (!resolveApplicationCredentials(acct, &applicationCredentials)) {
+        purple_connection_error(
+            gc,
+            _("Telegram application credentials are missing or invalid"));
+        return;
+    }
+
+    PurpleTdClient *tdClient = new PurpleTdClient(
+        acct, g_testBackend, applicationCredentials);
 
     purple_connection_set_protocol_data (gc, tdClient);
     gc->flags = static_cast<PurpleConnectionFlags>(gc->flags | PURPLE_CONNECTION_HTML);
@@ -1124,12 +1165,14 @@ static void tgprpl_init (PurplePlugin *plugin)
         prpl_info.protocol_options = g_list_append(prpl_info.protocol_options, opt);
     }
 
-    opt = purple_account_option_string_new (_("API ID"),
-                                            AccountOptions::ApiId, "");
+    opt = purple_account_option_string_new(
+        _("API ID (compatibility override)"),
+        AccountOptions::ApiId, "");
     prpl_info.protocol_options = g_list_append (prpl_info.protocol_options, opt);
 
-    opt = purple_account_option_string_new (_("API hash"),
-                                            AccountOptions::ApiHash, "");
+    opt = purple_account_option_string_new(
+        _("API hash (compatibility override)"),
+        AccountOptions::ApiHash, "");
     prpl_info.protocol_options = g_list_append (prpl_info.protocol_options, opt);
 }
 

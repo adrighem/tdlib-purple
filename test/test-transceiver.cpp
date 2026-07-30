@@ -58,6 +58,8 @@ void compare(const setTdlibParameters &actual, const setTdlibParameters &expecte
 {
     COMPARE(database_directory_);
     COMPARE(use_secret_chats_);
+    COMPARE(api_id_);
+    COMPARE(api_hash_);
 }
 
 void compare(const setAuthenticationPhoneNumber &actual, const setAuthenticationPhoneNumber &expected)

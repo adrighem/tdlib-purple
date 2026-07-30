@@ -464,8 +464,12 @@ ChatTarget PurpleTdClient::replacePendingMessageId(
     return target;
 }
 
-PurpleTdClient::PurpleTdClient(PurpleAccount *acct, ITransceiverBackend *testBackend)
+PurpleTdClient::PurpleTdClient(
+    PurpleAccount *acct,
+    ITransceiverBackend *testBackend,
+    const TdlibPurpleApplicationCredentials &applicationCredentials)
 :   m_account(acct),
+    m_applicationCredentials(applicationCredentials),
     m_transceiver(this, acct, &PurpleTdClient::processUpdate, testBackend),
     m_data(acct, m_transceiver),
     m_lifetime(std::make_shared<LifetimeState>()),
