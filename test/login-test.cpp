@@ -1,9 +1,27 @@
 #include "fixture.h"
+#include <td/telegram/Client.h>
 #include <td/telegram/td_api.h>
 
 using namespace td::td_api;
 
 class LoginTest: public CommTest {};
+
+TEST_F(LoginTest, TdlibInternalLoggingIsDisabled)
+{
+    auto verbosity = td::Client::execute(
+        {0, make_object<getLogVerbosityLevel>()});
+
+    ASSERT_NE(verbosity.object, nullptr);
+    ASSERT_EQ(verbosity.object->get_id(), logVerbosityLevel::ID);
+
+    const auto &level =
+        static_cast<const logVerbosityLevel &>(*verbosity.object);
+    EXPECT_EQ(level.verbosity_level_, 0);
+
+    auto stream = td::Client::execute({0, make_object<getLogStream>()});
+    ASSERT_NE(stream.object, nullptr);
+    EXPECT_EQ(stream.object->get_id(), logStreamEmpty::ID);
+}
 
 TEST_F(LoginTest, Login)
 {
@@ -331,7 +349,7 @@ TEST_F(LoginTest, TwoFactorAuthentication)
         "hint", true, false, "user@example.com"
     )));
 
-    prpl.verifyEvents(RequestInputEvent(connection, account, NULL, NULL));
+    prpl.verifyEvents(RequestInputEvent(connection, account, NULL, NULL, TRUE));
     prpl.inputEnter("password");
     tgl.verifyRequest(checkAuthenticationPassword("password"));
     tgl.reply(make_object<ok>());

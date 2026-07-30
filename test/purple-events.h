@@ -290,9 +290,11 @@ struct RequestInputEvent: PurpleEvent {
     std::string         username;
     PurpleConversation *conv;
 	void               *user_data;
+    gboolean            masked;
 
     RequestInputEvent(void *handle, const char *title, const char *primary,
                       const char *secondary, const char *default_value,
+                      gboolean masked,
                       const char *ok_text, GCallback ok_cb,
                       const char *cancel_text, GCallback cancel_cb,
                       PurpleAccount *account, const char *who, PurpleConversation *conv,
@@ -308,14 +310,17 @@ struct RequestInputEvent: PurpleEvent {
       account(account),
       username(who ? who : ""),
       conv(conv),
-      user_data(user_data)
+      user_data(user_data),
+      masked(masked)
       {}
-    RequestInputEvent(void *handle, PurpleAccount *account, const char *who, PurpleConversation *conv)
+    RequestInputEvent(void *handle, PurpleAccount *account, const char *who, PurpleConversation *conv,
+                      gboolean masked = FALSE)
     : PurpleEvent(PurpleEventType::RequestInput),
       handle(handle),
       account(account),
       username(who ? who : ""),
-      conv(conv)
+      conv(conv),
+      masked(masked)
       {}
 };
 

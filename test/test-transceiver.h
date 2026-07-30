@@ -148,8 +148,6 @@ private:
 };
 
 // Functions in td::td_api namespace
-std::string requestToString(const td::td_api::Function &request);
-
 void compare_func(const td::td_api::Function &actual, const td::td_api::Function &expected);
 
 object_ptr<user> makeUser(std::int32_t id_, std::string const &first_name_,

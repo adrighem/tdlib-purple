@@ -1,11 +1,21 @@
 #include "test-transceiver.h"
 #include "format.h"
+#include "printout.h"
 #include <td/telegram/td_api.h>
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 #include <iostream>
 using namespace td::td_api;
 
 #define COMPARE(param) ASSERT_EQ(expected.param, actual.param)
+#define ASSERT_REDACTED_EQ(expected_value, actual_value, field_name) \
+    do { \
+        if ((expected_value) != (actual_value)) { \
+            FAIL() << field_name << " differs (values redacted)"; \
+        } \
+    } while (false)
+#define COMPARE_REDACTED(param) \
+    ASSERT_REDACTED_EQ(expected.param, actual.param, #param)
 
 namespace td {
 namespace td_api {
@@ -15,12 +25,16 @@ static void compare(const TextEntityType &actual, const TextEntityType &expected
     ASSERT_EQ(expected.get_id(), actual.get_id());
     switch (expected.get_id()) {
         case textEntityTypePreCode::ID:
-            ASSERT_EQ(static_cast<const textEntityTypePreCode &>(expected).language_,
-                      static_cast<const textEntityTypePreCode &>(actual).language_);
+            ASSERT_REDACTED_EQ(
+                static_cast<const textEntityTypePreCode &>(expected).language_,
+                static_cast<const textEntityTypePreCode &>(actual).language_,
+                "text entity language");
             break;
         case textEntityTypeTextUrl::ID:
-            ASSERT_EQ(static_cast<const textEntityTypeTextUrl &>(expected).url_,
-                      static_cast<const textEntityTypeTextUrl &>(actual).url_);
+            ASSERT_REDACTED_EQ(
+                static_cast<const textEntityTypeTextUrl &>(expected).url_,
+                static_cast<const textEntityTypeTextUrl &>(actual).url_,
+                "text entity URL");
             break;
         case textEntityTypeMentionName::ID:
             ASSERT_EQ(static_cast<const textEntityTypeMentionName &>(expected).user_id_,
@@ -48,7 +62,7 @@ static void compare(const textEntity &actual, const textEntity &expected)
 
 void compare(const formattedText &actual, const formattedText &expected)
 {
-    ASSERT_EQ(expected.text_, actual.text_);
+    ASSERT_REDACTED_EQ(expected.text_, actual.text_, "formatted text");
     ASSERT_EQ(expected.entities_.size(), actual.entities_.size());
     for (size_t i = 0; i < expected.entities_.size(); i++)
         compare(*actual.entities_[i], *expected.entities_[i]);
@@ -56,39 +70,95 @@ void compare(const formattedText &actual, const formattedText &expected)
 
 void compare(const setTdlibParameters &actual, const setTdlibParameters &expected)
 {
-    COMPARE(database_directory_);
+    COMPARE_REDACTED(database_directory_);
+    COMPARE_REDACTED(api_id_);
+    COMPARE_REDACTED(api_hash_);
     COMPARE(use_secret_chats_);
 }
 
 void compare(const setAuthenticationPhoneNumber &actual, const setAuthenticationPhoneNumber &expected)
 {
-    COMPARE(phone_number_);
+    COMPARE_REDACTED(phone_number_);
     COMPARE(settings_ != nullptr);
 }
 
 void compare(const checkAuthenticationCode &actual, const checkAuthenticationCode &expected)
 {
-    COMPARE(code_);
+    COMPARE_REDACTED(code_);
 }
 
 void compare(const checkAuthenticationPassword &actual, const checkAuthenticationPassword &expected)
 {
-    COMPARE(password_);
+    COMPARE_REDACTED(password_);
+}
+
+void compare(const setAuthenticationEmailAddress &actual,
+             const setAuthenticationEmailAddress &expected)
+{
+    COMPARE_REDACTED(email_address_);
+}
+
+void compare(const checkAuthenticationEmailCode &actual,
+             const checkAuthenticationEmailCode &expected)
+{
+    COMPARE(code_ != nullptr);
+    if (actual.code_ != nullptr) {
+        COMPARE(code_->get_id());
+        if (actual.code_->get_id() ==
+            emailAddressAuthenticationCode::ID)
+        {
+            const auto &actual_code =
+                static_cast<const emailAddressAuthenticationCode &>(
+                    *actual.code_);
+            const auto &expected_code =
+                static_cast<const emailAddressAuthenticationCode &>(
+                    *expected.code_);
+            ASSERT_REDACTED_EQ(
+                expected_code.code_,
+                actual_code.code_,
+                "email authentication code");
+        }
+    }
 }
 
 void compare(const proxyTypeSocks5 &actual, const proxyTypeSocks5 &expected)
 {
-    COMPARE(username_);
-    COMPARE(password_);
+    COMPARE_REDACTED(username_);
+    COMPARE_REDACTED(password_);
+}
+
+void compare(const proxyTypeHttp &actual, const proxyTypeHttp &expected)
+{
+    COMPARE_REDACTED(username_);
+    COMPARE_REDACTED(password_);
+    COMPARE(http_only_);
+}
+
+void compare(const proxyTypeMtproto &actual, const proxyTypeMtproto &expected)
+{
+    COMPARE_REDACTED(secret_);
 }
 
 void compare(const proxy &actual, const proxy &expected)
 {
-    COMPARE(server_);
+    COMPARE_REDACTED(server_);
     COMPARE(port_);
     COMPARE(type_ != nullptr);
     if (actual.type_ != nullptr) {
         COMPARE(type_->get_id());
+        if (actual.type_->get_id() == proxyTypeSocks5::ID) {
+            compare(
+                static_cast<const proxyTypeSocks5 &>(*actual.type_),
+                static_cast<const proxyTypeSocks5 &>(*expected.type_));
+        } else if (actual.type_->get_id() == proxyTypeHttp::ID) {
+            compare(
+                static_cast<const proxyTypeHttp &>(*actual.type_),
+                static_cast<const proxyTypeHttp &>(*expected.type_));
+        } else if (actual.type_->get_id() == proxyTypeMtproto::ID) {
+            compare(
+                static_cast<const proxyTypeMtproto &>(*actual.type_),
+                static_cast<const proxyTypeMtproto &>(*expected.type_));
+        }
     }
 }
 
@@ -127,26 +197,30 @@ static void compare(const InputFile &actual, const InputFile &expected)
             static_cast<const inputFileId &>(actual).id_);
         break;
     case inputFileRemote::ID:
-        ASSERT_EQ(
+        ASSERT_REDACTED_EQ(
             static_cast<const inputFileRemote &>(expected).id_,
-            static_cast<const inputFileRemote &>(actual).id_);
+            static_cast<const inputFileRemote &>(actual).id_,
+            "remote file identifier");
         break;
     case inputFileLocal::ID:
-        ASSERT_EQ(
+        ASSERT_REDACTED_EQ(
             static_cast<const inputFileLocal &>(expected).path_,
-            static_cast<const inputFileLocal &>(actual).path_);
+            static_cast<const inputFileLocal &>(actual).path_,
+            "local file path");
         break;
     case inputFileGenerated::ID: {
         const auto &actualGenerated =
             static_cast<const inputFileGenerated &>(actual);
         const auto &expectedGenerated =
             static_cast<const inputFileGenerated &>(expected);
-        ASSERT_EQ(
+        ASSERT_REDACTED_EQ(
             expectedGenerated.original_path_,
-            actualGenerated.original_path_);
-        ASSERT_EQ(
+            actualGenerated.original_path_,
+            "generated file source path");
+        ASSERT_REDACTED_EQ(
             expectedGenerated.conversion_,
-            actualGenerated.conversion_);
+            actualGenerated.conversion_,
+            "generated file conversion");
         ASSERT_EQ(
             expectedGenerated.expected_size_,
             actualGenerated.expected_size_);
@@ -249,7 +323,7 @@ void compare(const getBasicGroupFullInfo &actual, const getBasicGroupFullInfo &e
 
 void compare(const joinChatByInviteLink &actual, const joinChatByInviteLink &expected)
 {
-    COMPARE(invite_link_);
+    COMPARE_REDACTED(invite_link_);
 }
 
 void compare(const getMessage &actual, const getMessage &expected)
@@ -267,7 +341,7 @@ void compare(const getForumTopic &actual, const getForumTopic &expected)
 void compare(const getForumTopics &actual, const getForumTopics &expected)
 {
     COMPARE(chat_id_);
-    COMPARE(query_);
+    COMPARE_REDACTED(query_);
     COMPARE(offset_date_);
     COMPARE(offset_message_id_);
     COMPARE(offset_forum_topic_id_);
@@ -344,8 +418,8 @@ void compare(const changeImportedContacts &actual, const changeImportedContacts 
 
 void compare(const registerUser &actual, const registerUser &expected)
 {
-    COMPARE(first_name_);
-    COMPARE(last_name_);
+    COMPARE_REDACTED(first_name_);
+    COMPARE_REDACTED(last_name_);
 }
 
 void compare(const addContact &actual, const addContact &expected)
@@ -354,15 +428,14 @@ void compare(const addContact &actual, const addContact &expected)
     COMPARE(share_phone_number_);
 }
 
-std::string requestToString(const td::td_api::Function &request)
-{
-    return td::td_api::to_string(request);
-}
-
 void compare_func(const td::td_api::Function &actual, const td::td_api::Function &expected)
 {
-    ASSERT_EQ(expected.get_id(), actual.get_id()) <<
-        requestToString(actual) << " expected " << requestToString(expected);
+    if (expected.get_id() != actual.get_id()) {
+        FAIL() << "Request type mismatch: received "
+               << ::requestTypeToString(actual) << ", expected "
+               << ::requestTypeToString(expected)
+               << " (request values redacted)";
+    }
 
 #define C(class) case class::ID: \
     compare(static_cast<const class &>(actual), static_cast<const class &>(expected)); \
@@ -373,6 +446,8 @@ void compare_func(const td::td_api::Function &actual, const td::td_api::Function
         C(setAuthenticationPhoneNumber)
         C(checkAuthenticationCode)
         C(checkAuthenticationPassword)
+        C(setAuthenticationEmailAddress)
+        C(checkAuthenticationEmailCode)
         C(registerUser)
         C(changeImportedContacts)
         case getContacts::ID: break;
@@ -393,6 +468,7 @@ void compare_func(const td::td_api::Function &actual, const td::td_api::Function
         C(getForumTopicHistory)
         C(sendChatAction)
         C(addProxy)
+        C(removeProxy)
         C(addContact)
         case disableProxy::ID: break;
         case getProxies::ID: break;
@@ -865,6 +941,107 @@ std::string TestTransceiver::addInputPhoto(const void *data, size_t size)
     std::string path = "/tmp/test_photo_" + std::to_string(m_inputPhotoPaths.size());
     m_inputPhotoPaths.push_back(path);
     return path;
+}
+
+static const char sensitiveMarkerA[] =
+    "SYNTHETIC_AUTH_VALUE_A_DO_NOT_PRINT";
+static const char sensitiveMarkerB[] =
+    "SYNTHETIC_AUTH_VALUE_B_DO_NOT_PRINT";
+
+static std::string captureRequestComparisonFailure(
+    const Function &actual,
+    const Function &expected)
+{
+    ::testing::TestPartResultArray failures;
+
+    {
+        ::testing::ScopedFakeTestPartResultReporter reporter(
+            ::testing::ScopedFakeTestPartResultReporter::
+                INTERCEPT_ONLY_CURRENT_THREAD,
+            &failures);
+        compare_func(actual, expected);
+    }
+
+    if (failures.size() != 1) {
+        ADD_FAILURE()
+            << "Expected exactly one intercepted request comparison failure";
+        return "";
+    }
+
+    return failures.GetTestPartResult(0).message();
+}
+
+static void assertSensitiveMarkersAreRedacted(const std::string &message)
+{
+    if (message.find(sensitiveMarkerA) != std::string::npos ||
+        message.find(sensitiveMarkerB) != std::string::npos)
+    {
+        ADD_FAILURE()
+            << "Request comparison failure exposed a synthetic marker";
+    }
+}
+
+TEST(TestTransceiverHarness, RedactsAuthenticationMismatchDiagnostics)
+{
+    auto actualPassword =
+        make_object<checkAuthenticationPassword>(sensitiveMarkerA);
+    auto expectedPassword =
+        make_object<checkAuthenticationPassword>(sensitiveMarkerB);
+
+    std::string sameTypeFailure = captureRequestComparisonFailure(
+        *actualPassword, *expectedPassword);
+    EXPECT_NE(
+        sameTypeFailure.find("password_ differs (values redacted)"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(sameTypeFailure);
+
+    auto actualEmail =
+        make_object<setAuthenticationEmailAddress>(sensitiveMarkerA);
+    auto expectedEmail =
+        make_object<setAuthenticationEmailAddress>(sensitiveMarkerB);
+    std::string emailFailure = captureRequestComparisonFailure(
+        *actualEmail, *expectedEmail);
+    EXPECT_NE(
+        emailFailure.find("email_address_ differs (values redacted)"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(emailFailure);
+
+    auto actualEmailCode =
+        make_object<checkAuthenticationEmailCode>(
+            make_object<emailAddressAuthenticationCode>(
+                sensitiveMarkerA));
+    auto expectedEmailCode =
+        make_object<checkAuthenticationEmailCode>(
+            make_object<emailAddressAuthenticationCode>(
+                sensitiveMarkerB));
+    std::string emailCodeFailure = captureRequestComparisonFailure(
+        *actualEmailCode, *expectedEmailCode);
+    EXPECT_NE(
+        emailCodeFailure.find(
+            "email authentication code differs (values redacted)"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(emailCodeFailure);
+
+    auto actualParameters = make_object<setTdlibParameters>();
+    auto expectedParameters = make_object<setTdlibParameters>();
+    actualParameters->api_hash_ = sensitiveMarkerA;
+    expectedParameters->api_hash_ = sensitiveMarkerB;
+    std::string apiHashFailure = captureRequestComparisonFailure(
+        *actualParameters, *expectedParameters);
+    EXPECT_NE(
+        apiHashFailure.find("api_hash_ differs (values redacted)"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(apiHashFailure);
+
+    auto expectedPhone =
+        make_object<setAuthenticationPhoneNumber>(
+            sensitiveMarkerB, nullptr);
+    std::string typeFailure = captureRequestComparisonFailure(
+        *actualPassword, *expectedPhone);
+    EXPECT_NE(
+        typeFailure.find("Request type mismatch"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(typeFailure);
 }
 
 TEST(TestTransceiverHarness, MockSendMessagePreservesTypedTopic)

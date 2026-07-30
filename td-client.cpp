@@ -513,10 +513,19 @@ PurpleTdClient::~PurpleTdClient()
     showMessages(messages, m_data);
 }
 
-void PurpleTdClient::setLogLevel(int level)
+void PurpleTdClient::disableTdlibLogging()
 {
-    // Why not just call setLogVerbosityLevel? No idea!
-    td::Client::execute({0, td::td_api::make_object<td::td_api::setLogVerbosityLevel>(level)});
+    /*
+     * Even TDLib warning and error messages can include phone numbers or
+     * serialized request data. Keep only fatal handling and discard the
+     * internal log stream; plugin-owned diagnostics remain available.
+     */
+    td::Client::execute(
+        {0, td::td_api::make_object<td::td_api::setLogVerbosityLevel>(0)});
+    td::Client::execute(
+        {0,
+         td::td_api::make_object<td::td_api::setLogStream>(
+             td::td_api::make_object<td::td_api::logStreamEmpty>())});
 }
 
 void PurpleTdClient::setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback)
@@ -1334,8 +1343,8 @@ void PurpleTdClient::onChatListReady()
         purple_debug_misc(config::pluginId, "Setting own alias to '%s'\n", alias.c_str());
         purple_account_set_alias(m_account, alias.c_str());
     } else
-        purple_debug_warning(config::pluginId, "Did not receive user information for self (%s) at login\n",
-            purple_account_get_username(m_account));
+        purple_debug_warning(config::pluginId,
+                             "Did not receive user information for self at login\n");
 
     purple_blist_add_account(m_account);
 }
@@ -2276,7 +2285,7 @@ void PurpleTdClient::addContact(const std::string &purpleName, const std::string
                                 const std::string &groupName)
 {
     if (m_data.getUserByPhone(purpleName.c_str())) {
-        purple_debug_info(config::pluginId, "User with phone number %s already exists\n", purpleName.c_str());
+        purple_debug_info(config::pluginId, "User with that phone number already exists\n");
         return;
     }
 
@@ -2402,8 +2411,8 @@ void PurpleTdClient::addContactCreatePrivateChatResponse(uint64_t requestId, td:
             getImConversation(m_account, displayName.c_str());
         }
     } else {
-        purple_debug_misc(config::pluginId, "Failed to create private chat to %s\n",
-                          request->phoneNumber.c_str());
+        purple_debug_misc(config::pluginId,
+                          "Failed to create private chat for contact\n");
         notifyFailedContact(getDisplayedError(object));
     }
 }

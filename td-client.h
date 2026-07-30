@@ -21,7 +21,7 @@ public:
     PurpleTdClient(PurpleAccount *acct, ITransceiverBackend *testBackend);
     ~PurpleTdClient();
 
-    static void setLogLevel(int level);
+    static void disableTdlibLogging();
     static void setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback);
     static std::string getBaseDatabasePath();
     int  sendMessage(const char *buddyName, const char *message);

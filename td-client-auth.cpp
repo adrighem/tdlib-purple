@@ -164,8 +164,6 @@ void PurpleTdClient::sendTdlibParameters()
     const char *api_hash = purple_account_get_string(m_account, AccountOptions::ApiHash, "");
 
     parameters->database_directory_ = getBaseDatabasePath() + G_DIR_SEPARATOR_S + username;
-    purple_debug_misc(config::pluginId, "Account %s using database directory %s\n",
-                      username, parameters->database_directory_.c_str());
     parameters->use_chat_info_database_ = true;
     parameters->use_message_database_ = true;
     parameters->use_secret_chats_ = (purple_account_get_bool(m_account, AccountOptions::EnableSecretChats,
@@ -275,7 +273,7 @@ void PurpleTdClient::requestAuthEmail()
 
 void PurpleTdClient::requestAuthEmailEntered(PurpleTdClient *self, const gchar *email)
 {
-    purple_debug_misc(config::pluginId, "Authentication email entered: '%s'\n", email);
+    purple_debug_misc(config::pluginId, "Authentication email entered\n");
     auto authEmail = td::td_api::make_object<td::td_api::setAuthenticationEmailAddress>(email);
 
     self->m_transceiver.sendQuery(std::move(authEmail), &PurpleTdClient::authResponse);
@@ -313,7 +311,7 @@ void PurpleTdClient::requestAuthEmailCode()
 
 void PurpleTdClient::requestAuthEmailCodeEntered(PurpleTdClient *self, const gchar *code)
 {
-    purple_debug_misc(config::pluginId, "Authentication email code entered: '%s'\n", code);
+    purple_debug_misc(config::pluginId, "Authentication email code entered\n");
     auto authEmailCode = td::td_api::make_object<td::td_api::checkAuthenticationEmailCode>(
                                                td::td_api::make_object<td::td_api::emailAddressAuthenticationCode>(code));
 
@@ -345,7 +343,7 @@ void PurpleTdClient::requestCodeCancelled(PurpleTdClient *self)
 
 void PurpleTdClient::passwordEntered(PurpleTdClient *self, const gchar *password)
 {
-    purple_debug_misc(config::pluginId, "Password code entered\n");
+    purple_debug_misc(config::pluginId, "Password entered\n");
     auto checkPassword = td::td_api::make_object<td::td_api::checkAuthenticationPassword>();
     if (password)
         checkPassword->password_ = password;
@@ -379,7 +377,7 @@ void PurpleTdClient::requestPassword(const td::td_api::authorizationStateWaitPas
                                hints.empty() ? NULL : hints.c_str(),
                                NULL, // default value
                                FALSE, // multiline input
-                               FALSE, // masked input
+                               TRUE, // masked input
                                NULL,
                                // TRANSLATOR: 2FA dialog, alternative is "_Cancel". The underscore marks accelerator keys, they must be different!
                                _("_OK"), G_CALLBACK(passwordEntered),

@@ -841,7 +841,7 @@ void *purple_request_input(void *handle, const char *title, const char *primary,
 	PurpleAccount *account, const char *who, PurpleConversation *conv,
 	void *user_data)
 {
-    EVENT(RequestInputEvent, handle, title, primary, secondary, default_value, ok_text, ok_cb,
+    EVENT(RequestInputEvent, handle, title, primary, secondary, default_value, masked, ok_text, ok_cb,
           cancel_text, cancel_cb, account, who, conv, user_data);
 
     // Just return some non-NULL pointer

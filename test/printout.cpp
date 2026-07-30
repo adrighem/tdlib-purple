@@ -3,11 +3,12 @@
 
 using namespace td::td_api;
 
-std::string requestToString(const td::TlObject &req)
+std::string requestTypeToString(const td::TlObject &req)
 {
 #define C(class) case class::ID: return #class;
     switch (req.get_id()) {
         C(getContacts)
+        C(getChats)
         C(loadChats)
         C(sendMessage)
         C(viewMessages)
@@ -23,7 +24,10 @@ std::string requestToString(const td::TlObject &req)
         C(checkAuthenticationCode)
         C(checkAuthenticationPassword)
         C(setAuthenticationPhoneNumber)
+        C(setAuthenticationEmailAddress)
+        C(checkAuthenticationEmailCode)
         C(registerUser)
+        C(addProxy)
         C(addContact)
         C(changeImportedContacts)
         C(searchPublicChat)

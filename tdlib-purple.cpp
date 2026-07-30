@@ -1004,17 +1004,16 @@ static void addChoice(GList *&choices, const char *description, const char *valu
 
 PurplePluginInfo *getPluginInfo();
 
-static gboolean tdlibFatalErrorHandler(void *data)
+static gboolean tdlibFatalErrorHandler(void *)
 {
-    char *message = static_cast<char *>(data);
     const char *dbMessage =
         // TRANSLATOR: Tdlib crash dialog, secondary content. Argument is a filesystem path. Please keep the space after it!
         _("The error may be caused by corrupt account data. "
           "If this is the case, it could be fixed by removing account data under {} . "
           "You will be required to log in into the account again.");
 
-    // tdlib messages are untranslated, so can as well leave "tdlib error" untranslated as well
-    std::string details = formatMessage("tdlib error: {}", std::string(message));
+    // TRANSLATOR: Tdlib crash dialog, secondary content.
+    std::string details = _("TDLib reported a fatal internal error.");
     details += '\n';
     details += formatMessage(dbMessage, PurpleTdClient::getBaseDatabasePath());
 
@@ -1022,13 +1021,16 @@ static gboolean tdlibFatalErrorHandler(void *data)
     purple_notify_error(getPluginInfo(), _("Fatal error encountered in telegram plugin"),
                         details.c_str(), NULL);
 
-    free(message);
     return FALSE; // this idle handler will not be called again
 }
 
-static void tdlibFatalErrorCallback(const char *message)
+static void tdlibFatalErrorCallback(const char *)
 {
-    g_idle_add(tdlibFatalErrorHandler, strdup(message));
+    /*
+     * A fatal TDLib message may include request or account data. Do not copy,
+     * log, or show it; the UI receives a generic recovery-oriented notice.
+     */
+    g_idle_add(tdlibFatalErrorHandler, nullptr);
     // The error must have come either from the poll thread or from one of the threads created by tdlib.
     // So, hang the thread to avoid crash. All other accounts will be unaffected until an attempt to
     // disconnect this account is made, because then TdTransceiver destructor will wait forever for
@@ -1044,15 +1046,7 @@ static void tgprpl_init (PurplePlugin *plugin)
 #if !PURPLE_VERSION_CHECK(2,14,0)
     (void)sendFileToChat;
 #endif
-    if (purple_debug_is_verbose())
-        // Log everything
-        PurpleTdClient::setLogLevel(1024);
-    else if (purple_debug_is_enabled())
-        // Log up to info
-        PurpleTdClient::setLogLevel(3);
-    else
-        // Log up to fatal errors and errors
-        PurpleTdClient::setLogLevel(1);
+    PurpleTdClient::disableTdlibLogging();
     PurpleTdClient::setTdlibFatalErrorCallback(tdlibFatalErrorCallback);
 
 #ifndef NoLottie
