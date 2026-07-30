@@ -65,7 +65,13 @@ For manual CMake builds, use `sudo cmake --build build --target uninstall` from 
 
 Manual CMake builds need CMake 3.16 or newer and TDLib 1.8.65 or an API-compatible newer release. CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for local builds. The pinned TDLib submodule is the supported and tested schema.
 
-The repository and release packages intentionally do not embed Telegram API credentials. Register an application through [my.telegram.org](https://my.telegram.org), then enter its API ID and API hash in the Telegram account's Advanced settings in Pidgin. Do not put these values in source files, CMake command lines, logs, or bug reports.
+The production Purple 2 plugin and release packages intentionally do not embed
+Telegram API credentials. Register an application through
+[my.telegram.org](https://my.telegram.org), then enter its API ID and API hash
+in the Telegram account's Advanced settings in Pidgin. Do not put these values
+in source files, CMake command lines, logs, or bug reports. The experimental
+Purple 3 adapter is designing QR-first onboarding with application-level
+credentials instead of account settings.
 
 ## Purple 3 Development
 

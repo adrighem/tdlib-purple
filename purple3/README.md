@@ -11,15 +11,24 @@ The current milestone only:
 - builds against the `purple-3` pkg-config interface
 - loads and unloads through GPlugin
 - registers and removes a native `PurpleProtocol`
-- provides a required phone-number setting, validated API-ID setting, and
-  advanced secret-chat option
+- uses the Pidgin account name only as a local display label
+- exposes only an advanced secret-chat option
 - creates a protocol-specific asynchronous `PurpleConnection`
 
 The connection currently reports a clear not-supported error because the
 Purple-neutral TDLib authentication transport is the next implementation
-phase. The Telegram API hash is deliberately not a Purple account setting:
-Purple 3 persists string settings as visible plaintext, so the authentication
-phase will store it through Purple's credential manager instead.
+phase. Telegram's API ID and API hash identify the application even during QR
+login, so they will be supplied together by an application-level provider.
+They are deliberately not Purple account settings, environment variables, or
+raw CMake values.
+
+Pidgin preserves settings written by earlier development builds even after a
+protocol stops advertising them. On load, the adapter removes the obsolete
+phone-number, API-ID, and API-hash copies from its Pidgin 3 accounts and
+persists the cleanup. Pidgin 3 stores these accounts separately from Purple 2,
+so this does not alter the production plugin's profile. This is logical
+removal from the active settings database, not forensic erasure of SQLite
+storage or backups.
 
 ## Build against a Pidgin development checkout
 
@@ -61,7 +70,8 @@ PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
 ```
 
 Open the account editor and confirm that `Telegram (tdlib)` is available in the
-protocol chooser and shows Phone number, API ID, and the advanced secret-chat
-option. `--nologin` prevents existing accounts from connecting while TDLib
+protocol chooser, requires only a local Account Name, and shows no phone-number,
+API-ID, or API-hash setting. The advanced view contains the secret-chat option.
+`--nologin` prevents existing accounts from connecting while TDLib
 authentication is still unimplemented. If an account is enabled accidentally,
 the adapter refuses the connection with a clear not-supported error.

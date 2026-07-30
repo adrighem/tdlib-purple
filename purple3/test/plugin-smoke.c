@@ -25,9 +25,9 @@
 #include <purple.h>
 
 #define TELEGRAM_TDLIB_PLUGIN_ID "telegram-tdlib"
-#define TELEGRAM_TDLIB_SETTING_PHONE_NUMBER "phone-number"
-#define TELEGRAM_TDLIB_SETTING_API_ID "api-id"
-#define TELEGRAM_TDLIB_SETTING_API_HASH "api-hash"
+#define TELEGRAM_TDLIB_LEGACY_SETTING_PHONE_NUMBER "phone-number"
+#define TELEGRAM_TDLIB_LEGACY_SETTING_API_ID "api-id"
+#define TELEGRAM_TDLIB_LEGACY_SETTING_API_HASH "api-hash"
 #define TELEGRAM_TDLIB_SETTING_ENABLE_SECRET_CHATS "enable-secret-chats"
 
 typedef struct {
@@ -39,12 +39,6 @@ typedef struct {
     gboolean completed;
     gboolean timed_out;
 } Purple3SmokeAsyncWait;
-
-typedef struct {
-    const char *phone_number;
-    const char *api_id;
-    gboolean valid;
-} Purple3SmokeValidationCase;
 
 typedef struct {
     GMainLoop *loop;
@@ -296,38 +290,10 @@ purple3_smoke_find_setting(PurpleAccountSettings *settings, const char *id)
 static void
 purple3_smoke_assert_default_account_settings(PurpleProtocol *protocol)
 {
-    const struct {
-        const char *id;
-        const char *label;
-        GType type;
-        int weight;
-        gboolean advanced;
-        gboolean hint_required;
-    } expected[] = {
-        {
-            TELEGRAM_TDLIB_SETTING_PHONE_NUMBER,
-            "Phone number",
-            PURPLE_TYPE_ACCOUNT_SETTING_STRING,
-            10,
-            FALSE,
-            TRUE,
-        },
-        {
-            TELEGRAM_TDLIB_SETTING_API_ID,
-            "API ID",
-            PURPLE_TYPE_ACCOUNT_SETTING_STRING,
-            20,
-            FALSE,
-            TRUE,
-        },
-        {
-            TELEGRAM_TDLIB_SETTING_ENABLE_SECRET_CHATS,
-            "Enable secret chats (takes effect at reconnect)",
-            PURPLE_TYPE_ACCOUNT_SETTING_BOOLEAN,
-            30,
-            TRUE,
-            FALSE,
-        },
+    static const char *const absent_settings[] = {
+        TELEGRAM_TDLIB_LEGACY_SETTING_PHONE_NUMBER,
+        TELEGRAM_TDLIB_LEGACY_SETTING_API_ID,
+        TELEGRAM_TDLIB_LEGACY_SETTING_API_HASH,
     };
     PurpleAccountSettings *settings = NULL;
     PurpleAccountSetting *setting = NULL;
@@ -337,50 +303,34 @@ purple3_smoke_assert_default_account_settings(PurpleProtocol *protocol)
     g_assert_true(PURPLE_IS_ACCOUNT_SETTINGS(settings));
 
     model = G_LIST_MODEL(settings);
-    g_assert_cmpuint(g_list_model_get_n_items(model), ==, G_N_ELEMENTS(expected));
+    g_assert_cmpuint(g_list_model_get_n_items(model), ==, 1);
 
-    for (guint index = 0; index < G_N_ELEMENTS(expected); index++) {
-        const char *hint = NULL;
+    setting = g_list_model_get_item(model, 0);
+    g_assert_true(PURPLE_IS_ACCOUNT_SETTING_BOOLEAN(setting));
+    g_assert_cmpstr(purple_account_setting_get_id(setting), ==,
+                    TELEGRAM_TDLIB_SETTING_ENABLE_SECRET_CHATS);
+    g_assert_cmpstr(
+        purple_account_setting_get_label(setting), ==,
+        "Enable secret chats (takes effect at reconnect)");
+    g_assert_cmpint(purple_account_setting_get_weight(setting), ==, 10);
+    g_assert_true(purple_account_setting_get_advanced(setting));
+    g_assert_false(purple_account_setting_get_developer_mode(setting));
+    g_assert_null(purple_account_setting_get_hint(setting));
+    g_assert_true(purple_account_setting_boolean_get_value(
+        PURPLE_ACCOUNT_SETTING_BOOLEAN(setting)));
+    g_clear_object(&setting);
 
-        setting = g_list_model_get_item(model, index);
-        g_assert_true(G_TYPE_CHECK_INSTANCE_TYPE(setting,
-                                                 expected[index].type));
-        g_assert_cmpstr(purple_account_setting_get_id(setting), ==,
-                        expected[index].id);
-        g_assert_cmpstr(purple_account_setting_get_label(setting), ==,
-                        expected[index].label);
-        g_assert_cmpint(purple_account_setting_get_weight(setting), ==,
-                        expected[index].weight);
-        g_assert_cmpint(purple_account_setting_get_advanced(setting), ==,
-                        expected[index].advanced);
-        g_assert_false(purple_account_setting_get_developer_mode(setting));
-
-        hint = purple_account_setting_get_hint(setting);
-        if (expected[index].hint_required) {
-            g_assert_nonnull(hint);
-            g_assert_cmpstr(hint, !=, "");
-        }
-
-        if (PURPLE_IS_ACCOUNT_SETTING_STRING(setting)) {
-            g_assert_null(purple_account_setting_string_get_value(
-                PURPLE_ACCOUNT_SETTING_STRING(setting)));
-        } else {
-            g_assert_true(purple_account_setting_boolean_get_value(
-                PURPLE_ACCOUNT_SETTING_BOOLEAN(setting)));
-        }
-
-        g_clear_object(&setting);
+    for (guint index = 0; index < G_N_ELEMENTS(absent_settings); index++) {
+        setting = purple3_smoke_find_setting(settings,
+                                             absent_settings[index]);
+        g_assert_null(setting);
     }
-
-    setting = purple3_smoke_find_setting(
-        settings, TELEGRAM_TDLIB_SETTING_API_HASH);
-    g_assert_null(setting);
 
     g_clear_object(&settings);
 }
 
 static PurpleAccount *
-purple3_smoke_account_new(const char *phone_number, const char *api_id)
+purple3_smoke_account_new(void)
 {
     PurpleAccountSettings *settings = NULL;
     PurpleAccountSetting *setting = NULL;
@@ -389,18 +339,6 @@ purple3_smoke_account_new(const char *phone_number, const char *api_id)
     account = purple_account_new("Telegram test account",
                                  TELEGRAM_TDLIB_PLUGIN_ID);
     settings = purple_account_get_settings(account);
-
-    if (phone_number != NULL) {
-        setting = purple_account_setting_string_new(
-            TELEGRAM_TDLIB_SETTING_PHONE_NUMBER, NULL, phone_number);
-        g_assert_true(purple_account_settings_add_setting(settings, setting));
-    }
-
-    if (api_id != NULL) {
-        setting = purple_account_setting_string_new(
-            TELEGRAM_TDLIB_SETTING_API_ID, NULL, api_id);
-        g_assert_true(purple_account_settings_add_setting(settings, setting));
-    }
 
     setting = purple_account_setting_boolean_new(
         TELEGRAM_TDLIB_SETTING_ENABLE_SECRET_CHATS, NULL, TRUE);
@@ -412,47 +350,219 @@ purple3_smoke_account_new(const char *phone_number, const char *api_id)
 static void
 purple3_smoke_assert_account_validation(PurpleProtocol *protocol)
 {
-    static const Purple3SmokeValidationCase cases[] = {
-        {NULL, "1", FALSE},
-        {"", "1", FALSE},
-        {"+15550000000", NULL, FALSE},
-        {"+15550000000", "", FALSE},
-        {"+15550000000", "not-a-number", FALSE},
-        {"+15550000000", "12x", FALSE},
-        {"+15550000000", "+1", FALSE},
-        {"+15550000000", "01", FALSE},
-        {"+15550000000", " 1", FALSE},
-        {"+15550000000", "1 ", FALSE},
-        {"+15550000000", "-1", FALSE},
-        {"+15550000000", "0", FALSE},
-        {"+15550000000", "2147483648", FALSE},
-        {"+15550000000", "1", TRUE},
-        {"+15550000000", "2147483647", TRUE},
-        {"TDLib validates this value", "1", TRUE},
+    PurpleAccount *account = NULL;
+    GError *error = NULL;
+
+    account = purple3_smoke_account_new();
+    g_assert_true(purple_protocol_validate_account(protocol, account,
+                                                   &error));
+    g_assert_no_error(error);
+
+    g_clear_object(&account);
+}
+
+static void
+purple3_smoke_add_legacy_settings(PurpleAccount *account)
+{
+    PurpleAccountSettings *settings = NULL;
+    PurpleAccountSetting *setting = NULL;
+
+    g_assert_true(PURPLE_IS_ACCOUNT(account));
+
+    settings = purple_account_get_settings(account);
+
+    setting = purple_account_setting_string_new(
+        TELEGRAM_TDLIB_LEGACY_SETTING_PHONE_NUMBER, NULL,
+        "+15550000000");
+    g_assert_true(purple_account_settings_add_setting(settings, setting));
+    setting = purple_account_setting_string_new(
+        TELEGRAM_TDLIB_LEGACY_SETTING_API_ID, NULL, "1");
+    g_assert_true(purple_account_settings_add_setting(settings, setting));
+    setting = purple_account_setting_string_new(
+        TELEGRAM_TDLIB_LEGACY_SETTING_API_HASH, NULL,
+        "synthetic-old-value");
+    g_assert_true(purple_account_settings_add_setting(settings, setting));
+}
+
+static PurpleAccount *
+purple3_smoke_legacy_account_new(void)
+{
+    PurpleAccount *account = NULL;
+
+    account = purple3_smoke_account_new();
+    purple3_smoke_add_legacy_settings(account);
+
+    return account;
+}
+
+static void
+purple3_smoke_assert_legacy_settings_removed(PurpleAccount *account)
+{
+    static const char *const legacy_settings[] = {
+        TELEGRAM_TDLIB_LEGACY_SETTING_PHONE_NUMBER,
+        TELEGRAM_TDLIB_LEGACY_SETTING_API_ID,
+        TELEGRAM_TDLIB_LEGACY_SETTING_API_HASH,
     };
+    PurpleAccountSettings *settings = NULL;
+    PurpleAccountSetting *setting = NULL;
 
-    for (guint index = 0; index < G_N_ELEMENTS(cases); index++) {
-        PurpleAccount *account = NULL;
-        GError *error = NULL;
-        gboolean valid = FALSE;
+    settings = purple_account_get_settings(account);
+    for (guint index = 0; index < G_N_ELEMENTS(legacy_settings); index++) {
+        setting = purple3_smoke_find_setting(settings,
+                                             legacy_settings[index]);
+        g_assert_null(setting);
+    }
+    g_assert_true(purple_account_settings_get_boolean(
+        settings, TELEGRAM_TDLIB_SETTING_ENABLE_SECRET_CHATS, FALSE));
+}
 
-        account = purple3_smoke_account_new(cases[index].phone_number,
-                                            cases[index].api_id);
-        valid = purple_protocol_validate_account(protocol, account, &error);
+static void
+purple3_smoke_assert_legacy_settings_present(PurpleAccount *account)
+{
+    static const char *const legacy_settings[] = {
+        TELEGRAM_TDLIB_LEGACY_SETTING_PHONE_NUMBER,
+        TELEGRAM_TDLIB_LEGACY_SETTING_API_ID,
+        TELEGRAM_TDLIB_LEGACY_SETTING_API_HASH,
+    };
+    PurpleAccountSettings *settings = NULL;
+    PurpleAccountSetting *setting = NULL;
 
-        g_assert_cmpint(valid, ==, cases[index].valid);
-        if (cases[index].valid) {
-            g_assert_no_error(error);
-        } else {
-            g_assert_error(error, PURPLE_ACCOUNT_ERROR,
-                           PURPLE_ACCOUNT_ERROR_NOT_VALID);
-            g_assert_nonnull(error->message);
-            g_assert_cmpstr(error->message, !=, "");
+    settings = purple_account_get_settings(account);
+    for (guint index = 0; index < G_N_ELEMENTS(legacy_settings); index++) {
+        setting = purple3_smoke_find_setting(settings,
+                                             legacy_settings[index]);
+        g_assert_nonnull(setting);
+        g_clear_object(&setting);
+    }
+}
+
+static GListModel *
+purple3_smoke_load_persisted_accounts(PurpleAccountManager *manager)
+{
+    Purple3SmokeAsyncWait *wait = NULL;
+    PurpleAccountManagerBackend *backend = NULL;
+    GListModel *accounts = NULL;
+    GError *error = NULL;
+
+    backend = purple_account_manager_get_backend(manager);
+    g_assert_true(PURPLE_IS_ACCOUNT_MANAGER_BACKEND(backend));
+
+    wait = purple3_smoke_async_wait_new();
+    purple_account_manager_backend_load_accounts_async(
+        backend, NULL, purple3_smoke_async_cb, wait);
+    purple3_smoke_async_wait_run(wait);
+
+    g_assert_true(wait->source == G_OBJECT(backend));
+    accounts = purple_account_manager_backend_load_accounts_finish(
+        backend, wait->result, &error);
+    g_assert_no_error(error);
+    g_assert_true(G_IS_LIST_MODEL(accounts));
+
+    purple3_smoke_async_wait_clear(wait);
+
+    return accounts;
+}
+
+static void
+purple3_smoke_assert_migration_persisted(PurpleAccountManager *manager,
+                                         PurpleAccount *account)
+{
+    GListModel *accounts = NULL;
+    PurpleAccount *loaded = NULL;
+    const char *account_id = NULL;
+    guint n_items = 0;
+
+    account_id = purple_account_get_id(account);
+    g_assert_nonnull(account_id);
+
+    accounts = purple3_smoke_load_persisted_accounts(manager);
+    n_items = g_list_model_get_n_items(accounts);
+    for (guint index = 0; index < n_items; index++) {
+        PurpleAccount *candidate = g_list_model_get_item(accounts, index);
+
+        if (g_strcmp0(purple_account_get_id(candidate), account_id) == 0) {
+            loaded = candidate;
+            break;
         }
 
-        g_clear_error(&error);
-        g_clear_object(&account);
+        g_clear_object(&candidate);
     }
+
+    g_assert_true(PURPLE_IS_ACCOUNT(loaded));
+    purple3_smoke_assert_legacy_settings_removed(loaded);
+
+    g_clear_object(&loaded);
+    g_clear_object(&accounts);
+}
+
+static void
+purple3_smoke_account_settings_updated_cb(
+    G_GNUC_UNUSED PurpleAccount *account,
+    G_GNUC_UNUSED PurpleAccountSettings *settings,
+    gpointer data)
+{
+    guint *update_count = data;
+
+    (*update_count)++;
+}
+
+static void
+purple3_smoke_assert_added_account_migrated(PurpleCore *core)
+{
+    PurpleAccountManager *manager = NULL;
+    PurpleAccount *account = NULL;
+    gulong update_handler = 0;
+    guint update_count = 0;
+
+    manager = purple_core_get_account_manager(core);
+    g_assert_true(PURPLE_IS_ACCOUNT_MANAGER(manager));
+
+    account = purple3_smoke_legacy_account_new();
+    g_assert_nonnull(purple_account_get_id(account));
+    update_handler = g_signal_connect(
+        account,
+        "settings-updated",
+        G_CALLBACK(purple3_smoke_account_settings_updated_cb),
+        &update_count);
+    purple_account_manager_add(manager, account);
+
+    g_assert_cmpuint(update_count, ==, 1);
+    purple3_smoke_assert_legacy_settings_removed(account);
+    purple3_smoke_assert_migration_persisted(manager, account);
+
+    g_signal_handler_disconnect(account, update_handler);
+    purple_account_manager_remove(manager, account);
+    g_clear_object(&account);
+}
+
+static void
+purple3_smoke_assert_unrelated_account_not_migrated(PurpleCore *core)
+{
+    PurpleAccountManager *manager = NULL;
+    PurpleAccount *account = NULL;
+    gulong update_handler = 0;
+    guint update_count = 0;
+
+    manager = purple_core_get_account_manager(core);
+    g_assert_true(PURPLE_IS_ACCOUNT_MANAGER(manager));
+
+    account = purple_account_new("Unrelated test account",
+                                 "unrelated-protocol");
+    purple3_smoke_add_legacy_settings(account);
+    g_assert_nonnull(purple_account_get_id(account));
+    update_handler = g_signal_connect(
+        account,
+        "settings-updated",
+        G_CALLBACK(purple3_smoke_account_settings_updated_cb),
+        &update_count);
+    purple_account_manager_add(manager, account);
+
+    g_assert_cmpuint(update_count, ==, 0);
+    purple3_smoke_assert_legacy_settings_present(account);
+
+    g_signal_handler_disconnect(account, update_handler);
+    purple_account_manager_remove(manager, account);
+    g_clear_object(&account);
 }
 
 static void
@@ -538,7 +648,7 @@ purple3_smoke_assert_connection_lifecycle(PurpleProtocol *protocol)
     gpointer connection_weak = NULL;
     gpointer connection_cancellable_weak = NULL;
 
-    account = purple3_smoke_account_new("+15550000000", "1");
+    account = purple3_smoke_account_new();
     connection = purple_protocol_create_connection(protocol, account, &error);
     g_assert_no_error(error);
     g_assert_true(PURPLE_IS_CONNECTION(connection));
@@ -636,7 +746,7 @@ purple3_smoke_assert_account_connect_failure_releases_connection(void)
     gulong state_handler = 0;
     gpointer account_weak = NULL;
 
-    account = purple3_smoke_account_new("+15550000000", "1");
+    account = purple3_smoke_account_new();
     account_weak = account;
     g_object_add_weak_pointer(G_OBJECT(account), &account_weak);
 
@@ -700,13 +810,19 @@ test_plugin_load_and_unload(void)
     GPluginPlugin *plugin = NULL;
     GPluginPluginInfo *plugin_info = NULL;
     PurpleCore *core = NULL;
+    PurpleAccount *legacy_account = NULL;
+    PurpleAccountManager *account_manager = NULL;
     PurpleProtocolManager *protocol_manager = NULL;
     PurpleProtocol *protocol = NULL;
     GBytes *icon = NULL;
+    gulong legacy_update_handler = 0;
+    guint legacy_update_count = 0;
 
     g_assert_nonnull(g_getenv("PURPLE_PLUGIN_PATH"));
 
     core = purple3_smoke_core_start();
+    account_manager = purple_core_get_account_manager(core);
+    g_assert_true(PURPLE_IS_ACCOUNT_MANAGER(account_manager));
     plugin_manager = gplugin_manager_get_default();
 
     plugin = gplugin_manager_find_plugin(plugin_manager,
@@ -752,6 +868,8 @@ test_plugin_load_and_unload(void)
     purple3_smoke_assert_account_validation(protocol);
     purple3_smoke_assert_connection_lifecycle(protocol);
     purple3_smoke_assert_account_connect_failure_releases_connection();
+    purple3_smoke_assert_added_account_migrated(core);
+    purple3_smoke_assert_unrelated_account_not_migrated(core);
 
     /*
      * The protocol owns no test account, connection, setting, cancellable, or
@@ -768,8 +886,27 @@ test_plugin_load_and_unload(void)
     g_assert_null(purple_protocol_manager_find(protocol_manager,
                                                TELEGRAM_TDLIB_PLUGIN_ID));
 
+    legacy_account = purple3_smoke_legacy_account_new();
+    g_assert_nonnull(purple_account_get_id(legacy_account));
+    legacy_update_handler = g_signal_connect(
+        legacy_account,
+        "settings-updated",
+        G_CALLBACK(purple3_smoke_account_settings_updated_cb),
+        &legacy_update_count);
+    purple_account_manager_add(account_manager, legacy_account);
+    g_assert_cmpuint(legacy_update_count, ==, 0);
+    purple3_smoke_assert_legacy_settings_present(legacy_account);
+
     g_assert_true(gplugin_manager_load_plugin(plugin_manager, plugin, &error));
     g_assert_no_error(error);
+    g_assert_cmpuint(legacy_update_count, ==, 1);
+    purple3_smoke_assert_legacy_settings_removed(legacy_account);
+    purple3_smoke_assert_migration_persisted(account_manager,
+                                             legacy_account);
+    g_signal_handler_disconnect(legacy_account, legacy_update_handler);
+    purple_account_manager_remove(account_manager, legacy_account);
+    g_clear_object(&legacy_account);
+
     protocol = purple_protocol_manager_find(protocol_manager,
                                             TELEGRAM_TDLIB_PLUGIN_ID);
     g_assert_true(PURPLE_IS_PROTOCOL(protocol));
