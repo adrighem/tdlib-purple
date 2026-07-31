@@ -124,6 +124,79 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify TDLib pin
+        run: |
+          env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/github/home USER=root LANG=C LC_ALL=C \
+            TD_TAG="${TD_TAG}" \
+            sh -eu <<'EOF'
+          submodule_commit="$(git ls-tree HEAD td | awk '{print $3}')"
+          if [ "${submodule_commit}" != "${TD_TAG}" ]; then
+            echo "TDLib workflow pin does not match the td submodule." >&2
+            exit 1
+          fi
+          EOF
+
+      - name: Install TDLib build dependencies
+        run: |
+          env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/github/home USER=root LANG=C LC_ALL=C \
+            sh -eu <<'EOF'
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            --no-install-recommends \
+            gperf \
+            libssl-dev \
+            lzop \
+            zlib1g-dev
+          EOF
+
+      - name: Identify TDLib build ABI
+        id: tdlib_abi
+        run: |
+          env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/github/home USER=root LANG=C LC_ALL=C \
+            GITHUB_OUTPUT="${GITHUB_OUTPUT}" \
+            sh -eu <<'EOF'
+          abi_details="$(
+            uname -m &&
+            c++ --version &&
+            cmake --version &&
+            gperf --version &&
+            ldd --version &&
+            pkg-config --modversion openssl &&
+            pkg-config --modversion zlib
+          )"
+          fingerprint_line="$(printf '%s\n' "${abi_details}" | sha256sum)"
+          fingerprint="${fingerprint_line%% *}"
+          printf 'fingerprint=%s\n' "${fingerprint}" >> "${GITHUB_OUTPUT}"
+          EOF
+
+      - name: Cache Purple 3 TDLib build
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25  # v5
+        with:
+          path: .ga_cache/purple3/td_destdir_${{ env.TD_TAG }}_${{ env.TD_MARK }}.tar*
+          key: ${{ runner.os }}-${{ runner.arch }}-purple3-td-${{ env.TD_TAG }}-${{ env.TD_MARK }}-${{ steps.tdlib_abi.outputs.fingerprint }}-${{ hashFiles('.github/ga_build_td.sh') }}
+
+      - name: Restore or create Purple 3 TDLib build
+        run: |
+          env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/github/home USER=root LANG=C LC_ALL=C \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            TD_TAG="${TD_TAG}" TD_MARK="${TD_MARK}" \
+            sh -eu <<'EOF'
+          cd "${GITHUB_WORKSPACE}"
+          TD_CACHE_DIR=.ga_cache/purple3 \
+            ./.github/ga_build_td.sh "${TD_TAG}" "${TD_MARK}"
+          test -r td_destdir/usr/local/lib/cmake/Td/TdConfig.cmake
+          test -r td_destdir/usr/local/lib/cmake/Td/TdStaticTargets.cmake
+          test -r td_destdir/usr/local/lib/libtdclient.a
+          EOF
+
       - name: Fetch pinned Pidgin source
         run: |
           env -i \
@@ -194,7 +267,8 @@ jobs:
           meson devenv -C /tmp/pidgin-build \
             --workdir "${GITHUB_WORKSPACE}" \
             cmake -S purple3 -B /tmp/tdlib-purple3-debug -G Ninja \
-              -DCMAKE_BUILD_TYPE=Debug
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DTd_DIR="${GITHUB_WORKSPACE}/td_destdir/usr/local/lib/cmake/Td"
           meson devenv -C /tmp/pidgin-build \
             --workdir "${GITHUB_WORKSPACE}" \
             cmake --build /tmp/tdlib-purple3-debug
@@ -224,6 +298,7 @@ jobs:
             cmake -S purple3 -B /tmp/tdlib-purple3-release -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_C_FLAGS=-DG_DISABLE_ASSERT \
+              -DTd_DIR="${GITHUB_WORKSPACE}/td_destdir/usr/local/lib/cmake/Td" \
               -DTDLIB_PURPLE_API_ID_FILE="${test_credential_dir}/api-id" \
               -DTDLIB_PURPLE_API_HASH_FILE="${test_credential_dir}/api-hash"
           meson devenv -C /tmp/pidgin-build \
