@@ -1816,9 +1816,8 @@ void showMessage(const td::td_api::chat &chat, IncomingMessage &fullMessage,
             break;
         }
         case td::td_api::messagePinMessage::ID: {
-            const auto &pin = static_cast<const td::td_api::messagePinMessage &>(*message.content_);
-            // TRANSLATOR: In-chat status update, argument is a Telegram message identifier.
-            std::string notice = formatMessage(_("Pinned message {}"), std::to_string(pin.message_id_));
+            // TRANSLATOR: In-chat service message shown after the sender name.
+            std::string notice = _("Pinned a message");
             notice = makeNoticeWithSender(chat, messageInfo, notice.c_str(), account.purpleAccount);
             showMessageText(account, chat, messageInfo, NULL, notice.c_str());
             break;

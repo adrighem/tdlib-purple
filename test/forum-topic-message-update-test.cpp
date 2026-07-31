@@ -205,14 +205,6 @@ protected:
                 "edited", PURPLE_MESSAGE_RECV, MessageDate),
             ConversationWriteEvent(
                 conversationName, NotificationWho,
-                "Message " + id + " was pinned",
-                PURPLE_MESSAGE_SYSTEM, 0),
-            ConversationWriteEvent(
-                conversationName, NotificationWho,
-                "Message " + id + " was unpinned",
-                PURPLE_MESSAGE_SYSTEM, 0),
-            ConversationWriteEvent(
-                conversationName, NotificationWho,
                 userFirstNames[0] + " " + userLastNames[0] +
                     " changed reactions on message " + id +
                     ": old -> new",
@@ -256,7 +248,7 @@ TEST_F(
 
 TEST_F(
     ForumTopicMessageUpdateTest,
-    MessageNoticesUseExactOpenChild)
+    MessageLinkedUpdatesUseExactOpenChild)
 {
     loginWithForumSupergroup();
     cacheTopic();
@@ -266,14 +258,6 @@ TEST_F(
 
     const std::string id = std::to_string(FirstMessageId);
     prpl.verifyEvents(
-        ConversationWriteEvent(
-            topicPurpleName(), NotificationWho,
-            "Message " + id + " was pinned",
-            PURPLE_MESSAGE_SYSTEM, 0),
-        ConversationWriteEvent(
-            topicPurpleName(), NotificationWho,
-            "Message " + id + " was unpinned",
-            PURPLE_MESSAGE_SYSTEM, 0),
         ConversationWriteEvent(
             topicPurpleName(), NotificationWho,
             userFirstNames[0] + " " + userLastNames[0] +
@@ -293,7 +277,7 @@ TEST_F(
 
 TEST_F(
     ForumTopicMessageUpdateTest,
-    NotificationOnlyMessageKeepsExactChildRoute)
+    PinStateMetadataDoesNotDuplicateTopicNotices)
 {
     loginWithForumSupergroup();
     cacheTopic();
@@ -321,12 +305,11 @@ TEST_F(
 
     tgl.update(make_object<updateMessageIsPinned>(
         groupChatId, FirstMessageId, true));
+    tgl.update(make_object<updateMessageIsPinned>(
+        groupChatId, FirstMessageId, false));
 
-    prpl.verifyEvents(ConversationWriteEvent(
-        topicPurpleName(), NotificationWho,
-        "Message " + std::to_string(FirstMessageId) +
-            " was pinned",
-        PURPLE_MESSAGE_SYSTEM, 0));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
     expectNoGeneralConversation();
 }
 
@@ -396,13 +379,14 @@ TEST_F(
     tgl.verifyNoRequests();
     prpl.verifyNoEvents();
 
-    tgl.update(make_object<updateMessageIsPinned>(
-        groupChatId, SecondMessageId, true));
+    tgl.update(make_object<updateMessageContent>(
+        groupChatId, SecondMessageId,
+        makeTextMessage("edited")));
     tgl.verifyNoRequests();
     prpl.verifyEvents(ConversationWriteEvent(
         groupChatPurpleName, NotificationWho,
         "Message " + std::to_string(SecondMessageId) +
-            " was pinned",
+            " updated: edited",
         PURPLE_MESSAGE_SYSTEM, 0));
     EXPECT_NE(
         nullptr,
@@ -524,14 +508,6 @@ TEST_F(
         ConversationWriteEvent(
             groupChatPurpleName, NotificationWho,
             "Message " + id + " updated: edited",
-            PURPLE_MESSAGE_SYSTEM, 0),
-        ConversationWriteEvent(
-            groupChatPurpleName, NotificationWho,
-            "Message " + id + " was pinned",
-            PURPLE_MESSAGE_SYSTEM, 0),
-        ConversationWriteEvent(
-            groupChatPurpleName, NotificationWho,
-            "Message " + id + " was unpinned",
             PURPLE_MESSAGE_SYSTEM, 0),
         ConversationWriteEvent(
             groupChatPurpleName, NotificationWho,

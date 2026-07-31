@@ -575,10 +575,6 @@ TEST_F(
             "edited", PURPLE_MESSAGE_RECV, date),
         ConversationWriteEvent(
             purpleUserName(0), purpleUserName(0),
-            "Message " + id + " was pinned",
-            PURPLE_MESSAGE_SYSTEM, 0),
-        ConversationWriteEvent(
-            purpleUserName(0), purpleUserName(0),
             "Deleted message(s): " + id,
             PURPLE_MESSAGE_SYSTEM, 0));
     tgl.verifyNoRequests();
@@ -607,16 +603,17 @@ TEST_F(
             EXPECT_EQ(PurpleEventType::ConversationWrite, type);
             pluginInfo().close(connection);
         });
-    tgl.update(make_object<updateMessageIsPinned>(
-        chatIds[0], messageId + 1, true));
+    tgl.update(make_object<updateDeleteMessages>(
+        chatIds[0], std::vector<int64_t>{messageId + 1},
+        true, false));
 
     EXPECT_EQ(
         nullptr,
         purple_connection_get_protocol_data(connection));
     prpl.verifyEvents(ConversationWriteEvent(
         purpleUserName(0), purpleUserName(0),
-        "Message " + std::to_string(messageId + 1) +
-            " was pinned",
+        "Deleted message(s): " +
+            std::to_string(messageId + 1),
         PURPLE_MESSAGE_SYSTEM, 0));
     tgl.verifyNoRequests();
 }
@@ -649,13 +646,14 @@ TEST_F(
             EXPECT_EQ(PurpleEventType::ConversationWrite, type);
             purple_conversation_destroy(conversation);
         });
-    tgl.update(make_object<updateMessageIsPinned>(
-        chatIds[0], messageId + 1, true));
+    tgl.update(make_object<updateDeleteMessages>(
+        chatIds[0], std::vector<int64_t>{messageId + 1},
+        true, false));
 
     prpl.verifyEvents(ConversationWriteEvent(
         purpleUserName(0), purpleUserName(0),
-        "Message " + std::to_string(messageId + 1) +
-            " was pinned",
+        "Deleted message(s): " +
+            std::to_string(messageId + 1),
         PURPLE_MESSAGE_SYSTEM, 0));
     EXPECT_EQ(
         nullptr,
