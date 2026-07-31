@@ -27,6 +27,21 @@
 #include <memory>
 #include <string>
 
+constexpr char syntheticQrOne[] = "tg://login?token=-_AA";
+constexpr char syntheticQrTwo[] = "tg://login?token=-_AB";
+constexpr char syntheticQrClose[] =
+    "tg://login?token=c3ludGhldGljLWNsb3Nl";
+constexpr char syntheticQrPresentReentrant[] =
+    "tg://login?token=c3ludGhldGljLXByZXNlbnQtcmVlbnRyYW50";
+constexpr char syntheticQrBeforeNotify[] =
+    "tg://login?token=c3ludGhldGljLWJlZm9yZS1ub3RpZnk";
+constexpr char syntheticQrNotifyReentrant[] =
+    "tg://login?token=c3ludGhldGljLW5vdGlmeS1yZWVudHJhbnQ";
+constexpr char syntheticQrUnsupported[] =
+    "tg://login?token=c3ludGhldGljLXVuc3VwcG9ydGVk";
+constexpr char syntheticQrLate[] =
+    "tg://login?token=c3ludGhldGljLWxhdGU";
+
 typedef struct _PresenterTestUi PresenterTestUi;
 typedef struct _PresenterTestUiClass PresenterTestUiClass;
 
@@ -321,8 +336,7 @@ test_qr_rotates_and_user_cancel_is_exact(void)
     PresenterFixture fixture;
     const TdAuthPromptId prompt(41);
 
-    fixture.presenter->showQr(
-        prompt, "tg://login?token=synthetic-one");
+    fixture.presenter->showQr(prompt, syntheticQrOne);
     g_assert_cmpuint(fixture.ui->qrPresentationCount, ==, 1);
     g_assert_nonnull(fixture.ui->qr);
     g_assert_nonnull(fixture.ui->qrCancellable);
@@ -330,15 +344,14 @@ test_qr_rotates_and_user_cancel_is_exact(void)
 
     PurpleQrCode *originalQr = fixture.ui->qr;
     GCancellable *originalCancellable = fixture.ui->qrCancellable;
-    fixture.presenter->showQr(
-        prompt, "tg://login?token=synthetic-two");
+    fixture.presenter->showQr(prompt, syntheticQrTwo);
 
     g_assert_cmpuint(fixture.ui->qrPresentationCount, ==, 1);
     g_assert_true(fixture.ui->qr == originalQr);
     g_assert_true(fixture.ui->qrCancellable == originalCancellable);
     g_assert_true(g_str_equal(
         purple_qr_code_get_text(fixture.ui->qr),
-        "tg://login?token=synthetic-two"));
+        syntheticQrTwo));
 
     GCancellable *cancellable = G_CANCELLABLE(
         g_object_ref(fixture.ui->qrCancellable));
@@ -360,8 +373,7 @@ test_programmatic_qr_close_is_not_user_cancel(void)
     PresenterFixture fixture;
     const TdAuthPromptId prompt(42);
 
-    fixture.presenter->showQr(
-        prompt, "tg://login?token=synthetic-close");
+    fixture.presenter->showQr(prompt, syntheticQrClose);
     fixture.presenter->closePrompt(TdAuthPromptId(999));
     g_assert_nonnull(fixture.ui->qr);
 
@@ -382,8 +394,7 @@ test_synchronous_qr_reentrancy_is_safe(void)
         fixture.ui->cancelQrDuringPresentation = TRUE;
 
         fixture.presenter->showQr(
-            TdAuthPromptId(43),
-            "tg://login?token=synthetic-present-reentrant");
+            TdAuthPromptId(43), syntheticQrPresentReentrant);
         presenter_test_drain_context();
 
         g_assert_cmpuint(fixture.actions.cancellations, ==, 1);
@@ -394,12 +405,11 @@ test_synchronous_qr_reentrancy_is_safe(void)
     {
         PresenterFixture fixture;
         const TdAuthPromptId prompt(44);
-        fixture.presenter->showQr(
-            prompt, "tg://login?token=synthetic-before-notify");
+        fixture.presenter->showQr(prompt, syntheticQrBeforeNotify);
         fixture.ui->cancelQrOnTextChange = TRUE;
 
         fixture.presenter->showQr(
-            prompt, "tg://login?token=synthetic-notify-reentrant");
+            prompt, syntheticQrNotifyReentrant);
         presenter_test_drain_context();
 
         g_assert_cmpuint(fixture.actions.cancellations, ==, 1);
@@ -412,19 +422,34 @@ static void
 test_invalid_and_unsupported_qr_fail_without_presenting_secret(void)
 {
     PresenterFixture fixture;
+    const char *invalidLinks[] = {
+        "https://invalid.example/login",
+        "tg://profile?token=synthetic-invalid",
+        "tg://login?token=",
+        "tg://login?token=synthetic+invalid",
+        "tg://login?token=synthetic/invalid",
+        "tg://login?token=synthetic&extra=value",
+        "tg://login?token=A",
+        "tg://login?token=AB",
+        "tg://login?token=AAB",
+    };
 
-    fixture.presenter->showQr(
-        TdAuthPromptId(50), "https://invalid.example/login");
-    g_assert_cmpuint(fixture.actions.failures, ==, 1);
+    for (guint index = 0; index < G_N_ELEMENTS(invalidLinks); ++index) {
+        fixture.presenter->showQr(
+            TdAuthPromptId(50 + index), invalidLinks[index]);
+    }
+    g_assert_cmpuint(
+        fixture.actions.failures, ==, G_N_ELEMENTS(invalidLinks));
     g_assert_true(
         fixture.actions.failure == TdAuthPresentationFailure::Failed);
     g_assert_cmpuint(fixture.ui->qrPresentationCount, ==, 0);
 
     fixture.ui->qrSupported = FALSE;
     fixture.presenter->showQr(
-        TdAuthPromptId(51), "tg://login?token=synthetic-unsupported");
+        TdAuthPromptId(59), syntheticQrUnsupported);
     presenter_test_drain_context();
-    g_assert_cmpuint(fixture.actions.failures, ==, 2);
+    g_assert_cmpuint(
+        fixture.actions.failures, ==, G_N_ELEMENTS(invalidLinks) + 1);
     g_assert_true(
         fixture.actions.failure == TdAuthPresentationFailure::Unsupported);
     g_assert_null(fixture.ui->qr);
@@ -494,8 +519,7 @@ test_destroyed_owner_makes_late_callback_inert(void)
 {
     PresenterFixture fixture;
 
-    fixture.presenter->showQr(
-        TdAuthPromptId(80), "tg://login?token=synthetic-late");
+    fixture.presenter->showQr(TdAuthPromptId(80), syntheticQrLate);
     g_object_unref(fixture.owner);
     fixture.owner = nullptr;
 

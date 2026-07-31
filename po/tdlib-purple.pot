@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tdlib-purple\n"
 "Report-Msgid-Bugs-To: https://github.com/ars3niy/tdlib-purple/issues/new \n"
-"POT-Creation-Date: 2026-07-31 18:29+0200\n"
+"POT-Creation-Date: 2026-07-31 20:12+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -233,33 +233,35 @@ msgstr ""
 msgid "Telegram application credentials are unavailable in this build."
 msgstr ""
 
-#: ../purple3/telegram-purple3-auth-presenter.cpp:657
+#: ../purple3/telegram-purple3-auth-presenter.cpp:690
 msgid "Log in to Telegram"
 msgstr ""
 
-#: ../purple3/telegram-purple3-auth-presenter.cpp:658
-msgid "Scan this code with Telegram on your phone to log in."
+#: ../purple3/telegram-purple3-auth-presenter.cpp:691
+msgid ""
+"In Telegram on your phone, open Settings > Devices > Link Desktop Device, "
+"then scan this code."
 msgstr ""
 
-#: ../purple3/telegram-purple3-auth-presenter.cpp:660
+#: ../purple3/telegram-purple3-auth-presenter.cpp:694
 msgid "Telegram login QR code"
 msgstr ""
 
-#: ../purple3/telegram-purple3-auth-presenter.cpp:742
-#: ../purple3/telegram-purple3-auth-presenter.cpp:760 ../td-client-auth.cpp:296
+#: ../purple3/telegram-purple3-auth-presenter.cpp:776
+#: ../purple3/telegram-purple3-auth-presenter.cpp:794 ../td-client-auth.cpp:296
 msgid "Password"
 msgstr ""
 
-#: ../purple3/telegram-purple3-auth-presenter.cpp:762 ../td-client-auth.cpp:297
+#: ../purple3/telegram-purple3-auth-presenter.cpp:796 ../td-client-auth.cpp:297
 msgid "Enter password for two-factor authentication"
 msgstr ""
 
-#: ../purple3/telegram-purple3-auth-presenter.cpp:766
+#: ../purple3/telegram-purple3-auth-presenter.cpp:800
 #, c-format
 msgid "Hint: %s"
 msgstr ""
 
-#: ../purple3/telegram-purple3-auth-presenter.cpp:772
+#: ../purple3/telegram-purple3-auth-presenter.cpp:806
 #, c-format
 msgid "Recovery e-mail may have been sent to %s"
 msgstr ""

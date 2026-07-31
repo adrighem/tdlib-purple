@@ -184,8 +184,11 @@ PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
   pidgin3
 ```
 
-Create or enable a `Telegram (tdlib)` account and scan the displayed QR code
-with Telegram on your phone. If the Telegram account uses two-step
+Create or enable a `Telegram (tdlib)` account. On an already-authorized phone,
+open Telegram's **Settings > Devices > Link Desktop Device** screen and scan
+the displayed QR code. Do not use the phone's normal camera or a generic QR
+scanner. Telegram refreshes the short-lived code automatically, so scan the
+currently displayed pattern. If the Telegram account uses two-step
 verification, complete the masked password prompt. An account whose
 UUID-specific TDLib data is already authorized may reconnect without showing a
 new QR code. Treat a displayed QR code as a temporary login credential and do

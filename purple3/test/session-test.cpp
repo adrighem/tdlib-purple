@@ -54,6 +54,14 @@ constexpr char upperAccountId[] =
     "123E4567-E89B-12D3-A456-426614174000";
 constexpr char lowerAccountId[] =
     "123e4567-e89b-12d3-a456-426614174000";
+constexpr char syntheticQrFirst[] =
+    "tg://login?token=c3ludGhldGljLWZpcnN0";
+constexpr char syntheticQrSecond[] =
+    "tg://login?token=c3ludGhldGljLXNlY29uZA";
+constexpr char syntheticQrCancel[] =
+    "tg://login?token=c3ludGhldGljLWNhbmNlbA";
+constexpr char syntheticQrUnload[] =
+    "tg://login?token=c3ludGhldGljLXVubG9hZA";
 
 typedef struct _SessionTestModule SessionTestModule;
 typedef struct _SessionTestModuleClass SessionTestModuleClass;
@@ -1279,7 +1287,7 @@ static void testQrOrderingRotationAndReadyExactOnce()
         harness.control,
         authorizationUpdate(make_object<
             authorizationStateWaitOtherDeviceConfirmation>(
-            "tg://login?token=synthetic-first")));
+            syntheticQrFirst)));
     g_assert_cmpuint(
         environment.ui()->qrPresentationCount, ==, 1);
     g_assert_nonnull(environment.ui()->qr);
@@ -1300,7 +1308,7 @@ static void testQrOrderingRotationAndReadyExactOnce()
         harness.control,
         authorizationUpdate(make_object<
             authorizationStateWaitOtherDeviceConfirmation>(
-            "tg://login?token=synthetic-first")));
+            syntheticQrFirst)));
     g_assert_cmpuint(environment.ui()->qrTextNotifyCount, ==, 0);
 
     pushAndWait(
@@ -1308,7 +1316,7 @@ static void testQrOrderingRotationAndReadyExactOnce()
         harness.control,
         authorizationUpdate(make_object<
             authorizationStateWaitOtherDeviceConfirmation>(
-            "tg://login?token=synthetic-second")));
+            syntheticQrSecond)));
     g_assert_true(environment.ui()->qr == originalQr);
     g_assert_cmpuint(
         environment.ui()->qrPresentationCount, ==, 1);
@@ -1424,7 +1432,7 @@ static void testQrUserCancellationIsPreReadyFailure()
         harness.control,
         authorizationUpdate(make_object<
             authorizationStateWaitOtherDeviceConfirmation>(
-            "tg://login?token=synthetic-cancel")));
+            syntheticQrCancel)));
     g_assert_nonnull(environment.ui()->qrCancellable);
     sessionTestUiCancelQr(environment.ui());
     g_assert_true(environment.iterateUntil([&harness]() {
@@ -1604,7 +1612,7 @@ static void testPrepareUnloadCancelsOpenQrPrompt()
         harness.control,
         authorizationUpdate(make_object<
             authorizationStateWaitOtherDeviceConfirmation>(
-            "tg://login?token=synthetic-unload")));
+            syntheticQrUnload)));
     g_assert_nonnull(environment.ui()->qr);
     g_assert_nonnull(environment.ui()->qrCancellable);
     g_assert_true(telegram_tdlib_session_module_busy());
