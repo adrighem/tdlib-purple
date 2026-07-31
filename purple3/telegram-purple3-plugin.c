@@ -26,6 +26,7 @@
 
 #include "telegram-purple3-connection.h"
 #include "telegram-purple3-protocol.h"
+#include "telegram-purple3-session.h"
 
 #define TELEGRAM_TDLIB_PLUGIN_ID "telegram-tdlib"
 #define TELEGRAM_TDLIB_LEGACY_SETTING_PHONE_NUMBER "phone-number"
@@ -210,6 +211,10 @@ telegram_tdlib_load(GPluginPlugin *plugin, GError **error)
         return FALSE;
     }
 
+    if (!telegram_tdlib_session_initialize_runtime(error)) {
+        return FALSE;
+    }
+
     telegram_tdlib_connection_register(GPLUGIN_NATIVE_PLUGIN(plugin));
     telegram_tdlib_protocol_register(GPLUGIN_NATIVE_PLUGIN(plugin));
     telegram_tdlib_protocol = telegram_tdlib_protocol_new();
@@ -256,6 +261,13 @@ telegram_tdlib_unload(G_GNUC_UNUSED GPluginPlugin *plugin,
     if (!PURPLE_IS_PROTOCOL_MANAGER(manager)) {
         g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_FAILED,
                             "libpurple protocol manager is not initialized");
+        return FALSE;
+    }
+
+    telegram_tdlib_session_prepare_unload();
+    if (telegram_tdlib_session_module_busy()) {
+        g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_BUSY,
+                            "Telegram sessions are still active");
         return FALSE;
     }
 

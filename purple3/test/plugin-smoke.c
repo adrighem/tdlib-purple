@@ -31,11 +31,6 @@
 #define TELEGRAM_TDLIB_LEGACY_SETTING_API_ID "api-id"
 #define TELEGRAM_TDLIB_LEGACY_SETTING_API_HASH "api-hash"
 #define TELEGRAM_TDLIB_SETTING_ENABLE_SECRET_CHATS "enable-secret-chats"
-#if TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
-#define PURPLE3_SMOKE_PROVIDER_STATE_ERROR G_IO_ERROR_NOT_SUPPORTED
-#else
-#define PURPLE3_SMOKE_PROVIDER_STATE_ERROR G_IO_ERROR_NOT_INITIALIZED
-#endif
 
 typedef struct {
     GMainLoop *loop;
@@ -47,6 +42,7 @@ typedef struct {
     gboolean timed_out;
 } Purple3SmokeAsyncWait;
 
+#if !TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
 typedef struct {
     GMainLoop *loop;
     gpointer connection_weak;
@@ -56,6 +52,7 @@ typedef struct {
     gboolean saw_connecting;
     gboolean timed_out;
 } Purple3SmokeAccountConnectWait;
+#endif
 
 struct _Purple3SmokeUi {
     PurpleUi parent;
@@ -90,6 +87,7 @@ purple3_smoke_async_quiescence_cb(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
+#if !TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
 static gboolean
 purple3_smoke_account_connect_timeout_cb(gpointer data)
 {
@@ -112,6 +110,7 @@ purple3_smoke_account_connect_quiescence_cb(gpointer data)
 
     return G_SOURCE_REMOVE;
 }
+#endif
 
 static void
 purple3_smoke_async_cb(GObject *source, GAsyncResult *result, gpointer data)
@@ -572,15 +571,7 @@ purple3_smoke_assert_unrelated_account_not_migrated(PurpleCore *core)
     g_clear_object(&account);
 }
 
-static void
-purple3_smoke_assert_provider_state_error(const GError *error)
-{
-    g_assert_error(
-        error,
-        G_IO_ERROR,
-        PURPLE3_SMOKE_PROVIDER_STATE_ERROR);
-}
-
+#if !TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
 static void
 purple3_smoke_assert_connect_error(PurpleConnection *connection,
                                    GCancellable *cancellable,
@@ -604,6 +595,7 @@ purple3_smoke_assert_connect_error(PurpleConnection *connection,
     g_clear_error(&error);
     purple3_smoke_async_wait_clear(wait);
 }
+#endif
 
 static void
 purple3_smoke_assert_disconnect_succeeds(PurpleConnection *connection,
@@ -627,6 +619,7 @@ purple3_smoke_assert_disconnect_succeeds(PurpleConnection *connection,
     purple3_smoke_async_wait_clear(wait);
 }
 
+#if !TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
 static void
 purple3_smoke_assert_connect_cancelled_after_start(
     PurpleConnection *connection,
@@ -651,6 +644,7 @@ purple3_smoke_assert_connect_cancelled_after_start(
     g_clear_error(&error);
     purple3_smoke_async_wait_clear(wait);
 }
+#endif
 
 static void
 purple3_smoke_assert_connection_lifecycle(PurpleProtocol *protocol)
@@ -685,21 +679,32 @@ purple3_smoke_assert_connection_lifecycle(PurpleProtocol *protocol)
         G_OBJECT(connection_cancellable_weak),
         &connection_cancellable_weak);
 
+#if !TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
+    /*
+     * A credentialed production module can start a real TDLib session. Keep
+     * its smoke coverage to construction and disconnected cleanup; synthetic
+     * fake-session tests exercise successful connection paths separately.
+     */
     purple3_smoke_assert_connect_error(
-        connection, NULL, PURPLE3_SMOKE_PROVIDER_STATE_ERROR);
+        connection, NULL, G_IO_ERROR_NOT_INITIALIZED);
+#endif
     purple3_smoke_assert_disconnect_succeeds(
         connection, NULL);
 
+#if !TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
     purple3_smoke_assert_connect_cancelled_after_start(
         connection, purple_connection_get_cancellable(connection));
+#endif
 
     cancellable = g_cancellable_new();
     cancellable_weak = cancellable;
     g_object_add_weak_pointer(G_OBJECT(cancellable), &cancellable_weak);
     g_cancellable_cancel(cancellable);
 
+#if !TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
     purple3_smoke_assert_connect_error(
         connection, cancellable, G_IO_ERROR_CANCELLED);
+#endif
     purple3_smoke_assert_disconnect_succeeds(connection, cancellable);
     purple3_smoke_assert_disconnect_succeeds(connection, cancellable);
 
@@ -712,6 +717,7 @@ purple3_smoke_assert_connection_lifecycle(PurpleProtocol *protocol)
     g_assert_null(account_weak);
 }
 
+#if !TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
 static void
 purple3_smoke_account_connection_notify_cb(
     PurpleAccount *account,
@@ -800,7 +806,7 @@ purple3_smoke_assert_account_connect_failure_releases_connection(void)
     g_assert_null(purple_account_get_connection(account));
 
     error = purple_account_get_error(account);
-    purple3_smoke_assert_provider_state_error(error);
+    g_assert_error(error, G_IO_ERROR, G_IO_ERROR_NOT_INITIALIZED);
 
     wait.timeout_id = g_timeout_add(
         25, purple3_smoke_account_connect_quiescence_cb, &wait);
@@ -817,6 +823,7 @@ purple3_smoke_assert_account_connect_failure_releases_connection(void)
     g_clear_object(&account);
     g_assert_null(account_weak);
 }
+#endif
 
 static void
 test_plugin_load_and_unload(void)
@@ -883,7 +890,9 @@ test_plugin_load_and_unload(void)
     purple3_smoke_assert_default_account_settings(protocol);
     purple3_smoke_assert_account_validation(protocol);
     purple3_smoke_assert_connection_lifecycle(protocol);
+#if !TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE
     purple3_smoke_assert_account_connect_failure_releases_connection();
+#endif
     purple3_smoke_assert_added_account_migrated(core);
     purple3_smoke_assert_unrelated_account_not_migrated(core);
 

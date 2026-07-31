@@ -1,8 +1,17 @@
 cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
 
 set(VERSION 1.1.1) # x-release-please-version
-project(tdlib-purple-purple3 VERSION ${VERSION} LANGUAGES C)
+project(tdlib-purple-purple3 VERSION ${VERSION} LANGUAGES C CXX)
 
+find_package(Td REQUIRED)
+math(EXPR TDLIB_VERSION_NUMBER
+    "10000*${Td_VERSION_MAJOR} + 100*${Td_VERSION_MINOR} + ${Td_VERSION_PATCH}"
+)
+if (TDLIB_VERSION_NUMBER LESS 10865)
+    message(FATAL_ERROR "at least tdlib version 1.8.65 is required
+(version found: ${Td_VERSION_MAJOR}.${Td_VERSION_MINOR}.${Td_VERSION_PATCH})")
+endif()
+find_package(Threads REQUIRED)
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(Purple3 REQUIRED IMPORTED_TARGET purple-3)
 include(
@@ -23,7 +32,7 @@ option(
 )
 
 function(tdlib_purple3_target_defaults target)
-    target_compile_features(${target} PRIVATE c_std_11)
+    target_compile_features(${target} PRIVATE c_std_11 cxx_std_14)
 
     if (CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang|AppleClang)$")
         target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
@@ -78,6 +87,42 @@ add_custom_command(
     VERBATIM
 )
 
+set(PURPLE3_CONNECTION_CORE_SOURCES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../td-auth-controller.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../td-transport.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../td-polling-backend.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../module-activity.cpp"
+    telegram-purple3-auth-presenter.cpp
+    telegram-purple3-auth-presenter.h
+    telegram-purple3-session.cpp
+    telegram-purple3-session.h
+    telegram-purple3-session-private.h
+)
+
+add_library(telegram-tdlib-purple3-core STATIC
+    ${PURPLE3_CONNECTION_CORE_SOURCES}
+)
+target_include_directories(telegram-tdlib-purple3-core PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    "${CMAKE_CURRENT_SOURCE_DIR}/../credentials"
+)
+target_compile_definitions(telegram-tdlib-purple3-core PRIVATE
+    GETTEXT_PACKAGE="tdlib-purple"
+)
+target_link_libraries(telegram-tdlib-purple3-core
+    PRIVATE
+        PkgConfig::Purple3
+        Td::TdStatic
+        Threads::Threads
+)
+set_target_properties(telegram-tdlib-purple3-core PROPERTIES
+    CXX_VISIBILITY_PRESET hidden
+    POSITION_INDEPENDENT_CODE ON
+    VISIBILITY_INLINES_HIDDEN YES
+)
+tdlib_purple3_target_defaults(telegram-tdlib-purple3-core)
+
 add_library(telegram-tdlib-purple3 MODULE
     "${PURPLE3_RESOURCES_C}"
     "${CMAKE_CURRENT_SOURCE_DIR}/../credentials/telegram-application-credentials.c"
@@ -88,21 +133,29 @@ add_library(telegram-tdlib-purple3 MODULE
     telegram-purple3-application-credentials.h
     telegram-purple3-connection.c
     telegram-purple3-connection.h
+    telegram-purple3-connection-private.h
     telegram-purple3-plugin.c
     telegram-purple3-protocol.c
     telegram-purple3-protocol.h
 )
 target_include_directories(telegram-tdlib-purple3 PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/.."
     "${CMAKE_CURRENT_SOURCE_DIR}/../credentials"
 )
 target_compile_definitions(telegram-tdlib-purple3 PRIVATE
     GETTEXT_PACKAGE="tdlib-purple"
     TDLIB_PURPLE_VERSION="${PROJECT_VERSION}"
 )
-target_link_libraries(telegram-tdlib-purple3 PRIVATE PkgConfig::Purple3)
+target_link_libraries(telegram-tdlib-purple3 PRIVATE
+    telegram-tdlib-purple3-core
+    PkgConfig::Purple3
+)
 set_target_properties(telegram-tdlib-purple3 PROPERTIES
     C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
     OUTPUT_NAME telegram-tdlib
+    VISIBILITY_INLINES_HIDDEN YES
 )
 tdlib_purple3_target_defaults(telegram-tdlib-purple3)
 if (NOT "${TDLIB_PURPLE3_CREDENTIALS_REFRESH_TARGET}" STREQUAL "")
@@ -183,6 +236,51 @@ if (BUILD_TESTING)
         )
     endif()
 
+    add_executable(purple3-auth-presenter-test
+        test/auth-presenter-test.cpp
+    )
+    target_include_directories(purple3-auth-presenter-test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/.."
+    )
+    target_compile_definitions(
+        purple3-auth-presenter-test
+        PRIVATE GETTEXT_PACKAGE="tdlib-purple"
+    )
+    target_link_libraries(purple3-auth-presenter-test PRIVATE
+        telegram-tdlib-purple3-core
+        PkgConfig::Purple3
+        Td::TdStatic
+    )
+    tdlib_purple3_test_target_defaults(purple3-auth-presenter-test)
+
+    add_executable(purple3-session-test
+        "${CMAKE_CURRENT_SOURCE_DIR}/../credentials/telegram-application-credentials.c"
+        telegram-purple3-application-credentials.c
+        telegram-purple3-connection.c
+        telegram-purple3-connection-private.h
+        test/application-credentials-test-backend.c
+        test/application-credentials-test-backend.h
+        test/session-test.cpp
+    )
+    target_include_directories(purple3-session-test PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        "${CMAKE_CURRENT_SOURCE_DIR}/../credentials"
+        "${CMAKE_CURRENT_SOURCE_DIR}/test"
+    )
+    target_compile_definitions(
+        purple3-session-test
+        PRIVATE GETTEXT_PACKAGE="tdlib-purple"
+    )
+    target_link_libraries(purple3-session-test PRIVATE
+        telegram-tdlib-purple3-core
+        PkgConfig::Purple3
+        Td::TdStatic
+        Threads::Threads
+    )
+    tdlib_purple3_test_target_defaults(purple3-session-test)
+
     set(PURPLE3_TEST_PROFILE "${CMAKE_CURRENT_BINARY_DIR}/test-profile")
     file(MAKE_DIRECTORY
         "${PURPLE3_TEST_PROFILE}/cache"
@@ -211,9 +309,24 @@ if (BUILD_TESTING)
         NAME purple3-plugin-smoke
         COMMAND purple3-plugin-smoke
     )
+    add_test(
+        NAME purple3-auth-presenter
+        COMMAND purple3-auth-presenter-test
+    )
+    add_test(
+        NAME purple3-session
+        COMMAND purple3-session-test
+    )
     set_tests_properties(purple3-plugin-smoke PROPERTIES
         TIMEOUT 10
         ENVIRONMENT
-            "PURPLE_PLUGIN_PATH=${CMAKE_CURRENT_BINARY_DIR};PURPLE_PLUGINS_SKIP=1;GSETTINGS_BACKEND=memory;HOME=${PURPLE3_TEST_PROFILE};XDG_CACHE_HOME=${PURPLE3_TEST_PROFILE}/cache;XDG_CONFIG_HOME=${PURPLE3_TEST_PROFILE}/config;XDG_DATA_HOME=${PURPLE3_TEST_PROFILE}/data;LC_ALL=C;LANG=C;LANGUAGE=C"
+            "PURPLE_PLUGIN_PATH=${CMAKE_CURRENT_BINARY_DIR};PURPLE_PLUGINS_SKIP=1;GSETTINGS_BACKEND=memory;G_DEBUG=fatal-warnings;HOME=${PURPLE3_TEST_PROFILE};XDG_CACHE_HOME=${PURPLE3_TEST_PROFILE}/cache;XDG_CONFIG_HOME=${PURPLE3_TEST_PROFILE}/config;XDG_DATA_HOME=${PURPLE3_TEST_PROFILE}/data;LC_ALL=C;LANG=C;LANGUAGE=C"
+    )
+    set_tests_properties(
+        purple3-auth-presenter
+        purple3-session
+        PROPERTIES
+        TIMEOUT 10
+        ENVIRONMENT "G_DEBUG=fatal-warnings;LC_ALL=C;LANG=C;LANGUAGE=C"
     )
 endif()
