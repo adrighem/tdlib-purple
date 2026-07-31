@@ -129,9 +129,14 @@ jobs:
           env -i \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             HOME=/github/home USER=root LANG=C LC_ALL=C \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             TD_TAG="${TD_TAG}" \
             sh -eu <<'EOF'
-          submodule_commit="$(git ls-tree HEAD td | awk '{print $3}')"
+          submodule_commit="$(
+            git -c safe.directory="${GITHUB_WORKSPACE}" \
+              -C "${GITHUB_WORKSPACE}" ls-tree HEAD td |
+              awk '{print $3}'
+          )"
           if [ "${submodule_commit}" != "${TD_TAG}" ]; then
             echo "TDLib workflow pin does not match the td submodule." >&2
             exit 1
