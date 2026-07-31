@@ -37,6 +37,14 @@ public:
 
     void inputEnter(const gchar *value);
     void inputCancel();
+    void closeInputRequests(void *handle);
+    void captureNotifyEvents();
+    void addNotify(
+        void *handle,
+        PurpleNotifyMsgType type,
+        const char *title,
+        const char *primary,
+        const char *secondary);
     void requestedAction(const char *button);
     PurpleXfer *getLastXfer() { return lastXfer; }
     void addCommand(const char *command, PurpleCmdFunc handler, void *data);
@@ -48,6 +56,7 @@ public:
     ~PurpleEventReceiver() {
         // facilitate non-still-reachable memory leaks in valgrind
         inputUserData = NULL;
+        inputHandle = NULL;
         inputOkCb = NULL;
         inputCancelCb = NULL;
         lastXfer = NULL;
@@ -63,8 +72,10 @@ private:
     std::queue<std::unique_ptr<PurpleEvent>> m_events;
     std::function<void(PurpleEventType)> m_nextEventCallback;
     void      *inputUserData = NULL;
+    void      *inputHandle   = NULL;
     GCallback  inputOkCb     = NULL;
     GCallback  inputCancelCb = NULL;
+    bool        captureNotify = false;
     PurpleXfer *lastXfer     = NULL;
 
     std::vector<std::pair<std::string, PurpleRequestActionCb>> actionCallbacks;
@@ -272,6 +283,20 @@ struct NotifyMessageEvent: PurpleEvent {
     std::string          title;
     std::string          primary;
     std::string          secondary;
+
+    NotifyMessageEvent(
+        void *handle,
+        PurpleNotifyMsgType type,
+        const char *title,
+        const char *primary,
+        const char *secondary)
+    : PurpleEvent(PurpleEventType::NotifyMessage),
+      handle(handle),
+      type(type),
+      title(title ? title : ""),
+      primary(primary ? primary : ""),
+      secondary(secondary ? secondary : "")
+    {}
 };
 
 struct UserStatusEvent: PurpleEvent {

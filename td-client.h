@@ -4,6 +4,7 @@
 #include "account-data.h"
 #include "client-utils.h"
 #include "forum-topics.h"
+#include "td-auth-controller.h"
 #include "telegram-application-credentials.h"
 #include <td/telegram/Log.h>
 #include <purple.h>
@@ -17,7 +18,7 @@ enum class BasicGroupMembership: uint8_t {
     NonCreator,
 };
 
-class PurpleTdClient {
+class PurpleTdClient : private TdAuthObserver {
 public:
     PurpleTdClient(
         PurpleAccount *acct,
@@ -94,6 +95,12 @@ private:
     struct LifetimeState {
         bool alive = true;
     };
+    struct AuthPromptContext {
+        PurpleTdClient *client;
+        std::weak_ptr<LifetimeState> lifetime;
+        TdAuthPromptId prompt;
+        TdAuthPromptType type;
+    };
 
     void       processUpdate(td::td_api::Object &object);
     void       processAuthorizationState(td::td_api::AuthorizationState &authState);
@@ -103,25 +110,44 @@ private:
     void       addProxyResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       getProxiesResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
     void       removeOldProxies();
-    void       sendTdlibParameters();
-    void       sendPhoneNumber();
-    void       requestAuthEmail();
-    void       requestAuthEmailCode();
-    void       requestAuthCode(const td::td_api::authenticationCodeInfo *authCodeInfo);
-    void       requestPassword(const td::td_api::authorizationStateWaitPassword &pwInfo);
-    void       registerUser();
-    static void requestCodeEntered(PurpleTdClient *self, const gchar *code);
-    static void requestCodeCancelled(PurpleTdClient *self);
-    static void requestAuthEmailEntered(PurpleTdClient *self, const gchar *email);
-    static void requestAuthEmailCancelled(PurpleTdClient *self);
-    static void requestAuthEmailCodeEntered(PurpleTdClient *self, const gchar *code);
-    static void requestAuthEmailCodeCancelled(PurpleTdClient *self);
-    static void passwordEntered(PurpleTdClient *self, const gchar *code);
-    static void passwordCancelled(PurpleTdClient *self);
-    static void displayNameEntered(PurpleTdClient *self, const gchar *name);
-    static void displayNameCancelled(PurpleTdClient *self);
-    void       authResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
+    void       requestAuthCode(TdAuthPromptId prompt, const TdAuthCodeChallenge &challenge);
+    void       requestAuthEmail(TdAuthPromptId prompt);
+    void       requestAuthEmailCode(TdAuthPromptId prompt, const TdAuthEmailCodeChallenge &challenge);
+    void       requestPassword(TdAuthPromptId prompt, const TdAuthPasswordChallenge &challenge);
+    void       registerUser(TdAuthPromptId prompt);
+    void       requestAuthInput(TdAuthPromptId prompt, TdAuthPromptType type,
+                                const char *title, const char *primary,
+                                const char *secondary, bool masked);
+    AuthPromptContext *createAuthPromptContext(TdAuthPromptId prompt, TdAuthPromptType type);
+    void       closeAuthPrompt(
+                   TdAuthPromptId prompt = TdAuthPromptId());
+    static void authPromptEntered(AuthPromptContext *prompt, const gchar *value);
+    static void authPromptCancelled(AuthPromptContext *prompt);
     void       notifyAuthError(const td::td_api::object_ptr<td::td_api::Object> &response);
+
+    void onPhoneNumberRequired(TdAuthPromptId prompt) override;
+    void onPremiumPurchaseRequired(TdAuthPromptId prompt) override;
+    void onEmailAddressRequired(TdAuthPromptId prompt,
+                                const TdAuthEmailAddressChallenge &challenge) override;
+    void onEmailCodeRequired(TdAuthPromptId prompt,
+                             const TdAuthEmailCodeChallenge &challenge) override;
+    void onCodeRequired(TdAuthPromptId prompt,
+                        const TdAuthCodeChallenge &challenge) override;
+    void onQrLinkChanged(TdAuthPromptId prompt, const std::string &link) override;
+    void onRegistrationRequired(TdAuthPromptId prompt,
+                                const TdAuthRegistrationChallenge &challenge) override;
+    void onPasswordRequired(TdAuthPromptId prompt,
+                            const TdAuthPasswordChallenge &challenge) override;
+    void onPromptClosed(TdAuthPromptId prompt, TdAuthPromptType type,
+                        TdAuthPromptCloseReason reason) override;
+    void onRequestFailed(const TdAuthRequestFailure &failure) override;
+    void onAuthorizationReady() override;
+    void onAuthorizationCancelled() override;
+    void onAuthorizationFailed(const TdAuthFailure &failure) override;
+    void onLoggingOut() override;
+    void onClosing() override;
+    void onClosed() override;
+    void reportAuthorizationEnded();
     void       setPurpleConnectionInProgress();
     void       onLoggedIn();
     void       getContactsResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
@@ -224,12 +250,17 @@ private:
     void        verifyRecoveryEmailResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
 
     PurpleAccount        *m_account;
-    TdlibPurpleApplicationCredentials m_applicationCredentials;
     TdTransceiver         m_transceiver;
     TdAccountData         m_data;
     std::shared_ptr<LifetimeState> m_lifetime;
+    std::unique_ptr<TdAuthController> m_authController;
+    std::vector<std::unique_ptr<AuthPromptContext>> m_authPromptContexts;
     std::unique_ptr<ForumTopicsAdapter> m_forumTopics;
-    int32_t               m_lastAuthState = 0;
+    TdAuthPromptType      m_lastAuthPromptType = TdAuthPromptType::None;
+    TdAuthPromptId        m_activeAuthPrompt;
+    bool                  m_authParameterSetupStarted = false;
+    bool                  m_registrationAliasRejected = false;
+    bool                  m_authLifecycleErrorReported = false;
     std::vector<UserId>   m_usersForNewPrivateChats;
     std::set<ChatId>      m_deferredGroupChats;
     std::set<int32_t>     m_deferredUploadCancels;

@@ -15,6 +15,7 @@ void PurpleEventReceiver::addEvent(std::unique_ptr<PurpleEvent> event)
         inputOkCb     = inputEvent.ok_cb;
         inputCancelCb = inputEvent.cancel_cb;
         inputUserData = inputEvent.user_data;
+        inputHandle   = inputEvent.handle;
     }
     const PurpleEventType type = event->type;
     m_events.push(std::move(event));
@@ -139,8 +140,8 @@ static void compare(const NotifyMessageEvent &actual, const NotifyMessageEvent &
     COMPARE(handle);
     COMPARE(type);
     COMPARE(title);
-    COMPARE(primary);
-    COMPARE(secondary);
+    COMPARE_REDACTED(primary);
+    COMPARE_REDACTED(secondary);
 }
 
 static void compare(const UserStatusEvent &actual, const UserStatusEvent &expected)
@@ -484,6 +485,25 @@ void PurpleEventReceiver::discardEvents()
 {
     while (!m_events.empty()) m_events.pop();
     m_nextEventCallback = std::function<void(PurpleEventType)>();
+    captureNotify = false;
+}
+
+void PurpleEventReceiver::captureNotifyEvents()
+{
+    captureNotify = true;
+}
+
+void PurpleEventReceiver::addNotify(
+    void *handle,
+    PurpleNotifyMsgType type,
+    const char *title,
+    const char *primary,
+    const char *secondary)
+{
+    if (!captureNotify)
+        return;
+    addEvent(std::unique_ptr<PurpleEvent>(new NotifyMessageEvent(
+        handle, type, title, primary, secondary)));
 }
 
 void PurpleEventReceiver::onNextEvent(
@@ -495,19 +515,35 @@ void PurpleEventReceiver::onNextEvent(
 void PurpleEventReceiver::inputEnter(const gchar *value)
 {
     ASSERT_NE(nullptr, inputOkCb);
-    ((void (*)(void *, const char *))(inputOkCb))(inputUserData, value);
+    GCallback callback = inputOkCb;
+    void *userData = inputUserData;
     inputOkCb = NULL;
     inputCancelCb = NULL;
     inputUserData = NULL;
+    inputHandle = NULL;
+    ((void (*)(void *, const char *))(callback))(userData, value);
 }
 
 void PurpleEventReceiver::inputCancel()
 {
     ASSERT_NE(nullptr, inputCancelCb);
-    ((void (*)(void *))(inputCancelCb))(inputUserData);
+    GCallback callback = inputCancelCb;
+    void *userData = inputUserData;
     inputOkCb = NULL;
     inputCancelCb = NULL;
     inputUserData = NULL;
+    inputHandle = NULL;
+    ((void (*)(void *))(callback))(userData);
+}
+
+void PurpleEventReceiver::closeInputRequests(void *handle)
+{
+    if (inputHandle != handle)
+        return;
+    inputOkCb = NULL;
+    inputCancelCb = NULL;
+    inputUserData = NULL;
+    inputHandle = NULL;
 }
 
 void PurpleEventReceiver::requestedAction(const char *button)

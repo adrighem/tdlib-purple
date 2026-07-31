@@ -6,7 +6,42 @@
 
 using namespace td::td_api;
 
-class LoginTest: public CommTest {};
+namespace {
+
+class FutureAuthorizationState final : public AuthorizationState {
+public:
+    std::int32_t get_id() const final
+    {
+        return 123456789;
+    }
+
+    void store(td::TlStorerToString &, const char *) const final
+    {}
+};
+
+} // namespace
+
+class LoginTest: public CommTest {
+protected:
+    void startAuthorization()
+    {
+        pluginInfo().login(account);
+        prpl.verifyEvents(
+            ConnectionSetStateEvent(connection, PURPLE_CONNECTING),
+            ConnectionUpdateProgressEvent(connection, 1, 2));
+
+        tgl.update(make_object<updateAuthorizationState>(
+            make_object<authorizationStateWaitTdlibParameters>()));
+        tgl.verifyRequestsV(
+            make_object<disableProxy>(),
+            make_object<getProxies>(),
+            makeDefaultParams());
+        tgl.reply(make_object<ok>());
+        tgl.reply(make_object<addedProxies>(
+            std::vector<object_ptr<addedProxy>>()));
+        tgl.reply(make_object<ok>());
+    }
+};
 
 TEST_F(LoginTest, TdlibInternalLoggingIsDisabled)
 {
@@ -464,6 +499,229 @@ TEST_F(LoginTest, TwoFactorAuthentication)
         AccountSetAliasEvent(account, selfFirstName + " " + selfLastName),
         ShowAccountEvent(account)
     );
+}
+
+TEST_F(LoginTest, EmailAuthenticationRetriesWithoutExposingErrorText)
+{
+    static const char responseMarker[] =
+        "SYNTHETIC_EMAIL_ERROR_SECRET_DO_NOT_PRINT";
+    startAuthorization();
+
+    auto emailState = []() {
+        return make_object<updateAuthorizationState>(
+            make_object<authorizationStateWaitEmailAddress>(
+                true, false));
+    };
+    tgl.update(emailState());
+    tgl.update(emailState());
+    prpl.verifyEvents(
+        RequestInputEvent(connection, account, NULL, NULL));
+
+    prpl.inputEnter("person@example.invalid");
+    tgl.verifyRequest(setAuthenticationEmailAddress(
+        "person@example.invalid"));
+    prpl.captureNotifyEvents();
+    tgl.reply(make_object<error>(400, responseMarker));
+    prpl.verifyEvents(
+        NotifyMessageEvent(
+            account,
+            PURPLE_NOTIFY_MSG_ERROR,
+            "Authentication error",
+            "Telegram rejected the authentication response. Please try again.",
+            nullptr),
+        RequestInputEvent(connection, account, NULL, NULL));
+
+    prpl.inputEnter("retry@example.invalid");
+    tgl.verifyRequest(setAuthenticationEmailAddress(
+        "retry@example.invalid"));
+    tgl.reply(make_object<ok>());
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitEmailCode>(
+            false,
+            false,
+            make_object<emailAddressAuthenticationCodeInfo>(
+                "p***@example.invalid", 6),
+            nullptr)));
+    prpl.verifyEvents(
+        RequestInputEvent(connection, account, NULL, NULL));
+    prpl.inputEnter("123456");
+    tgl.verifyRequest(checkAuthenticationEmailCode(
+        make_object<emailAddressAuthenticationCode>("123456")));
+    tgl.reply(make_object<ok>());
+}
+
+TEST_F(LoginTest, RepeatedParameterStateDoesNotRepeatProxySetup)
+{
+    pluginInfo().login(account);
+    prpl.verifyEvents(
+        ConnectionSetStateEvent(connection, PURPLE_CONNECTING),
+        ConnectionUpdateProgressEvent(connection, 1, 2));
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitTdlibParameters>()));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitTdlibParameters>()));
+
+    tgl.verifyRequestsV(
+        make_object<disableProxy>(),
+        make_object<getProxies>(),
+        makeDefaultParams());
+    tgl.reply(make_object<ok>());
+    tgl.reply(make_object<addedProxies>(
+        std::vector<object_ptr<addedProxy>>()));
+    tgl.reply(make_object<ok>());
+}
+
+TEST_F(LoginTest, NullAuthorizationStateFailsExplicitly)
+{
+    startAuthorization();
+
+    tgl.update(make_object<updateAuthorizationState>(nullptr));
+
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection,
+        "Telegram returned an invalid authentication state"));
+}
+
+TEST_F(LoginTest, EmptyAuthenticationInputIsRedisplayed)
+{
+    startAuthorization();
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitCode>()));
+    prpl.verifyEvents(
+        RequestInputEvent(connection, account, NULL, NULL));
+
+    prpl.captureNotifyEvents();
+    prpl.inputEnter("");
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        NotifyMessageEvent(
+            account,
+            PURPLE_NOTIFY_MSG_ERROR,
+            "Authentication error",
+            "Required authentication input was empty. Please try again.",
+            nullptr),
+        RequestInputEvent(connection, account, NULL, NULL));
+
+    prpl.inputEnter("12345");
+    tgl.verifyRequest(checkAuthenticationCode("12345"));
+    tgl.reply(make_object<ok>());
+}
+
+TEST_F(LoginTest, RejectedAliasFallsBackToEditableRegistration)
+{
+    purple_account_set_alias(account, "Stored Alias");
+    prpl.discardEvents();
+    startAuthorization();
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitRegistration>()));
+    tgl.verifyRequest(registerUser("Stored", "Alias", false));
+
+    prpl.captureNotifyEvents();
+    tgl.reply(make_object<error>(
+        400, "SYNTHETIC_REGISTRATION_ERROR_DO_NOT_PRINT"));
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        NotifyMessageEvent(
+            account,
+            PURPLE_NOTIFY_MSG_ERROR,
+            "Authentication error",
+            "Telegram rejected the authentication response. Please try again.",
+            nullptr),
+        RequestInputEvent(connection, account, NULL, NULL));
+
+    prpl.inputEnter("Corrected Name");
+    tgl.verifyRequest(registerUser("Corrected", "Name", false));
+    tgl.reply(make_object<ok>());
+}
+
+TEST_F(LoginTest, CancellingEmailAuthenticationEndsLogin)
+{
+    startAuthorization();
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitEmailAddress>(
+            false, false)));
+    prpl.verifyEvents(
+        RequestInputEvent(connection, account, NULL, NULL));
+
+    prpl.inputCancel();
+
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection, "Authentication email required"));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateReady>()));
+    prpl.verifyNoEvents();
+}
+
+TEST_F(LoginTest, PhoneRejectionIsStableAndDoesNotRetryAutomatically)
+{
+    startAuthorization();
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitPhoneNumber>()));
+    tgl.verifyRequest(setAuthenticationPhoneNumber(
+        "+" + selfPhoneNumber, nullptr));
+
+    tgl.reply(make_object<error>(
+        400, "SYNTHETIC_PHONE_ERROR_SECRET_DO_NOT_PRINT"));
+
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection, "Telegram rejected the configured phone number"));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(LoginTest, UnsupportedPremiumAuthenticationFailsExplicitly)
+{
+    startAuthorization();
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitPremiumPurchase>(
+            "product", 30, "support@example.invalid", "subject")));
+
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection,
+        "Telegram Premium authentication is not supported"));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(LoginTest, UnsupportedQrAuthenticationFailsExplicitly)
+{
+    startAuthorization();
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitOtherDeviceConfirmation>(
+            "tg://login?token=SYNTHETIC_QR_CREDENTIAL")));
+
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection,
+        "QR authentication is not supported by Purple 2"));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(LoginTest, TerminalAuthorizationStateFailsBeforeReady)
+{
+    startAuthorization();
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosing>()));
+
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection,
+        "Telegram authorization ended before login completed"));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosed>()));
+    prpl.verifyNoEvents();
+}
+
+TEST_F(LoginTest, FutureAuthorizationStateFailsExplicitly)
+{
+    startAuthorization();
+    object_ptr<AuthorizationState> future(
+        new FutureAuthorizationState());
+    tgl.update(make_object<updateAuthorizationState>(
+        std::move(future)));
+
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection,
+        "Telegram requested an unsupported authentication step"));
+    tgl.verifyNoRequests();
 }
 
 TEST_F(LoginTest, LocalBuddyAliasPreservedAtConnect)

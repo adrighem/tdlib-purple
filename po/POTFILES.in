@@ -16,6 +16,7 @@ purple3/telegram-purple3-protocol.c
 receiving.cpp
 secret-chat.cpp
 sticker.cpp
+td-auth-controller.cpp
 td-client-auth.cpp
 td-client.cpp
 td-polling-backend.cpp

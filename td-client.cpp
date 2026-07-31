@@ -470,7 +470,6 @@ PurpleTdClient::PurpleTdClient(
     ITransceiverBackend *testBackend,
     const TdlibPurpleApplicationCredentials &applicationCredentials)
 :   m_account(acct),
-    m_applicationCredentials(applicationCredentials),
     m_transceiver(this, acct, &PurpleTdClient::processUpdate, testBackend),
     m_data(acct, m_transceiver),
     m_lifetime(std::make_shared<LifetimeState>()),
@@ -480,12 +479,33 @@ PurpleTdClient::PurpleTdClient(
             projectForumTopic(target);
         }))
 {
+    TdAuthConfiguration authConfiguration(
+        applicationCredentials.api_id,
+        applicationCredentials.api_hash,
+        m_transceiver.databasePath(),
+        purple_account_get_bool(
+            m_account,
+            AccountOptions::EnableSecretChats,
+            AccountOptions::EnableSecretChatsDefault) != FALSE,
+        TdAuthMode::PhoneNumber);
+    m_authController.reset(new TdAuthController(
+        std::move(authConfiguration),
+        [this](
+            TdAuthController::FunctionPtr function,
+            TdAuthController::ResponseCallback response) {
+            return m_transceiver.sendQuery(
+                std::move(function), std::move(response));
+        },
+        *this));
     setPurpleConnectionInProgress();
 }
 
 PurpleTdClient::~PurpleTdClient()
 {
     m_lifetime->alive = false;
+    if (m_authController)
+        m_authController->shutdown();
+    closeAuthPrompt();
     m_forumTopics->shutdown();
 
     std::vector<PurpleXfer *> transfers;
@@ -554,10 +574,10 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
     case td::td_api::updateAuthorizationState::ID: {
         auto &update_authorization_state = static_cast<td::td_api::updateAuthorizationState &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: authorization state\n");
-        if (update_authorization_state.authorization_state_) {
-            m_lastAuthState = update_authorization_state.authorization_state_->get_id();
+        if (update_authorization_state.authorization_state_)
             processAuthorizationState(*update_authorization_state.authorization_state_);
-        }
+        else if (m_authController)
+            m_authController->onAuthorizationState(nullptr);
         break;
     }
 

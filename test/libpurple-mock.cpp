@@ -797,7 +797,8 @@ void *purple_notify_message(void *handle, PurpleNotifyMsgType type,
 						  const char *secondary, PurpleNotifyCloseCallback cb,
 						  gpointer user_data)
 {
-    // TODO event
+    g_purpleEvents.addNotify(
+        handle, type, title, primary, secondary);
     return NULL;
 }
 
@@ -877,6 +878,11 @@ void *purple_request_input(void *handle, const char *title, const char *primary,
 
     // Just return some non-NULL pointer
     return &g_accounts;
+}
+
+void purple_request_close_with_handle(void *handle)
+{
+    g_purpleEvents.closeInputRequests(handle);
 }
 
 PurpleRoomlist *purple_roomlist_new(PurpleAccount *account)
