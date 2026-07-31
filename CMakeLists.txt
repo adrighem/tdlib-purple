@@ -67,6 +67,7 @@ set(TDLIB_PURPLE_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/tdlib-purple.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-client-auth.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/td-auth-controller.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-transport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-polling-backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/module-activity.cpp
