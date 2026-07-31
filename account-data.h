@@ -33,6 +33,7 @@ bool        isChatInContactList(const td::td_api::chat &chat, const td::td_api::
 BasicGroupId getBasicGroupId(const td::td_api::chat &chat);
 SupergroupId getSupergroupId(const td::td_api::chat &chat);
 SecretChatId getSecretChatId(const td::td_api::chat &chat);
+bool        isActiveBasicGroup(const td::td_api::basicGroup &group);
 bool        isGroupMember(const td::td_api::object_ptr<td::td_api::ChatMemberStatus> &status);
 bool        isSameUser(const td::td_api::MessageSender &member1, const td::td_api::MessageSender &member2);
 

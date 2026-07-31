@@ -118,6 +118,13 @@ SecretChatId getSecretChatId(const td::td_api::chat &chat)
     return SecretChatId::invalid;
 }
 
+bool isActiveBasicGroup(const td::td_api::basicGroup &group)
+{
+    // TDLib retains the old basic-group object after an upgrade. Membership
+    // status alone therefore does not mean that the old chat is usable.
+    return group.is_active_ && group.upgraded_to_supergroup_id_ == 0;
+}
+
 bool isGroupMember(const td::td_api::object_ptr<td::td_api::ChatMemberStatus> &status)
 {
     if (!status)
@@ -1274,7 +1281,8 @@ bool TdAccountData::isGroupChatWithMembership(const td::td_api::chat &chat) cons
     BasicGroupId groupId = getBasicGroupId(chat);
     if (groupId.valid()) {
         const td::td_api::basicGroup *group = getBasicGroup(groupId);
-        return (group && isGroupMember(group->status_));
+        return group && isActiveBasicGroup(*group) &&
+               isGroupMember(group->status_);
     }
     SupergroupId supergroupId = getSupergroupId(chat);
     if (supergroupId.valid()) {
