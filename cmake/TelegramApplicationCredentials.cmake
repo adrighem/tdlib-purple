@@ -29,10 +29,7 @@ foreach(_legacy_variable API_ID API_HASH STUFF)
     endif()
 endforeach()
 if (_tdlib_purple_removed_legacy_credential_cache)
-    message(
-        STATUS
-        "Removed legacy raw Telegram credential entries from the CMake cache"
-    )
+    message(FATAL_ERROR "CREDENTIAL_LEGACY_CACHE_REMOVED")
 endif()
 unset(_legacy_variable)
 unset(_legacy_variable_cached)

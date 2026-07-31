@@ -573,13 +573,15 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
         path.write_text(value, encoding="ascii")
         path.chmod(0o600)
 
-    def select_generator(self, generator):
+    def select_generator(self, generator, qualifier=None):
         suffix = generator.lower().replace(" ", "-")
+        if qualifier is not None:
+            suffix += "-" + qualifier
         self.build = self.root / ("build-" + suffix)
         self.api_id = self.root / ("api-id-" + suffix)
         self.api_hash = self.root / ("api-hash-" + suffix)
 
-    def configure(self, with_paths, generator):
+    def configure(self, with_paths, generator, extra_arguments=(), check=True):
         command = [
             shutil.which("cmake"),
             "-S", str(self.source),
@@ -592,13 +594,26 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
                 "-DTDLIB_PURPLE_API_HASH_FILE:FILEPATH=" +
                 str(self.api_hash),
             ))
-        subprocess.run(
+        command.extend(extra_arguments)
+        return subprocess.run(
             command,
-            check=True,
+            check=check,
             capture_output=True,
             env=SUBPROCESS_ENV,
             text=True,
         )
+
+    def cache_entries(self):
+        entries = {}
+        cache = (self.build / "CMakeCache.txt").read_text(encoding="utf-8")
+        for line in cache.splitlines():
+            if not line or line.startswith(("#", "//")) or "=" not in line:
+                continue
+            declaration, value = line.split("=", 1)
+            name, separator, _type = declaration.partition(":")
+            if separator:
+                entries[name] = value
+        return entries
 
     def build_target(self, target="probe", check=True):
         return subprocess.run(
@@ -678,6 +693,57 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
                 self.api_id.unlink()
                 self.build_target()
                 self.run_probe("unavailable")
+
+    def test_legacy_raw_cache_entries_are_scrubbed_then_fail_configure(self):
+        legacy_variables = ("API_ID", "API_HASH", "STUFF")
+        legacy_cases = tuple((variable,) for variable in legacy_variables) + (
+            legacy_variables,
+        )
+        for generator in BUILD_GENERATORS:
+            for legacy_case in legacy_cases:
+                case_name = "-".join(legacy_case).lower()
+                with self.subTest(
+                        generator=generator,
+                        legacy_variables=legacy_case):
+                    self.select_generator(generator, "legacy-" + case_name)
+                    self.configure(with_paths=False, generator=generator)
+
+                    synthetic_values = tuple(
+                        "synthetic-legacy-" + variable.lower()
+                        for variable in legacy_case
+                    )
+                    failed_configure = self.configure(
+                        with_paths=False,
+                        generator=generator,
+                        extra_arguments=tuple(
+                            "-D" + variable + ":STRING=" + synthetic_value
+                            for variable, synthetic_value in zip(
+                                legacy_case, synthetic_values
+                            )
+                        ),
+                        check=False,
+                    )
+
+                    self.assertNotEqual(failed_configure.returncode, 0)
+                    diagnostics = (
+                        failed_configure.stdout + failed_configure.stderr
+                    )
+                    self.assertIn(
+                        "CREDENTIAL_LEGACY_CACHE_REMOVED", diagnostics
+                    )
+                    for synthetic_value in synthetic_values:
+                        self.assertNotIn(synthetic_value, diagnostics)
+
+                    entries = self.cache_entries()
+                    for variable in legacy_variables:
+                        self.assertNotIn(variable, entries)
+                    cache = (self.build / "CMakeCache.txt").read_text(
+                        encoding="utf-8"
+                    )
+                    for synthetic_value in synthetic_values:
+                        self.assertNotIn(synthetic_value, cache)
+
+                    self.configure(with_paths=False, generator=generator)
 
 
 if __name__ == "__main__":

@@ -32,22 +32,7 @@ namespace {
 // documents this value as a short tg:// URL, so this leaves substantial room
 // while keeping oversized input away from the renderer.
 constexpr std::size_t maximumQrLinkBytes = 2048;
-constexpr char telegramLoginQrPrefix[] = "tg://login?token=";
-
-int base64UrlValue(unsigned char byte) noexcept
-{
-    if (byte >= 'A' && byte <= 'Z')
-        return byte - 'A';
-    if (byte >= 'a' && byte <= 'z')
-        return byte - 'a' + 26;
-    if (byte >= '0' && byte <= '9')
-        return byte - '0' + 52;
-    if (byte == '-')
-        return 62;
-    if (byte == '_')
-        return 63;
-    return -1;
-}
+constexpr char telegramUriPrefix[] = "tg://";
 
 void wipeString(std::string &value) noexcept
 {
@@ -81,31 +66,18 @@ private:
 bool validQrLink(const std::string &link) noexcept
 {
     constexpr std::size_t prefixBytes =
-        sizeof(telegramLoginQrPrefix) - 1;
+        sizeof(telegramUriPrefix) - 1;
     if (link.size() <= prefixBytes || link.size() > maximumQrLinkBytes)
         return false;
-    if (link.compare(0, prefixBytes, telegramLoginQrPrefix) != 0)
+    if (link.compare(0, prefixBytes, telegramUriPrefix) != 0)
         return false;
 
-    int finalValue = -1;
     for (std::size_t index = prefixBytes; index < link.size(); ++index) {
-        finalValue = base64UrlValue(
-            static_cast<unsigned char>(link[index]));
-        if (finalValue < 0)
+        const unsigned char byte =
+            static_cast<unsigned char>(link[index]);
+        if (byte <= 0x1f || byte == 0x7f)
             return false;
     }
-
-    // TDLib emits canonical unpadded base64url. A one-character remainder
-    // can't encode whole octets, and unused bits in the final sextet must be
-    // zero.
-    const std::size_t tokenBytes = link.size() - prefixBytes;
-    const std::size_t remainder = tokenBytes % 4;
-    if (remainder == 1)
-        return false;
-    if (remainder == 2 && (finalValue & 0x0f) != 0)
-        return false;
-    if (remainder == 3 && (finalValue & 0x03) != 0)
-        return false;
     return true;
 }
 

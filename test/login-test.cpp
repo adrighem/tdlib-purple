@@ -1,12 +1,18 @@
 #include "fixture.h"
 #include "application-credentials-test-backend.h"
 #include "purple-info.h"
+#include "td-client.h"
+#include "tdlib-purple.h"
 #include <td/telegram/Client.h>
 #include <td/telegram/td_api.h>
 
 using namespace td::td_api;
 
 namespace {
+
+static_assert(
+    noexcept(PurpleTdClient::disableTdlibLogging()),
+    "TDLib logging setup must not throw through the plugin load callback");
 
 class FutureAuthorizationState final : public AuthorizationState {
 public:
@@ -45,6 +51,16 @@ protected:
 
 TEST_F(LoginTest, TdlibInternalLoggingIsDisabled)
 {
+    auto raisedVerbosity = td::Client::execute(
+        {0, make_object<setLogVerbosityLevel>(1)});
+    ASSERT_NE(raisedVerbosity.object, nullptr);
+    ASSERT_EQ(raisedVerbosity.object->get_id(), ok::ID);
+
+    PurplePluginInfo *info = getPluginInfo();
+    ASSERT_NE(info, nullptr);
+    ASSERT_NE(info->load, nullptr);
+    ASSERT_TRUE(info->load(nullptr));
+
     auto verbosity = td::Client::execute(
         {0, make_object<getLogVerbosityLevel>()});
 

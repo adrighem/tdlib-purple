@@ -538,19 +538,28 @@ PurpleTdClient::~PurpleTdClient()
     m_transceiver.shutdown();
 }
 
-void PurpleTdClient::disableTdlibLogging()
+bool PurpleTdClient::disableTdlibLogging() noexcept
 {
     /*
      * Even TDLib warning and error messages can include phone numbers or
      * serialized request data. Keep only fatal handling and discard the
      * internal log stream; plugin-owned diagnostics remain available.
      */
-    td::Client::execute(
-        {0, td::td_api::make_object<td::td_api::setLogVerbosityLevel>(0)});
-    td::Client::execute(
-        {0,
-         td::td_api::make_object<td::td_api::setLogStream>(
-             td::td_api::make_object<td::td_api::logStreamEmpty>())});
+    try {
+        const auto verbosityResult = td::Client::execute(
+            {0, td::td_api::make_object<td::td_api::setLogVerbosityLevel>(0)});
+        const auto streamResult = td::Client::execute(
+            {0,
+             td::td_api::make_object<td::td_api::setLogStream>(
+                 td::td_api::make_object<td::td_api::logStreamEmpty>())});
+
+        return verbosityResult.object &&
+               verbosityResult.object->get_id() == td::td_api::ok::ID &&
+               streamResult.object &&
+               streamResult.object->get_id() == td::td_api::ok::ID;
+    } catch (...) {
+        return false;
+    }
 }
 
 void PurpleTdClient::setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback)

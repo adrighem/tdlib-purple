@@ -1067,6 +1067,9 @@ static void enableRuntimeCallbacks()
 
 static gboolean tgprpl_load(PurplePlugin *)
 {
+    if (!PurpleTdClient::disableTdlibLogging())
+        return FALSE;
+
     if (g_kickCommandId && g_hangupCommandId) {
         enableRuntimeCallbacks();
         return TRUE;
@@ -1202,8 +1205,6 @@ static void tgprpl_init (PurplePlugin *plugin)
 #if !PURPLE_VERSION_CHECK(2,14,0)
     (void)sendFileToChat;
 #endif
-    PurpleTdClient::disableTdlibLogging();
-
 #ifndef NoLottie
     rlottie::configureModelCacheSize(0);
 #endif

@@ -26,7 +26,7 @@ public:
         const TdlibPurpleApplicationCredentials &applicationCredentials);
     ~PurpleTdClient();
 
-    static void disableTdlibLogging();
+    static bool disableTdlibLogging() noexcept;
     static void setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback);
     static void setStickerConversionCallback(bool enabled);
     static std::string getBaseDatabasePath();

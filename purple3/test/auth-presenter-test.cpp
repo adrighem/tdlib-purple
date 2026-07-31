@@ -419,41 +419,64 @@ test_synchronous_qr_reentrancy_is_safe(void)
 }
 
 static void
-test_invalid_and_unsupported_qr_fail_without_presenting_secret(void)
+test_unsafe_and_unsupported_qr_fail_without_presenting_secret(void)
 {
     PresenterFixture fixture;
-    const char *invalidLinks[] = {
+    std::string oversizedLink("tg://");
+    oversizedLink.append(2044, 'a');
+    const std::string invalidLinks[] = {
+        "",
+        "tg://",
         "https://invalid.example/login",
-        "tg://profile?token=synthetic-invalid",
-        "tg://login?token=",
-        "tg://login?token=synthetic+invalid",
-        "tg://login?token=synthetic/invalid",
-        "tg://login?token=synthetic&extra=value",
-        "tg://login?token=A",
-        "tg://login?token=AB",
-        "tg://login?token=AAB",
+        oversizedLink,
     };
 
     for (guint index = 0; index < G_N_ELEMENTS(invalidLinks); ++index) {
         fixture.presenter->showQr(
             TdAuthPromptId(50 + index), invalidLinks[index]);
     }
-    g_assert_cmpuint(
-        fixture.actions.failures, ==, G_N_ELEMENTS(invalidLinks));
+
+    for (unsigned int byte = 0; byte <= 0x1f; ++byte) {
+        std::string controlLink("tg://future");
+        controlLink.push_back(static_cast<char>(byte));
+        controlLink.append("value");
+        fixture.presenter->showQr(
+            TdAuthPromptId(100 + byte), controlLink);
+    }
+    const std::string deleteLink =
+        std::string("tg://future") + static_cast<char>(0x7f) + "value";
+    fixture.presenter->showQr(TdAuthPromptId(132), deleteLink);
+
     g_assert_true(
         fixture.actions.failure == TdAuthPresentationFailure::Failed);
     g_assert_cmpuint(fixture.ui->qrPresentationCount, ==, 0);
 
+    const guint rejectedLinks = fixture.actions.failures;
     fixture.ui->qrSupported = FALSE;
     fixture.presenter->showQr(
-        TdAuthPromptId(59), syntheticQrUnsupported);
+        TdAuthPromptId(200), syntheticQrUnsupported);
     presenter_test_drain_context();
-    g_assert_cmpuint(
-        fixture.actions.failures, ==, G_N_ELEMENTS(invalidLinks) + 1);
+    g_assert_cmpuint(fixture.actions.failures, ==, rejectedLinks + 1);
     g_assert_true(
         fixture.actions.failure == TdAuthPresentationFailure::Unsupported);
     g_assert_null(fixture.ui->qr);
     g_assert_false(moduleActivityPending());
+}
+
+static void
+test_future_tg_uri_shape_is_presented_unchanged(void)
+{
+    PresenterFixture fixture;
+    const char futureQr[] =
+        "tg://device-link/v2?token=synthetic%2Bvalue&mode=desktop";
+
+    fixture.presenter->showQr(TdAuthPromptId(59), futureQr);
+
+    g_assert_cmpuint(fixture.actions.failures, ==, 0);
+    g_assert_cmpuint(fixture.ui->qrPresentationCount, ==, 1);
+    g_assert_nonnull(fixture.ui->qr);
+    g_assert_cmpstr(
+        purple_qr_code_get_text(fixture.ui->qr), ==, futureQr);
 }
 
 static void
@@ -549,7 +572,10 @@ main(int argc, char **argv)
         test_synchronous_qr_reentrancy_is_safe);
     g_test_add_func(
         "/purple3/auth-presenter/qr-invalid-unsupported",
-        test_invalid_and_unsupported_qr_fail_without_presenting_secret);
+        test_unsafe_and_unsupported_qr_fail_without_presenting_secret);
+    g_test_add_func(
+        "/purple3/auth-presenter/qr-future-uri-shape",
+        test_future_tg_uri_shape_is_presented_unchanged);
     g_test_add_func(
         "/purple3/auth-presenter/password-masked-submit",
         test_password_is_masked_required_and_submitted);
