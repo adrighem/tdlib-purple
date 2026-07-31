@@ -90,6 +90,10 @@ cmake -S . -B /path/to/private-build \
   -DTDLIB_PURPLE_API_HASH_FILE=
 ```
 
+Legacy raw `API_ID`, `API_HASH`, and `STUFF` cache entries are removed and make
+configuration fail with `CREDENTIAL_LEGACY_CACHE_REMOVED`. Remove those raw
+options from build automation, then configure again with the file-path options.
+
 The generator refreshes the private source on every build. Rebuilding after
 rotating either value embeds the new pair. Removing both files switches to the
 credentialless provider; removing only one stops the build. Generated source,
@@ -97,17 +101,35 @@ object files, and the final plugin contain extractable application
 credentials. Protect the build directory and binary, and remember that older
 objects or binaries can retain an earlier pair.
 
-The repository and release packages intentionally use a credentialless provider. Such builds still load normally. On Purple 2, existing accounts can continue to use a complete API ID and API hash pair from the Advanced settings as a compatibility override. A partial or malformed override fails before any TDLib request is sent. Do not put credential values in source files, CMake command lines, logs, or bug reports.
+For private builds, also disable compiler caches, distributed or remote
+compilation, and automatic compiler-crash uploads. They can copy
+credential-bearing compiler inputs or objects outside the protected build
+directory. The private-file permission hardening currently provides its full
+guarantees on POSIX systems, not Windows ACLs.
+
+The repository and release packages intentionally use a credentialless
+provider. Such builds still load normally. On Purple 2, existing accounts can
+continue to use a complete API ID and API hash pair from the Advanced settings
+as a compatibility override. That compatibility value remains visible in the
+account editor and is stored in Purple 2's plaintext account settings. A
+partial or malformed override fails before any TDLib request is sent. Do not
+put credential values in source files, CMake command lines, logs, or bug
+reports.
 
 ## Purple 3 Development
 
 Experimental Purple 3 work lives in the isolated [`purple3`](purple3)
-adapter. A private build with configured application credentials can establish
-a TDLib session and complete QR-only authorization, including a masked
-two-step-verification password prompt when required. This milestone stops at
-Purple's ready state: contacts and messages are not exposed through Purple 3
-yet. See [`purple3/README.md`](purple3/README.md) for build, test, storage, and
-Pidgin development launch details.
+adapter. A private build with configured application credentials can connect
+an existing account through QR-only authorization, including a masked
+two-step-verification password prompt when required. Phone-number and SMS
+onboarding, account registration, and proxy account settings are not supported
+in this milestone. Purple 2 accounts and TDLib databases are not migrated
+automatically. Application credentials embedded in a private build remain
+extractable from its generated objects and plugin binary. This milestone stops
+at Purple's ready state: contacts and messages are not exposed through Purple
+3 yet. See [`purple3/README.md`](purple3/README.md) for the isolated-profile
+build, pinned Pidgin QR renderer patch, storage, and live verification
+workflow.
 
 ## Reporting Issues
 

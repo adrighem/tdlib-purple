@@ -1,0 +1,113 @@
+diff --git a/pidgin/pidginqrcode.c b/pidgin/pidginqrcode.c
+--- a/pidgin/pidginqrcode.c
++++ b/pidgin/pidginqrcode.c
+@@ -28,6 +28,8 @@
+ 
+ #include "pidginqrcode.h"
+ 
++#define PIDGIN_QR_CODE_QUIET_ZONE 4
++
+ struct _PidginQrCode {
+ 	GtkWidget parent;
+ 
+@@ -52,9 +54,11 @@
+ pidgin_qr_code_update(PidginQrCode *widget) {
+ 	GByteArray *raw_data = NULL;
+ 	GBytes *raw_bytes = NULL;
++	GdkTexture *texture = NULL;
+ 	QRcode *qr_code = NULL;
+ 	const char *text = NULL;
+-	guint width = 0;
++	guint code_width = 0;
++	guint texture_width = 0;
+ 	guint8 background = 0xFF; /* White */
+ 	guint8 foreground = 0x0; /* Black */
+ 
+@@ -65,28 +69,46 @@
+ 
+ 	text = purple_qr_code_get_text(widget->qr_code);
+ 	qr_code = QRcode_encodeString(text, 0, QR_ECLEVEL_L, QR_MODE_8, 1);
++	if(qr_code == NULL) {
++		g_debug("Failed to encode QR code");
++		g_clear_object(&widget->texture);
++		gtk_widget_queue_resize(GTK_WIDGET(widget));
++		gtk_widget_queue_draw(GTK_WIDGET(widget));
++
++		return;
++	}
+ 
+ 	/* Encode the raw image data. */
+-	width = qr_code->width;
+-	raw_data = g_byte_array_sized_new(width * width);
+-	for(guint i = 0; i < width * width; i++) {
+-		if((qr_code->data[i] & 1) == 1) {
+-			g_byte_array_append(raw_data, &foreground, 1);
+-		} else {
+-			g_byte_array_append(raw_data, &background, 1);
++	code_width = qr_code->width;
++	texture_width = code_width + (PIDGIN_QR_CODE_QUIET_ZONE * 2);
++	raw_data = g_byte_array_sized_new(texture_width * texture_width);
++	for(guint i = 0; i < texture_width * texture_width; i++) {
++		g_byte_array_append(raw_data, &background, 1);
++	}
++	for(guint y = 0; y < code_width; y++) {
++		for(guint x = 0; x < code_width; x++) {
++			if((qr_code->data[(y * code_width) + x] & 1) == 1) {
++				raw_data->data[
++					((y + PIDGIN_QR_CODE_QUIET_ZONE) * texture_width) +
++					(x + PIDGIN_QR_CODE_QUIET_ZONE)] = foreground;
++			}
+ 		}
+ 	}
+ 	raw_bytes = g_byte_array_free_to_bytes(raw_data);
+ 	QRcode_free(qr_code);
+ 
+ 	/* Build the texture. */
+-	widget->texture = gdk_memory_texture_new(width,
+-	                                         width,
+-	                                         GDK_MEMORY_G8,
+-	                                         raw_bytes,
+-	                                         width);
++	texture = gdk_memory_texture_new(texture_width,
++	                                 texture_width,
++	                                 GDK_MEMORY_G8,
++	                                 raw_bytes,
++	                                 texture_width);
++	g_set_object(&widget->texture, texture);
++	g_clear_object(&texture);
+ 
+ 	g_clear_pointer(&raw_bytes, g_bytes_unref);
++	gtk_widget_queue_resize(GTK_WIDGET(widget));
++	gtk_widget_queue_draw(GTK_WIDGET(widget));
+ }
+ 
+ static void
+@@ -133,7 +155,6 @@
+ 	PidginQrCode *qr_code = PIDGIN_QR_CODE(data);
+ 
+ 	pidgin_qr_code_update(qr_code);
+-	gtk_widget_queue_draw(GTK_WIDGET(qr_code));
+ }
+ 
+ static void
+@@ -216,6 +237,12 @@
+ 	if(qr_code->texture) {
+ 		texture_size = gdk_texture_get_width(qr_code->texture);
+ 	}
++	if(texture_size == 0) {
++		*minimum = 0;
++		*natural = 0;
++
++		return;
++	}
+ 
+ 	gdk_paintable_compute_concrete_size(GDK_PAINTABLE(qr_code->texture),
+ 	                                    (for_size < 0) ? 0 : for_size,
+@@ -266,6 +293,7 @@
+ 
+ 	g_clear_pointer(&widget->popover, gtk_widget_unparent);
+ 	g_clear_object(&widget->qr_code);
++	g_clear_object(&widget->signal_group);
+ 	g_clear_object(&widget->texture);
+ 
+ 	G_OBJECT_CLASS(pidgin_qr_code_parent_class)->finalize(obj);

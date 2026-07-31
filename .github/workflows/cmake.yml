@@ -144,6 +144,17 @@ jobs:
             -C /tmp/pidgin-source
           EOF
 
+      - name: Apply pinned Pidgin QR rendering fix
+        run: |
+          env -i \
+            PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+            HOME=/github/home USER=root LANG=C LC_ALL=C \
+            GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
+            sh -eu <<'EOF'
+          patch -d /tmp/pidgin-source -p1 \
+            < "${GITHUB_WORKSPACE}/purple3/patches/pidgin-a412f2-qrcode-rendering.patch"
+          EOF
+
       - name: Build pinned Purple 3
         run: |
           env -i \
