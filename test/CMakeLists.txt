@@ -80,6 +80,8 @@ endif (NOT NoVoip)
 add_executable(td-transport-tests EXCLUDE_FROM_ALL
     td-transport-test-main.cpp
     td-transport-test.cpp
+    td-polling-backend-test.cpp
+    ${CMAKE_SOURCE_DIR}/td-polling-backend.cpp
     ${CMAKE_SOURCE_DIR}/td-transport.cpp
 )
 target_compile_features(td-transport-tests PRIVATE cxx_std_14)

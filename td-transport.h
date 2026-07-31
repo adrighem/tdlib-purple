@@ -9,6 +9,7 @@
 #include <memory>
 
 class TdTransportState;
+class TdTransceiver;
 
 // Purple-neutral request dispatcher for TDLib. Send, timeout-control, and
 // shutdown methods are serialized on the captured creating context.
@@ -24,17 +25,44 @@ public:
         std::function<void(uint64_t, ObjectPtr)>;
     using ReceiveCallback =
         std::function<void(uint64_t, ObjectPtr)>;
+    class DeliveryReceipt {
+    public:
+        using Callback = std::function<void(bool)>;
+
+        DeliveryReceipt() noexcept = default;
+        explicit DeliveryReceipt(Callback callback) noexcept;
+        ~DeliveryReceipt();
+
+        DeliveryReceipt(const DeliveryReceipt &) = delete;
+        DeliveryReceipt &operator=(const DeliveryReceipt &) = delete;
+        DeliveryReceipt(DeliveryReceipt &&other) noexcept;
+        DeliveryReceipt &operator=(
+            DeliveryReceipt &&other) noexcept;
+
+        // Settles exactly once. Destruction settles an unconsumed receipt as
+        // dropped, so every receive and cancellation path is fail-safe.
+        void settle(bool delivered) noexcept;
+
+    private:
+        Callback m_callback;
+    };
+    using AcknowledgedReceiveCallback =
+        std::function<void(
+            uint64_t, ObjectPtr, DeliveryReceipt)>;
     using TimeoutCallback = std::function<void(uint64_t)>;
     // The factory must return a fresh, unattached, non-destroyed GSource with
     // one reference transferred to TdTransport.
     using TimeoutSourceFactory =
         std::function<GSource *(unsigned timeoutSeconds)>;
 
+    // dispatchContext is borrowed. A null value captures the creating
+    // thread-default context.
     TdTransport(
         SendCallback sendCallback,
         UpdateCallback updateCallback,
         TimeoutSourceFactory timeoutSourceFactory =
-            TimeoutSourceFactory());
+            TimeoutSourceFactory(),
+        GMainContext *dispatchContext = nullptr);
     ~TdTransport();
 
     TdTransport(const TdTransport &) = delete;
@@ -65,9 +93,20 @@ public:
     void receive(uint64_t requestId, ObjectPtr object);
     // Use this stable weak receiver for work that can outlive the transport.
     ReceiveCallback receiver() const;
+    // The delivery callback is settled after the application callback
+    // returns. This lets a backend sequence terminal cleanup without relying
+    // on same-priority GLib source ordering.
+    AcknowledgedReceiveCallback acknowledgedReceiver() const;
     void shutdown();
 
 private:
+    friend class TdTransceiver;
+
+    // The Purple 2 test backend historically delivers replies immediately,
+    // including replies nested inside an update callback. Keep that behavior
+    // behind the facade instead of weakening normal main-context dispatch.
+    ReceiveCallback synchronousReceiverForTestBackend() const;
+
     std::shared_ptr<TdTransportState> m_state;
 };
 

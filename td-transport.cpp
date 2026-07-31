@@ -1,4 +1,5 @@
 #include "td-transport.h"
+#include "td-request-id.h"
 
 #include <glib.h>
 
@@ -12,8 +13,11 @@ namespace {
 
 constexpr unsigned MAX_DELIVERIES_PER_DISPATCH = 32;
 
-GMainContext *captureThreadDefaultContext()
+GMainContext *captureDispatchContext(GMainContext *dispatchContext)
 {
+    if (dispatchContext)
+        return g_main_context_ref(dispatchContext);
+
 #if GLIB_CHECK_VERSION(2, 32, 0)
     return g_main_context_ref_thread_default();
 #elif GLIB_CHECK_VERSION(2, 22, 0)
@@ -26,7 +30,59 @@ GMainContext *captureThreadDefaultContext()
 #endif
 }
 
+struct MainContextUnref {
+    void operator()(GMainContext *context) const noexcept
+    {
+        if (context)
+            g_main_context_unref(context);
+    }
+};
+
+using MainContextPtr =
+    std::unique_ptr<GMainContext, MainContextUnref>;
+
 } // namespace
+
+TdTransport::DeliveryReceipt::DeliveryReceipt(
+    Callback callback) noexcept
+    : m_callback(std::move(callback))
+{
+}
+
+TdTransport::DeliveryReceipt::~DeliveryReceipt()
+{
+    settle(false);
+}
+
+TdTransport::DeliveryReceipt::DeliveryReceipt(
+    DeliveryReceipt &&other) noexcept
+{
+    m_callback.swap(other.m_callback);
+}
+
+TdTransport::DeliveryReceipt &
+TdTransport::DeliveryReceipt::operator=(
+    DeliveryReceipt &&other) noexcept
+{
+    if (this == &other)
+        return *this;
+
+    settle(false);
+    m_callback.swap(other.m_callback);
+    return *this;
+}
+
+void TdTransport::DeliveryReceipt::settle(
+    bool delivered) noexcept
+{
+    Callback callback;
+    callback.swap(m_callback);
+    try {
+        if (callback)
+            callback(delivered);
+    } catch (...) {
+    }
+}
 
 struct TimeoutToken;
 
@@ -102,14 +158,17 @@ public:
         uint64_t requestId;
         TdTransport::ObjectPtr object;
         TdTransport::ResponseCallback responseCallback;
+        TdTransport::DeliveryReceipt deliveryReceipt;
         TimeoutInfo canceledTimeout;
     };
 
     TdTransportState(
         TdTransport::SendCallback send,
         TdTransport::UpdateCallback update,
-        TdTransport::TimeoutSourceFactory timeoutFactory)
-        : context(captureThreadDefaultContext())
+        TdTransport::TimeoutSourceFactory timeoutFactory,
+        GMainContext *dispatchContext)
+        : contextOwner(captureDispatchContext(dispatchContext)),
+          context(contextOwner.get())
     {
         if (send) {
             sendCallback =
@@ -128,11 +187,7 @@ public:
         }
     }
 
-    ~TdTransportState()
-    {
-        g_main_context_unref(context);
-    }
-
+    MainContextPtr contextOwner;
     GMainContext *context;
     std::mutex mutex;
     bool stopped = false;
@@ -239,6 +294,8 @@ bool dispatchOne(const std::shared_ptr<TdTransportState> &state)
         delivery.object = std::move(state->queue.front().object);
         delivery.responseCallback.swap(
             state->queue.front().responseCallback);
+        delivery.deliveryReceipt =
+            std::move(state->queue.front().deliveryReceipt);
         delivery.canceledTimeout.swap(
             state->queue.front().canceledTimeout);
         state->queue.pop_front();
@@ -255,20 +312,25 @@ bool dispatchOne(const std::shared_ptr<TdTransportState> &state)
     delivery.canceledTimeout.token = nullptr;
     timeoutSource.clear();
 
-    if (!delivery.object)
-        return true;
-
-    try {
-        if (delivery.requestId == 0) {
-            if (updateCallback)
-                (*updateCallback)(std::move(delivery.object));
-        } else if (delivery.responseCallback) {
-            delivery.responseCallback(
-                delivery.requestId, std::move(delivery.object));
+    bool delivered = false;
+    if (delivery.object) {
+        try {
+            if (delivery.requestId == 0) {
+                if (updateCallback) {
+                    delivered = true;
+                    (*updateCallback)(std::move(delivery.object));
+                }
+            } else if (delivery.responseCallback) {
+                delivered = true;
+                delivery.responseCallback(
+                    delivery.requestId, std::move(delivery.object));
+            }
+        } catch (...) {
+            // Never let an application callback unwind through GLib.
         }
-    } catch (...) {
-        // Never let an application callback unwind through GLib.
     }
+
+    delivery.deliveryReceipt.settle(delivered);
 
     return true;
 }
@@ -586,50 +648,59 @@ bool attachPreparedTimeout(
     return g_source_attach(source, state->context) != 0;
 }
 
-void enqueueUpdate(
+bool enqueueUpdate(
     const std::shared_ptr<TdTransportState> &state,
-    TdTransport::ObjectPtr object)
+    TdTransport::ObjectPtr object,
+    TdTransport::DeliveryReceipt *deliveryReceipt)
 {
     if (!object)
-        return;
+        return false;
 
     std::lock_guard<std::mutex> lock(state->mutex);
     if (state->stopped)
-        return;
+        return false;
 
     state->queue.emplace_back();
     state->queue.back().requestId = 0;
     state->queue.back().object = std::move(object);
+    if (deliveryReceipt)
+        state->queue.back().deliveryReceipt =
+            std::move(*deliveryReceipt);
     scheduleDispatchLocked(state);
+    return true;
 }
 
-void receiveObject(
+bool receiveObject(
     const std::shared_ptr<TdTransportState> &state,
     uint64_t requestId,
-    TdTransport::ObjectPtr object)
+    TdTransport::ObjectPtr object,
+    TdTransport::DeliveryReceipt *deliveryReceipt = nullptr)
 {
     if (!object)
-        return;
+        return false;
 
     if (requestId == 0) {
-        enqueueUpdate(state, std::move(object));
-        return;
+        return enqueueUpdate(
+            state, std::move(object), deliveryReceipt);
     }
 
     {
         std::lock_guard<std::mutex> lock(state->mutex);
         if (state->stopped)
-            return;
+            return false;
 
         auto request = state->requests.find(requestId);
         if (request == state->requests.end())
-            return;
+            return false;
 
         state->queue.emplace_back();
         state->queue.back().requestId = requestId;
         state->queue.back().object = std::move(object);
         state->queue.back().responseCallback.swap(
             request->second.responseCallback);
+        if (deliveryReceipt)
+            state->queue.back().deliveryReceipt =
+                std::move(*deliveryReceipt);
         state->queue.back().canceledTimeout.swap(
             request->second.timeout);
         state->requests.erase(request);
@@ -640,6 +711,34 @@ void receiveObject(
     // ready timeout even when its main-context delivery is still queued. The
     // queued delivery cancels it on that context, or an already-selected
     // timeout callback observes the missing request and becomes a no-op.
+    return true;
+}
+
+void dispatchSynchronouslyForTestBackend(
+    const std::shared_ptr<TdTransportState> &state)
+{
+    while (true) {
+        GSource *source = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(state->mutex);
+            source = state->dispatchSource;
+            state->dispatchSource = nullptr;
+        }
+
+        if (source) {
+            g_source_destroy(source);
+            g_source_unref(source);
+        }
+
+        while (dispatchOne(state)) {
+        }
+
+        std::lock_guard<std::mutex> lock(state->mutex);
+        if (state->stopped ||
+            (state->queue.empty() && !state->dispatchSource)) {
+            return;
+        }
+    }
 }
 
 uint64_t reserveRequest(
@@ -653,9 +752,10 @@ uint64_t reserveRequest(
 
     sender = state->sendCallback;
     do {
-        ++state->lastRequestId;
-    } while (state->lastRequestId == 0 ||
-             state->requests.count(state->lastRequestId) != 0);
+        state->lastRequestId =
+            td_request_id::nextPublic(state->lastRequestId);
+    } while (
+        state->requests.count(state->lastRequestId) != 0);
 
     const uint64_t requestId = state->lastRequestId;
     auto inserted = state->requests.emplace(
@@ -696,6 +796,8 @@ void cancelRequest(
                 canceledDelivery.object = std::move(delivery->object);
                 canceledDelivery.responseCallback.swap(
                     delivery->responseCallback);
+                canceledDelivery.deliveryReceipt =
+                    std::move(delivery->deliveryReceipt);
                 canceledDelivery.canceledTimeout.swap(
                     delivery->canceledTimeout);
                 timeoutSource.adopt(
@@ -706,7 +808,8 @@ void cancelRequest(
             }
         }
     }
-    // Callback captures and the timeout source are released after unlocking.
+    // Callback captures, delivery receipts, and the timeout source are
+    // released after unlocking.
 }
 
 } // namespace
@@ -714,11 +817,13 @@ void cancelRequest(
 TdTransport::TdTransport(
     SendCallback sendCallback,
     UpdateCallback updateCallback,
-    TimeoutSourceFactory timeoutSourceFactory)
+    TimeoutSourceFactory timeoutSourceFactory,
+    GMainContext *dispatchContext)
     : m_state(std::make_shared<TdTransportState>(
           std::move(sendCallback),
           std::move(updateCallback),
-          std::move(timeoutSourceFactory)))
+          std::move(timeoutSourceFactory),
+          dispatchContext))
 {
 }
 
@@ -858,6 +963,49 @@ TdTransport::ReceiveCallback TdTransport::receiver() const
     };
 }
 
+TdTransport::AcknowledgedReceiveCallback
+TdTransport::acknowledgedReceiver() const
+{
+    std::weak_ptr<TdTransportState> weakState(m_state);
+    return [weakState](
+               uint64_t requestId,
+               ObjectPtr object,
+               DeliveryReceipt receipt) {
+        std::shared_ptr<TdTransportState> state = weakState.lock();
+        if (!state)
+            return;
+
+        try {
+            receiveObject(
+                state,
+                requestId,
+                std::move(object),
+                &receipt);
+        } catch (...) {
+            // The receipt settles as dropped after an ingress failure.
+        }
+    };
+}
+
+TdTransport::ReceiveCallback
+TdTransport::synchronousReceiverForTestBackend() const
+{
+    std::weak_ptr<TdTransportState> weakState(m_state);
+    return [weakState](uint64_t requestId, ObjectPtr object) {
+        std::shared_ptr<TdTransportState> state = weakState.lock();
+        if (!state)
+            return;
+
+        try {
+            receiveObject(state, requestId, std::move(object));
+            dispatchSynchronouslyForTestBackend(state);
+        } catch (...) {
+            // Test backend receivers obey the same exception boundary as
+            // production receivers.
+        }
+    };
+}
+
 void TdTransport::shutdown()
 {
     std::shared_ptr<TdTransportState> state = m_state;
@@ -892,6 +1040,7 @@ void TdTransport::shutdown()
         destroyTimeoutSource(delivery.canceledTimeout.source);
         delivery.canceledTimeout.source = nullptr;
         delivery.canceledTimeout.token = nullptr;
+        delivery.deliveryReceipt.settle(false);
     }
 
     for (auto &request: requests) {

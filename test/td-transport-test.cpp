@@ -6,6 +6,7 @@
 #include <atomic>
 #include <memory>
 #include <stdexcept>
+#include <string>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -41,13 +42,12 @@ protected:
         TdTransport::TimeoutSourceFactory timeoutSourceFactory =
             TdTransport::TimeoutSourceFactory())
     {
-        g_main_context_push_thread_default(m_context);
         std::unique_ptr<TdTransport> transport(
             new TdTransport(
                 std::move(sendCallback),
                 std::move(updateCallback),
-                std::move(timeoutSourceFactory)));
-        g_main_context_pop_thread_default(m_context);
+                std::move(timeoutSourceFactory),
+                m_context));
         return transport;
     }
 
@@ -65,6 +65,65 @@ TdTransport::TimeoutSourceFactory immediateTimeoutSourceFactory()
     return [](unsigned) {
         return g_idle_source_new();
     };
+}
+
+TEST(TdDeliveryReceiptTest, SettlesExactlyOnce)
+{
+    unsigned callbackCount = 0;
+    bool delivered = false;
+    {
+        TdTransport::DeliveryReceipt receipt(
+            [&](bool wasDelivered) {
+                ++callbackCount;
+                delivered = wasDelivered;
+            });
+        receipt.settle(true);
+        receipt.settle(false);
+    }
+
+    EXPECT_EQ(1u, callbackCount);
+    EXPECT_TRUE(delivered);
+}
+
+TEST(TdDeliveryReceiptTest, MoveConstructionLeavesSourceEmpty)
+{
+    unsigned callbackCount = 0;
+    {
+        TdTransport::DeliveryReceipt source(
+            [&](bool delivered) {
+                EXPECT_TRUE(delivered);
+                ++callbackCount;
+            });
+        TdTransport::DeliveryReceipt destination(
+            std::move(source));
+        destination.settle(true);
+    }
+
+    EXPECT_EQ(1u, callbackCount);
+}
+
+TEST(TdDeliveryReceiptTest, MoveAssignmentSettlesOnlyReplacedTarget)
+{
+    unsigned sourceCount = 0;
+    unsigned replacedCount = 0;
+    {
+        TdTransport::DeliveryReceipt source(
+            [&](bool delivered) {
+                EXPECT_TRUE(delivered);
+                ++sourceCount;
+            });
+        TdTransport::DeliveryReceipt destination(
+            [&](bool delivered) {
+                EXPECT_FALSE(delivered);
+                ++replacedCount;
+            });
+
+        destination = std::move(source);
+        destination.settle(true);
+    }
+
+    EXPECT_EQ(1u, sourceCount);
+    EXPECT_EQ(1u, replacedCount);
 }
 
 TEST_F(TdTransportTest, RoutesOutOfOrderResponsesToTheirMatchingCallbacks)
@@ -153,6 +212,115 @@ TEST_F(TdTransportTest, KeepsUpdatesAndResponsesInReceiveOrder)
     drainContext(m_context);
     EXPECT_EQ((std::vector<int>{0, static_cast<int>(requestId)}),
               deliveryOrder);
+}
+
+TEST_F(
+    TdTransportTest,
+    AcknowledgedReceiverSettlesAfterUpdateCallback)
+{
+    std::vector<std::string> events;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        [&](object_ptr<Object>) {
+            events.push_back("update");
+        });
+    TdTransport::AcknowledgedReceiveCallback receiver =
+        transport->acknowledgedReceiver();
+
+    receiver(
+        0,
+        make_object<updateConnectionState>(
+            make_object<connectionStateReady>()),
+        TdTransport::DeliveryReceipt(
+            [&](bool delivered) {
+                events.push_back(
+                    delivered ? "delivered" : "dropped");
+            }));
+
+    EXPECT_TRUE(events.empty());
+    drainContext(m_context);
+    EXPECT_EQ(
+        (std::vector<std::string>{"update", "delivered"}),
+        events);
+}
+
+TEST_F(
+    TdTransportTest,
+    AcknowledgedReceiverDropsUpdateWithoutApplicationCallback)
+{
+    bool receiptSettled = false;
+    bool delivered = true;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {});
+
+    transport->acknowledgedReceiver()(
+        0,
+        make_object<updateConnectionState>(
+            make_object<connectionStateReady>()),
+        TdTransport::DeliveryReceipt(
+            [&](bool wasDelivered) {
+                receiptSettled = true;
+                delivered = wasDelivered;
+            }));
+
+    drainContext(m_context);
+    EXPECT_TRUE(receiptSettled);
+    EXPECT_FALSE(delivered);
+}
+
+TEST_F(TdTransportTest, ShutdownSettlesQueuedReceiptAsDropped)
+{
+    bool updateCalled = false;
+    bool receiptSettled = false;
+    bool delivered = true;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        [&](object_ptr<Object>) {
+            updateCalled = true;
+        });
+
+    transport->acknowledgedReceiver()(
+        0,
+        make_object<updateConnectionState>(
+            make_object<connectionStateReady>()),
+        TdTransport::DeliveryReceipt(
+            [&](bool wasDelivered) {
+                receiptSettled = true;
+                delivered = wasDelivered;
+            }));
+    transport->shutdown();
+
+    EXPECT_TRUE(receiptSettled);
+    EXPECT_FALSE(delivered);
+    EXPECT_FALSE(updateCalled);
+    drainContext(m_context);
+    EXPECT_FALSE(updateCalled);
+}
+
+TEST_F(TdTransportTest, ThrowingUpdateStillSettlesAsDelivered)
+{
+    std::vector<std::string> events;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [](uint64_t, object_ptr<td::td_api::Function>) {},
+        [&](object_ptr<Object>) {
+            events.push_back("update");
+            throw std::runtime_error("synthetic update failure");
+        });
+
+    transport->acknowledgedReceiver()(
+        0,
+        make_object<updateConnectionState>(
+            make_object<connectionStateReady>()),
+        TdTransport::DeliveryReceipt(
+            [&](bool delivered) {
+                events.push_back(
+                    delivered ? "delivered" : "dropped");
+            }));
+
+    EXPECT_NO_THROW(drainContext(m_context));
+    EXPECT_EQ(
+        (std::vector<std::string>{"update", "delivered"}),
+        events);
 }
 
 TEST_F(TdTransportTest, SynchronousSenderResponseIsStillDeferred)
@@ -914,6 +1082,43 @@ TEST_F(TdTransportTest, ThrowingSenderRollsBackPreinstalledTimeout)
     EXPECT_TRUE(weakCapture.expired());
     drainContext(m_context);
     EXPECT_EQ(0u, callbackCount);
+    EXPECT_FALSE(g_main_context_pending(m_context));
+}
+
+TEST_F(
+    TdTransportTest,
+    CanceledQueuedDeliverySettlesReentrantlyAfterUnlock)
+{
+    TdTransport *transportPointer = nullptr;
+    bool receiptSettled = false;
+    bool delivered = true;
+    bool shutdownReturned = false;
+    std::unique_ptr<TdTransport> transport = makeTransport(
+        [&](uint64_t requestId,
+            object_ptr<td::td_api::Function>) {
+            transportPointer->acknowledgedReceiver()(
+                requestId,
+                make_object<ok>(),
+                TdTransport::DeliveryReceipt(
+                    [&](bool wasDelivered) {
+                        receiptSettled = true;
+                        delivered = wasDelivered;
+                        transportPointer->shutdown();
+                        shutdownReturned = true;
+                    }));
+            throw std::runtime_error("synthetic send failure");
+        });
+    transportPointer = transport.get();
+
+    EXPECT_EQ(
+        0u,
+        transport->send(
+            make_object<getMe>(),
+            [](uint64_t, object_ptr<Object>) {}));
+
+    EXPECT_TRUE(receiptSettled);
+    EXPECT_FALSE(delivered);
+    EXPECT_TRUE(shutdownReturned);
     EXPECT_FALSE(g_main_context_pending(m_context));
 }
 
