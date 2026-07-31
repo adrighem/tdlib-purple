@@ -597,7 +597,10 @@ void updateBasicGroupChat(
         purpleDebug("Basic group {} does not exist yet\n", groupId.value());
     else if (!chat)
         purpleDebug("Chat for basic group {} does not exist yet\n", groupId.value());
-    else
+    else if (!isActiveBasicGroup(*group)) {
+        account.removeExpectedChat(getId(*chat));
+        removeGroupChat(account.purpleAccount, *chat);
+    } else
         updateGroupChat(
             account, *chat, group->status_, "basic group",
             std::to_string(groupId.value()), canContinue);

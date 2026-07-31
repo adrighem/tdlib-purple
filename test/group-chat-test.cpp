@@ -16,7 +16,31 @@ protected:
     const std::string groupChatPurpleName = "chat" + std::to_string(groupChatId);
 
     void loginWithBasicGroup();
+    void addSavedBasicGroupChat();
+    object_ptr<chat> makeBasicGroupChatInMain();
 };
+
+void GroupChatTest::addSavedBasicGroupChat()
+{
+    GHashTable *components = g_hash_table_new_full(
+        g_str_hash, g_str_equal, NULL, g_free);
+    g_hash_table_insert(
+        components, (char *)"id",
+        g_strdup(groupChatPurpleName.c_str()));
+    purple_blist_add_chat(
+        purple_chat_new(
+            account, groupChatTitle.c_str(), components),
+        NULL, NULL);
+}
+
+object_ptr<chat> GroupChatTest::makeBasicGroupChatInMain()
+{
+    object_ptr<chat> chat = makeChat(
+        groupChatId, make_object<chatTypeBasicGroup>(groupId),
+        groupChatTitle, nullptr, 0, 0, 0);
+    addChatPosition(chat, make_object<chatListMain>());
+    return chat;
+}
 
 void GroupChatTest::loginWithBasicGroup()
 {
@@ -72,15 +96,10 @@ TEST_F(GroupChatTest, BasicGroupChatAppearsAfterLogin)
 
 TEST_F(GroupChatTest, ExistingBasicGroupChatAtLogin)
 {
-    GHashTable *components = g_hash_table_new_full (g_str_hash, g_str_equal, NULL, g_free);
-    g_hash_table_insert(components, (char *)"id", g_strdup((groupChatPurpleName).c_str()));
-    purple_blist_add_chat(purple_chat_new(account, groupChatTitle.c_str(), components), NULL, NULL);
+    addSavedBasicGroupChat();
     prpl.discardEvents();
 
-    auto groupChat = makeChat(
-        groupChatId, make_object<chatTypeBasicGroup>(groupId), groupChatTitle, nullptr, 0, 0, 0
-    );
-    addChatPosition(groupChat, make_object<chatListMain>());
+    auto groupChat = makeBasicGroupChatInMain();
     login(
         make_vector<Object>(
             make_object<updateBasicGroup>(make_object<basicGroup>(
@@ -93,6 +112,113 @@ TEST_F(GroupChatTest, ExistingBasicGroupChatAtLogin)
         {},
         make_vector<BaseObject>(make_object<getBasicGroupFullInfo>(groupId))
     );
+}
+
+TEST_F(GroupChatTest, UpgradeReplacesLegacyBasicGroupChatWithSupergroup)
+{
+    constexpr int64_t upgradedSupergroupId = 1700;
+    constexpr int64_t upgradedSupergroupChatId = 17000;
+    const std::string upgradedSupergroupPurpleName =
+        "chat" + std::to_string(upgradedSupergroupChatId);
+    loginWithBasicGroup();
+
+    tgl.update(make_object<updateSupergroup>(makeSupergroup(
+        upgradedSupergroupId,
+        make_object<chatMemberStatusMember>(), 2)));
+    tgl.update(make_object<updateNewChat>(makeChat(
+        upgradedSupergroupChatId,
+        make_object<chatTypeSupergroup>(
+            upgradedSupergroupId, false),
+        groupChatTitle, nullptr, 0, 0, 0)));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+
+    tgl.update(makeUpdateChatListMain(upgradedSupergroupChatId));
+    prpl.verifyEvents(AddChatEvent(
+        upgradedSupergroupPurpleName, groupChatTitle,
+        account, nullptr, nullptr));
+    tgl.verifyRequestsV(
+        make_object<getSupergroupFullInfo>(upgradedSupergroupId),
+        make_object<getSupergroupMembers>(
+            upgradedSupergroupId,
+            make_object<supergroupMembersFilterRecent>(),
+            0, 200));
+
+    ASSERT_NE(
+        nullptr,
+        purple_blist_find_chat(account, groupChatPurpleName.c_str()));
+    ASSERT_NE(
+        nullptr,
+        purple_blist_find_chat(
+            account, upgradedSupergroupPurpleName.c_str()));
+
+    tgl.update(make_object<updateBasicGroup>(make_object<basicGroup>(
+        groupId, 2, make_object<chatMemberStatusMember>(), false,
+        upgradedSupergroupId)));
+
+    prpl.verifyEvents(RemoveChatEvent(groupChatPurpleName, ""));
+    EXPECT_EQ(
+        nullptr,
+        purple_blist_find_chat(account, groupChatPurpleName.c_str()));
+    EXPECT_NE(
+        nullptr,
+        purple_blist_find_chat(
+            account, upgradedSupergroupPurpleName.c_str()));
+
+    tgl.update(makeUpdateChatListMain(groupChatId));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+}
+
+TEST_F(GroupChatTest, InactiveBasicGroupAtLoginMetadataFirstRemovesLegacyChat)
+{
+    addSavedBasicGroupChat();
+    prpl.discardEvents();
+
+    login(
+        make_vector<Object>(
+            make_object<updateBasicGroup>(make_object<basicGroup>(
+                groupId, 2, make_object<chatMemberStatusMember>(), false,
+                0)),
+            make_object<updateNewChat>(makeBasicGroupChatInMain())),
+        make_object<users>(),
+        make_object<ok>(),
+        {std::make_shared<RemoveChatEvent>(groupChatPurpleName, "")},
+        {});
+
+    EXPECT_EQ(
+        nullptr,
+        purple_blist_find_chat(account, groupChatPurpleName.c_str()));
+
+    tgl.update(makeUpdateChatListMain(groupChatId));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
+}
+
+TEST_F(GroupChatTest, UpgradedBasicGroupAtLoginChatFirstRemovesLegacyChat)
+{
+    constexpr int64_t upgradedSupergroupId = 1700;
+    addSavedBasicGroupChat();
+    prpl.discardEvents();
+
+    login(
+        make_vector<Object>(
+            make_object<updateNewChat>(makeBasicGroupChatInMain()),
+            make_object<updateBasicGroup>(make_object<basicGroup>(
+                groupId, 2, make_object<chatMemberStatusMember>(), true,
+                upgradedSupergroupId))),
+        make_object<users>(),
+        make_object<ok>(),
+        {std::make_shared<RemoveChatEvent>(groupChatPurpleName, "")},
+        {});
+
+    EXPECT_EQ(
+        nullptr,
+        purple_blist_find_chat(account, groupChatPurpleName.c_str()));
+
+    tgl.update(makeUpdateChatListMain(groupChatId));
+    prpl.verifyNoEvents();
+    tgl.verifyNoRequests();
 }
 
 TEST_F(GroupChatTest, BasicGroupReceiveTextAndReply)

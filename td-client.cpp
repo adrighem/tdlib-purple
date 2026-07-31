@@ -565,8 +565,12 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
             chatType == td::td_api::chatTypeSupergroup::ID;
         const BasicGroupId basicGroupId = getBasicGroupId(*newChat.chat_);
         const SupergroupId supergroupId = getSupergroupId(*newChat.chat_);
+        const td::td_api::basicGroup *basicGroupMetadata =
+            isBasicGroup
+                ? m_data.getBasicGroup(basicGroupId)
+                : nullptr;
         const bool groupMetadataKnown =
-            (isBasicGroup && m_data.getBasicGroup(basicGroupId)) ||
+            basicGroupMetadata != nullptr ||
             (isSupergroup && m_data.getSupergroup(supergroupId));
 
         if (chatType == td::td_api::chatTypePrivate::ID ||
@@ -586,15 +590,22 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
         } else {
             const ChatId chatId = getId(*newChat.chat_);
             const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
+            if (basicGroupMetadata &&
+                !isActiveBasicGroup(*basicGroupMetadata)) {
+                m_data.removeExpectedChat(chatId);
+                removeGroupChat(m_account, *newChat.chat_);
+                if (!lifetime->alive)
+                    return;
+            }
             failForumTopicJoins(chatId);
             if (!lifetime->alive)
                 return;
             projectForumTopics(chatId);
             purple_debug_misc(config::pluginId,
-                              "Incoming update: ignorig ID=%d\n",
+                              "Incoming update: ignoring ID=%d\n",
                               update.get_id());
             purple_debug_misc(config::pluginId,
-                              "Not adding a group that we are not a member of");
+                              "Not adding an unavailable group\n");
         }
 
         break;
@@ -2005,6 +2016,16 @@ bool PurpleTdClient::resolveDeferredGroupChat(ChatId chatId)
 
     if (!m_data.isGroupChatWithMembership(*chat)) {
         m_deferredGroupChats.erase(deferred);
+        const td::td_api::basicGroup *basicGroup =
+            basicGroupId.valid()
+                ? m_data.getBasicGroup(basicGroupId)
+                : nullptr;
+        if (basicGroup && !isActiveBasicGroup(*basicGroup)) {
+            m_data.removeExpectedChat(chatId);
+            removeGroupChat(m_account, *chat);
+            if (!lifetime->alive)
+                return true;
+        }
         failForumTopicJoins(chatId);
         if (!lifetime->alive)
             return true;
@@ -2084,9 +2105,16 @@ void PurpleTdClient::updateChat(const td::td_api::chat *chat)
     if (isChatInContactList(*chat, privateChatUser)) {
         // purple_blist_find_chat doesn't work if account is not connected
         if (basicGroupId.valid()) {
-            requestBasicGroupFullInfo(basicGroupId);
-            updateBasicGroupChat(
-                m_data, basicGroupId, canContinue);
+            const td::td_api::basicGroup *group =
+                m_data.getBasicGroup(basicGroupId);
+            if (group && isActiveBasicGroup(*group)) {
+                requestBasicGroupFullInfo(basicGroupId);
+                updateBasicGroupChat(
+                    m_data, basicGroupId, canContinue);
+            } else {
+                m_data.removeExpectedChat(getId(*chat));
+                removeGroupChat(m_account, *chat);
+            }
             if (!lifetime->alive)
                 return;
         }
