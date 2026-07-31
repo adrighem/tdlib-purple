@@ -1,293 +1,289 @@
 #include "transceiver.h"
+
 #include "config.h"
-#include "purple-info.h"
-#include <algorithm>
-#include <assert.h>
+#include "translate.h"
 
-struct TimerCallbackData {
-    TdTransceiver             *m_transceiver;
-    uint64_t                   requestId;
-    TdTransceiver::ResponseCb2 callback;
-    bool                       cancelResponse;
-};
+#include <stdexcept>
+#include <string>
+#include <utility>
 
-struct TimerInfo {
-    guint                              timerId;
-    std::unique_ptr<TimerCallbackData> data;
-};
+namespace {
 
-// This class is used to share ownership of its instances between TdTransceiver and glib idle
-// function queue. This way, those idle functions can be called safely after TdTransceiver is
-// destroyed.
-class TdTransceiverImpl {
-public:
-    TdTransceiverImpl(PurpleTdClient *owner, TdTransceiver::UpdateCb updateCb, ITransceiverBackend *testBackend);
-    ~TdTransceiverImpl();
-    static int rxCallback(void *user_data);
-    void       cancelTimer(uint64_t requestId);
+constexpr unsigned CLOSE_TIMEOUT_SECONDS = 10;
+constexpr double POLL_TIMEOUT_SECONDS = 0.1;
 
-    PurpleTdClient                     *m_owner;
-    std::unique_ptr<td::Client>         m_client;
-    ITransceiverBackend                *m_testBackend;
-
-    // The mutex protects m_rxQueue and reference counters of all shared pointers to this object.
-    // All other members are only used from the glib main thread
-    std::mutex                          m_rxMutex;
-    std::vector<td::Client::Response>   m_rxQueue;
-
-    TdTransceiver::UpdateCb             m_updateCb;
-    uint64_t                                            m_lastQueryId;
-    std::map<std::uint64_t, TdTransceiver::ResponseCb2> m_responseHandlers;
-    std::vector<TimerInfo>                              m_timers;
-};
-
-TdTransceiverImpl::TdTransceiverImpl(PurpleTdClient *owner, TdTransceiver::UpdateCb updateCb,
-                                     ITransceiverBackend *testBackend
-)
-:   m_owner(owner),
-    m_testBackend(testBackend),
-    m_updateCb(updateCb),
-    m_lastQueryId(0)
+std::string purple2SessionKey(const std::string &databasePath)
 {
-    if (!testBackend)
-        m_client = std::make_unique<td::Client>();
+    gchar *digest = g_compute_checksum_for_string(
+        G_CHECKSUM_SHA256,
+        databasePath.c_str(),
+        -1);
+    if (!digest)
+        throw std::runtime_error(
+            "Telegram session identity is unavailable");
+
+    std::string sessionKey("purple2:");
+    sessionKey += digest;
+    g_free(digest);
+    return sessionKey;
 }
 
-TdTransceiverImpl::~TdTransceiverImpl()
+TdTransport::UpdateCallback makeUpdateCallback(
+    PurpleTdClient *owner,
+    TdTransceiver::UpdateCb updateCallback)
 {
-    purple_debug_misc(config::pluginId, "Destroyed TdTransceiverImpl\n");
+    if (!owner || !updateCallback)
+        return TdTransport::UpdateCallback();
+
+    return [owner, updateCallback](TdTransport::ObjectPtr object) {
+        if (object)
+            (owner->*updateCallback)(*object);
+    };
 }
 
-void TdTransceiverImpl::cancelTimer(uint64_t requestId)
+TdTransceiver::ResponseCb2 makeResponseCallback(
+    PurpleTdClient *owner,
+    TdTransceiver::ResponseCb responseCallback)
 {
-    auto pTimer = std::find_if(m_timers.begin(), m_timers.end(),
-                               [requestId](const TimerInfo &timer) { return (timer.data->requestId == requestId); });
-    if (pTimer != m_timers.end()) {
-        if (!m_testBackend)
-            g_source_remove(pTimer->timerId);
-        else
-            m_testBackend->cancelTimer(pTimer->timerId);
-        m_timers.erase(pTimer);
+    if (!owner || !responseCallback)
+        return TdTransceiver::ResponseCb2();
+
+    return [owner, responseCallback](
+               uint64_t requestId,
+               TdTransport::ObjectPtr object) {
+        (owner->*responseCallback)(
+            requestId, std::move(object));
+    };
+}
+
+} // namespace
+
+std::string getPurple2BaseDatabasePath()
+{
+    const char *userDirectory = purple_user_dir();
+    if (!userDirectory)
+        throw std::runtime_error(
+            "Telegram data directory is unavailable");
+
+    return std::string(userDirectory) + G_DIR_SEPARATOR_S +
+        config::configSubdir;
+}
+
+std::string getPurple2DatabasePath(PurpleAccount *account)
+{
+    if (!account)
+        throw std::runtime_error("Telegram account is unavailable");
+
+    const char *username = purple_account_get_username(account);
+    if (!username || username[0] == '\0')
+        throw std::runtime_error(
+            "Telegram account identifier is unavailable");
+
+    return getPurple2BaseDatabasePath() + G_DIR_SEPARATOR_S + username;
+}
+
+void ITransceiverBackend::setReceiver(
+    TdTransport::ReceiveCallback receiver)
+{
+    std::lock_guard<std::mutex> lock(m_receiverMutex);
+    m_receiver = std::move(receiver);
+}
+
+void ITransceiverBackend::receive(td::Client::Response response)
+{
+    TdTransport::ReceiveCallback receiver;
+    {
+        std::lock_guard<std::mutex> lock(m_receiverMutex);
+        receiver = m_receiver;
+    }
+    if (receiver) {
+        receiver(
+            response.id, std::move(response.object));
     }
 }
 
-TdTransceiver::TdTransceiver(PurpleTdClient *owner, PurpleAccount *account, UpdateCb updateCb,
-                             ITransceiverBackend *testBackend)
-:   m_account(account),
-    m_stopThread(false)
+TdTransceiver::TdTransceiver(
+    PurpleTdClient *owner,
+    PurpleAccount *account,
+    UpdateCb updateCallback,
+    ITransceiverBackend *testBackend)
+    : m_owner(owner),
+      m_testBackend(testBackend)
 {
-    m_impl = std::make_shared<TdTransceiverImpl>(owner, updateCb, testBackend);
+    TdTransport::UpdateCallback update =
+        makeUpdateCallback(owner, updateCallback);
 
-    if (testBackend) {
-        m_testBackend = testBackend;
-        m_testBackend->setOwner(this);
-    } else {
-        m_testBackend = nullptr;
+    if (account) {
+        m_databasePath = getPurple2DatabasePath(account);
+    } else if (!m_testBackend) {
+        throw std::runtime_error("Telegram account is unavailable");
+    }
+
+    if (m_testBackend) {
+        GMainContext *context =
+            m_testBackend->transportContext();
+        if (!context)
+            throw std::runtime_error(
+                "Test transport context is unavailable");
+
+        m_transport.reset(new TdTransport(
+            [testBackend](
+                uint64_t requestId,
+                TdTransport::FunctionPtr function) {
+                testBackend->send(
+                    {requestId, std::move(function)});
+            },
+            std::move(update),
+            [testBackend](unsigned timeoutSeconds) {
+                return testBackend->createTimeoutSource(
+                    timeoutSeconds);
+            },
+            context));
+        m_testBackend->setReceiver(
+            m_transport->synchronousReceiverForTestBackend());
+        return;
+    }
 
 #if !GLIB_CHECK_VERSION(2, 32, 0)
-        // GLib threading system is automaticaly initialized since 2.32.
-        // For earlier versions, it have to be initialized before calling any
-        // Glib or GTK+ functions.
-        if (!g_thread_supported())
-            g_thread_init(NULL);
+    if (!g_thread_supported())
+        g_thread_init(NULL);
 #endif
 
-        m_pollThread = std::thread([this]() { pollThreadLoop(); });
+    m_backend.reset(new TdPollingBackend(
+        purple2SessionKey(m_databasePath),
+        CLOSE_TIMEOUT_SECONDS,
+        POLL_TIMEOUT_SECONDS,
+        TdPollingBackend::ClientFactory()));
+    m_transport.reset(new TdTransport(
+        m_backend->sender(), std::move(update)));
+    m_acceptBackendFailures =
+        std::make_shared<std::atomic<bool>>(true);
+    std::weak_ptr<std::atomic<bool>> acceptBackendFailures(
+        m_acceptBackendFailures);
+    if (m_backend->start(
+            m_transport->acknowledgedReceiver(),
+            [acceptBackendFailures, account]() {
+                std::shared_ptr<std::atomic<bool>> active =
+                    acceptBackendFailures.lock();
+                if (!active ||
+                    !active->load(std::memory_order_acquire)) {
+                    return;
+                }
+
+                PurpleConnection *connection =
+                    purple_account_get_connection(account);
+                if (connection) {
+                    // TRANSLATOR: Buddy-window error shown when the TDLib
+                    // polling backend stops unexpectedly.
+                    purple_connection_error(
+                        connection,
+                        _("Telegram connection stopped unexpectedly"));
+                }
+            }) !=
+        TdPollingBackend::StartResult::Started) {
+        m_acceptBackendFailures->store(
+            false, std::memory_order_release);
+        m_transport->shutdown();
+        m_backend.reset();
+        throw std::runtime_error(
+            "Telegram session could not be started");
     }
 }
 
 TdTransceiver::~TdTransceiver()
 {
-    if (m_testBackend)
-        m_testBackend->setOwner(nullptr);
-
-    for (const TimerInfo &timer: m_impl->m_timers) {
-        if (!m_testBackend)
-            g_source_remove(timer.timerId);
-        else
-            m_testBackend->cancelTimer(timer.timerId);
-    }
-    m_impl->m_timers.clear();
-
-    m_stopThread = true;
-    if (!m_testBackend) {
-        m_impl->m_client->send({UINT64_MAX, td::td_api::make_object<td::td_api::close>()});
-        m_pollThread.join();
-    }
-
-    // Orphan m_impl - if the background thread generated idle callbacks while we were waiting for
-    // it to quit, those callbacks will be called after this destructor return (doing nothing, as
-    // m_impl->m_owner gets set to NULL), and only then with TdTransceiverImpl instance be destroyed
-    m_impl->m_owner = nullptr;
-
-    // Since poll thread is no longer running, there is no need to lock the mutex before decrementing
-    // shared pointer reference count
-    m_impl.reset();
-    purple_debug_misc(config::pluginId, "Destroyed TdTransceiver\n");
+    shutdown();
 }
 
-void *TdTransceiver::queueResponse(td::Client::Response &&response)
+uint64_t TdTransceiver::sendQuery(
+    td::td_api::object_ptr<td::td_api::Function> function,
+    ResponseCb2 handler)
 {
-    m_impl->m_rxQueue.push_back(std::move(response));
-    return new std::shared_ptr<TdTransceiverImpl>(m_impl);
+    if (m_shutdown || !m_transport)
+        return 0;
+    return m_transport->send(
+        std::move(function), std::move(handler));
 }
 
-void TdTransceiver::pollThreadLoop()
+uint64_t TdTransceiver::sendQuery(
+    td::td_api::object_ptr<td::td_api::Function> function,
+    ResponseCb handler)
 {
-    while (1) {
-        td::Client::Response response = m_impl->m_client->receive(1);
-
-        if (response.object) {
-            if (response.object->get_id() == td::td_api::updateAuthorizationState::ID) {
-                auto &authState = static_cast<const td::td_api::updateAuthorizationState &>(*response.object);
-                if (authState.authorization_state_ && (authState.authorization_state_->get_id() ==
-                    td::td_api::authorizationStateClosed::ID))
-                {
-                    break;
-                }
-            }
-            // Passing shared pointer through glib event queue using pointer to pointer seems funky,
-            // but it works
-            void *implRef;
-            {
-                std::unique_lock<std::mutex> lock(m_impl->m_rxMutex);
-                implRef = queueResponse(std::move(response));
-            }
-            g_idle_add(TdTransceiverImpl::rxCallback, implRef);
-        }
-    }
+    return sendQuery(
+        std::move(function),
+        makeResponseCallback(m_owner, handler));
 }
 
-int TdTransceiverImpl::rxCallback(gpointer user_data)
+uint64_t TdTransceiver::sendQueryWithTimeout(
+    td::td_api::object_ptr<td::td_api::Function> function,
+    ResponseCb2 handler,
+    unsigned timeoutSeconds)
 {
-    auto ppSelf = static_cast<std::shared_ptr<TdTransceiverImpl> *>(user_data);
-    std::shared_ptr<TdTransceiverImpl> self = *ppSelf;
-    delete ppSelf;
-
-    while (1) {
-        td::Client::Response response;
-        {
-            std::unique_lock<std::mutex> lock(self->m_rxMutex);
-            if (self->m_rxQueue.empty())
-                break;
-            response = std::move(self->m_rxQueue.front());
-            self->m_rxQueue.erase(self->m_rxQueue.begin());
-        }
-
-        self->cancelTimer(response.id);
-
-        if (!response.object)
-            ; // impossible
-        else if (!self->m_owner)
-            // m_owner will be NULL if this callback is invoked after TdTransceiver destructor
-            purple_debug_misc(config::pluginId,
-                              "Ignoring response (object id %d) as transceiver is already destroyed\n",
-                              (int)response.object->get_id());
-        else if (response.id == 0)
-            ((self->m_owner)->*(self->m_updateCb))(*response.object);
-        else {
-            TdTransceiver::ResponseCb2 callback = nullptr;
-            auto it = self->m_responseHandlers.find(response.id);
-            if (it != self->m_responseHandlers.end()) {
-                callback = it->second;
-                self->m_responseHandlers.erase(it);
-            } else
-                purple_debug_misc(config::pluginId, "Ignoring response to request %" G_GUINT64_FORMAT "\n",
-                                  response.id);
-            if (callback)
-                callback(response.id, std::move(response.object));
-        }
-    }
-
-    return FALSE; // This idle handler will not be called again
+    if (m_shutdown || !m_transport)
+        return 0;
+    return m_transport->sendWithTimeout(
+        std::move(function),
+        std::move(handler),
+        timeoutSeconds);
 }
 
-uint64_t TdTransceiver::sendQuery(td::td_api::object_ptr<td::td_api::Function> f, ResponseCb2 handler)
+void TdTransceiver::setQueryTimer(
+    uint64_t queryId,
+    ResponseCb2 handler,
+    unsigned timeoutSeconds,
+    bool cancelNormalResponse)
 {
-    uint64_t queryId = ++m_impl->m_lastQueryId;
-    purple_debug_misc(config::pluginId, "Sending query id %lu\n", (unsigned long)queryId);
-    if (handler)
-        m_impl->m_responseHandlers.emplace(queryId, std::move(handler));
-    if (m_testBackend)
-        m_testBackend->send({queryId, std::move(f)});
-    else
-        m_impl->m_client->send({queryId, std::move(f)});
-    return queryId;
-}
-
-uint64_t TdTransceiver::sendQuery(td::td_api::object_ptr<td::td_api::Function> f, ResponseCb handler)
-{
-    if (!handler)
-        return sendQuery(std::move(f), ResponseCb2());
-
-    return sendQuery(std::move(f),
-                     [tdClient=m_impl->m_owner, handler](uint64_t requestId, TdObjectPtr object) {
-                        (tdClient->*handler)(requestId, std::move(object));
-                     });
-}
-
-uint64_t TdTransceiver::sendQueryWithTimeout(td::td_api::object_ptr<td::td_api::Function> f,
-                                             ResponseCb2 handler, unsigned timeoutSeconds)
-{
-    uint64_t queryId = sendQuery(std::move(f), handler);
-    setQueryTimer(queryId, handler, timeoutSeconds, true);
-    return queryId;
-}
-
-void TdTransceiver::setQueryTimer(uint64_t queryId, ResponseCb2 handler, unsigned timeoutSeconds,
-                                  bool cancelNormalResponse)
-{
-    TimerInfo timer;
-    timer.data = std::make_unique<TimerCallbackData>();
-    TimerCallbackData *data = timer.data.get();
-
-    data->m_transceiver   = this;
-    data->requestId       = queryId;
-    data->callback        = handler;
-    data->cancelResponse  = cancelNormalResponse;
-
-    guint timerId;
-    if (!m_testBackend)
-        timerId = g_timeout_add_seconds(timeoutSeconds, timerCallback, data);
-    else
-        timerId = m_testBackend->addTimeout(timeoutSeconds, timerCallback, data);
-
-    timer.timerId = timerId;
-    m_impl->m_timers.push_back(std::move(timer));
-}
-
-void TdTransceiver::setQueryTimer(uint64_t queryId, ResponseCb handler, unsigned timeoutSeconds,
-                                  bool cancelNormalResponse)
-{
-    setQueryTimer(queryId,
-                  [tdClient=m_impl->m_owner, handler](uint64_t requestId, TdObjectPtr object) {
-                      (tdClient->*handler)(requestId, std::move(object));
-                  }, timeoutSeconds, cancelNormalResponse);
-}
-
-gboolean TdTransceiver::timerCallback(gpointer userdata)
-{
-    TimerCallbackData *data = static_cast<TimerCallbackData *>(userdata);
-    TdTransceiver *transceiver = data->m_transceiver;
-    const uint64_t requestId = data->requestId;
-    const bool cancelResponse = data->cancelResponse;
-    ResponseCb2 callback = std::move(data->callback);
-    std::shared_ptr<TdTransceiverImpl> impl = transceiver->m_impl;
-
-    if (cancelResponse)
-        impl->m_responseHandlers.erase(requestId);
-    impl->cancelTimer(requestId);
-
-    if (callback)
-        callback(requestId, nullptr);
-
-    return FALSE; // one-time callback
-}
-
-void ITransceiverBackend::receive(td::Client::Response response)
-{
-    if (!m_owner)
+    if (m_shutdown || !m_transport)
         return;
 
-    TdTransceiverImpl::rxCallback(m_owner->queueResponse(std::move(response)));
+    if (cancelNormalResponse) {
+        m_transport->setResponseTimeout(
+            queryId, timeoutSeconds, std::move(handler));
+    } else {
+        m_transport->setNotificationTimeout(
+            queryId,
+            timeoutSeconds,
+            [handler = std::move(handler)](
+                uint64_t requestId) mutable {
+                if (handler)
+                    handler(requestId, nullptr);
+            });
+    }
+}
+
+void TdTransceiver::setQueryTimer(
+    uint64_t queryId,
+    ResponseCb handler,
+    unsigned timeoutSeconds,
+    bool cancelNormalResponse)
+{
+    setQueryTimer(
+        queryId,
+        makeResponseCallback(m_owner, handler),
+        timeoutSeconds,
+        cancelNormalResponse);
+}
+
+const std::string &TdTransceiver::databasePath() const
+{
+    return m_databasePath;
+}
+
+void TdTransceiver::shutdown()
+{
+    if (m_shutdown)
+        return;
+    m_shutdown = true;
+
+    if (m_acceptBackendFailures) {
+        m_acceptBackendFailures->store(
+            false, std::memory_order_release);
+    }
+    if (m_testBackend)
+        m_testBackend->setReceiver(TdTransport::ReceiveCallback());
+    if (m_transport)
+        m_transport->shutdown();
+    if (m_backend)
+        m_backend->close();
+    m_owner = nullptr;
 }

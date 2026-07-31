@@ -15,13 +15,14 @@ The current milestone only:
 - exposes only an advanced secret-chat option
 - creates a protocol-specific asynchronous `PurpleConnection`
 
-The connection currently stops after checking the shared application-level
-credential provider because the Purple-neutral TDLib authentication transport
-is the next implementation phase. A credentialless build reports that its
-application credentials are unavailable; a configured build reaches the
-existing not-supported transport error. Telegram's API ID and API hash
-identify the application even during QR login. They are deliberately not
-Purple account settings, environment variables, or raw CMake values.
+The shared Purple-neutral TDLib transport is now available, but the Purple 3
+connection intentionally stops after checking the application-level credential
+provider until the shared authorization controller and QR presenter are
+integrated. A credentialless build reports that its application credentials
+are unavailable; a configured build reaches the existing not-supported
+connection error. Telegram's API ID and API hash identify the application even
+during QR login. They are deliberately not Purple account settings,
+environment variables, or raw CMake values.
 
 Pidgin preserves settings written by earlier development builds even after a
 protocol stops advertising them. On load, the adapter removes the obsolete
@@ -132,9 +133,9 @@ Credential setup failures report stable, value-free diagnostic codes:
 
 At runtime, `Telegram application credentials are unavailable in this build`
 means the credentialless stub is active. The current `not supported`
-connection error means valid application credentials were loaded and the
-Purple-neutral TDLib authentication transport is the next implementation
-step.
+connection error means valid application credentials were loaded, while
+authorization and QR presentation are not connected to the Purple 3 adapter
+yet.
 
 ## Inspect in Pidgin 3
 

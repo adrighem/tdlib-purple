@@ -8,6 +8,7 @@
 #include "call.h"
 #include "secret-chat.h"
 #include "sticker.h"
+#include "module-activity.h"
 #include <unistd.h>
 #include <stdlib.h>
 #include <algorithm>
@@ -479,7 +480,6 @@ PurpleTdClient::PurpleTdClient(
             projectForumTopic(target);
         }))
 {
-    StickerConversionThread::setCallback(&PurpleTdClient::onAnimatedStickerConverted);
     setPurpleConnectionInProgress();
 }
 
@@ -515,6 +515,7 @@ PurpleTdClient::~PurpleTdClient()
         fullMessage.inlineDownloadTimeout = true;
 
     showMessages(messages, m_data);
+    m_transceiver.shutdown();
 }
 
 void PurpleTdClient::disableTdlibLogging()
@@ -535,6 +536,14 @@ void PurpleTdClient::disableTdlibLogging()
 void PurpleTdClient::setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback)
 {
     td::Log::set_fatal_error_callback(callback);
+}
+
+void PurpleTdClient::setStickerConversionCallback(bool enabled)
+{
+    StickerConversionThread::setCallback(
+        enabled
+            ? &PurpleTdClient::onAnimatedStickerConverted
+            : nullptr);
 }
 
 void PurpleTdClient::processUpdate(td::td_api::Object &update)
@@ -1355,7 +1364,6 @@ void PurpleTdClient::onChatListReady()
 
 void PurpleTdClient::onAnimatedStickerConverted(AccountThread *arg)
 {
-    std::unique_ptr<AccountThread> baseThread(arg);
     StickerConversionThread *thread = dynamic_cast<StickerConversionThread *>(arg);
     if (!thread)
         return;
@@ -2274,15 +2282,17 @@ static void showFailedContactMessage(void *handle, const std::string &errorMessa
 
 static int failedContactIdle(gpointer userdata)
 {
-    char *message = static_cast<char *>(userdata);
+    const char *message = static_cast<const char *>(userdata);
     showFailedContactMessage(NULL, message);
-    free(message);
     return FALSE; // This idle callback will not be called again
 }
 
 static void notifyFailedContactDeferred(const std::string &message)
 {
-    g_idle_add(failedContactIdle, strdup(message.c_str()));
+    moduleActivityAddIdle(
+        failedContactIdle,
+        g_strdup(message.c_str()),
+        g_free);
 }
 
 void PurpleTdClient::addContact(const std::string &purpleName, const std::string &alias,

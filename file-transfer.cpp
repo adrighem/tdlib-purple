@@ -5,6 +5,7 @@
 #include "receiving.h"
 #include "sticker.h"
 #include "purple-info.h"
+#include "module-activity.h"
 #include <unistd.h>
 
 enum {
@@ -1073,6 +1074,20 @@ struct DownloadWrapup {
     std::string tdlibPath;
 };
 
+static void destroyDownloadWrapup(gpointer data)
+{
+    DownloadWrapup *wrapupData =
+        static_cast<DownloadWrapup *>(data);
+    if (!wrapupData)
+        return;
+
+    if (wrapupData->download)
+        purple_xfer_unref(wrapupData->download);
+    if (wrapupData->tdlibFile)
+        fclose(wrapupData->tdlibFile);
+    delete wrapupData;
+}
+
 static bool canContinueStandardDownload(
     PurpleXfer *download)
 {
@@ -1140,9 +1155,6 @@ static gboolean wrapupDownload(void *data)
         last = true;
 
     if (last) {
-        purple_xfer_unref(download);
-        fclose(wrapupData->tdlibFile);
-        delete wrapupData;
         return G_SOURCE_REMOVE;
     } else
         return G_SOURCE_CONTINUE;
@@ -1188,8 +1200,12 @@ static void standardDownloadResponse(TdAccountData *account, uint64_t requestId,
             purple_xfer_ref(download);
             if (AccountThread::isSingleThread()) {
                 while (wrapupDownload(idleData) == G_SOURCE_CONTINUE) ;
+                destroyDownloadWrapup(idleData);
             } else
-                g_idle_add(wrapupDownload, idleData);
+                moduleActivityAddIdle(
+                    wrapupDownload,
+                    idleData,
+                    destroyDownloadWrapup);
         } else {
             if (!path.empty()) {
                 // Unlikely error message not worth translating

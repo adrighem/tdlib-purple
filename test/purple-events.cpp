@@ -530,6 +530,21 @@ void PurpleEventReceiver::addCommand(const char* command, PurpleCmdFunc handler,
     commands[command] = std::make_pair(handler, data);
 }
 
+void PurpleEventReceiver::removeCommand(const char *command)
+{
+    commands.erase(command);
+}
+
+bool PurpleEventReceiver::hasCommand(const char *command) const
+{
+    return commands.find(command) != commands.end();
+}
+
+std::size_t PurpleEventReceiver::commandCount() const
+{
+    return commands.size();
+}
+
 void PurpleEventReceiver::runCommand(const char* command, PurpleConversation *conv,
                                      std::vector<std::string> arguments)
 {

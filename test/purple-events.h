@@ -40,6 +40,9 @@ public:
     void requestedAction(const char *button);
     PurpleXfer *getLastXfer() { return lastXfer; }
     void addCommand(const char *command, PurpleCmdFunc handler, void *data);
+    void removeCommand(const char *command);
+    bool hasCommand(const char *command) const;
+    std::size_t commandCount() const;
     void runCommand(const char *command, PurpleConversation *conv, std::vector<std::string> arguments);
 
     ~PurpleEventReceiver() {

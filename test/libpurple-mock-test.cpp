@@ -3,6 +3,36 @@
 
 #include <gtest/gtest.h>
 
+TEST(LibpurpleConversationMockTest, SafelyReusesCurrentTitle)
+{
+    g_purpleEvents.discardEvents();
+
+    PurpleAccount *account =
+        purple_account_new("test", "prpl-telegram");
+    PurpleConnection connection = {};
+    connection.account = account;
+    account->gc = &connection;
+    PurpleConversation *conversation =
+        purple_conversation_new(
+            PURPLE_CONV_TYPE_CHAT, account, "chat");
+    g_purpleEvents.discardEvents();
+
+    purple_conversation_set_title(conversation, "Topic");
+    g_purpleEvents.discardEvents();
+    const char *currentTitle =
+        purple_conversation_get_title(conversation);
+    purple_conversation_set_title(conversation, currentTitle);
+
+    EXPECT_STREQ(
+        "Topic",
+        purple_conversation_get_title(conversation));
+    g_purpleEvents.verifyEvents(
+        ConvSetTitleEvent("chat", "Topic"));
+
+    purple_account_destroy(account);
+    g_purpleEvents.verifyNoEvents();
+}
+
 TEST(LibpurpleRoomlistMockTest, PreservesListRoomAndFieldState)
 {
     // CommTest fixtures discard account-cleanup events in their constructors.

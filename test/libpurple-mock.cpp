@@ -30,6 +30,26 @@ struct SignalConnection {
 static std::vector<SignalConnection> g_signalConnections;
 static gulong g_nextSignalId = 1;
 static char g_conversationsHandle;
+static std::map<PurpleCmdId, std::string> g_registeredCommands;
+static PurpleCmdId g_nextCommandId = 1;
+static unsigned g_commandRegistrationFailureCountdown = 0;
+
+std::size_t registeredPurpleCommandCount()
+{
+    return g_registeredCommands.size();
+}
+
+bool purpleCommandRegistered(const std::string &command)
+{
+    return g_purpleEvents.hasCommand(command.c_str());
+}
+
+void failPurpleCommandRegistrationAfter(
+    unsigned callsUntilFailure)
+{
+    g_commandRegistrationFailureCountdown =
+        callsUntilFailure;
+}
 
 extern "C" {
 
@@ -606,10 +626,21 @@ const char *purple_conversation_get_title(const PurpleConversation *conv)
     return conv->title;
 }
 
+static void replace_conversation_title(
+    PurpleConversation *conv, const char *title)
+{
+    char *replacement = title ? strdup(title) : nullptr;
+    free(conv->title);
+    conv->title = replacement;
+}
+
 void purple_conversation_set_title(PurpleConversation *conv, const char *title)
 {
-    conv->title = strdup(title);
-    EVENT(ConvSetTitleEvent, conv->name, title);
+    replace_conversation_title(conv, title);
+    EVENT(
+        ConvSetTitleEvent,
+        conv->name,
+        conv->title ? conv->title : "");
 }
 
 void purple_conversation_write(PurpleConversation *conv, const char *who,
@@ -1381,7 +1412,7 @@ PurpleConversation *serv_got_joined_chat(PurpleConnection *gc,
 
     PurpleChat *chat = purple_blist_find_chat(gc->account, name);
     if (chat && chat->alias)
-        conv->title = strdup(chat->alias);
+        replace_conversation_title(conv, chat->alias);
 
     EVENT(ServGotJoinedChatEvent, gc, id, name, conv->title ? conv->title : name);
     return conv;
@@ -1856,8 +1887,25 @@ char *purple_str_size_to_units(size_t size)
 PurpleCmdId purple_cmd_register(const gchar *cmd, const gchar *args, PurpleCmdPriority p, PurpleCmdFlag f,
                              const gchar *prpl_id, PurpleCmdFunc func, const gchar *helpstr, void *data)
 {
+    if (g_commandRegistrationFailureCountdown &&
+        --g_commandRegistrationFailureCountdown == 0) {
+        return 0;
+    }
+
+    const PurpleCmdId id = g_nextCommandId++;
+    g_registeredCommands[id] = cmd;
     g_purpleEvents.addCommand(cmd, func, data);
-    return 0;
+    return id;
+}
+
+void purple_cmd_unregister(PurpleCmdId id)
+{
+    const auto command = g_registeredCommands.find(id);
+    if (command == g_registeredCommands.end())
+        return;
+
+    g_purpleEvents.removeCommand(command->second.c_str());
+    g_registeredCommands.erase(command);
 }
 
 PurpleMediaManager *purple_media_manager_get(void)

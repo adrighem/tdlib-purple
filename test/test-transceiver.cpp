@@ -74,8 +74,6 @@ void compare(const setTdlibParameters &actual, const setTdlibParameters &expecte
     COMPARE_REDACTED(api_id_);
     COMPARE_REDACTED(api_hash_);
     COMPARE(use_secret_chats_);
-    COMPARE(api_id_);
-    COMPARE(api_hash_);
 }
 
 void compare(const setAuthenticationPhoneNumber &actual, const setAuthenticationPhoneNumber &expected)
@@ -806,6 +804,20 @@ object_ptr<chatInviteLink> makeChatInviteLink(const std::string &link)
     return result;
 }
 
+TestTransceiver::TestTransceiver()
+    : m_transportContext(g_main_context_new())
+{
+}
+
+TestTransceiver::~TestTransceiver()
+{
+    for (GSource *source: m_timeoutSources) {
+        g_source_destroy(source);
+        g_source_unref(source);
+    }
+    g_main_context_unref(m_transportContext);
+}
+
 void TestTransceiver::send(td::Client::Request &&request)
 {
     m_lastReceivedRequestId = request.id;
@@ -903,26 +915,103 @@ void TestTransceiver::reply(uint64_t requestId, td::td_api::object_ptr<td::td_ap
 
 void TestTransceiver::runTimeouts()
 {
-    while (!m_timers.empty()) {
-        const TimerInfo timer = m_timers.front();
-        m_timers.erase(m_timers.begin());
-        while (timer.function(timer.data)) {
+    while (true) {
+        pruneTimeoutSources();
+
+        GSource *source = nullptr;
+        for (GSource *candidate: m_timeoutSources) {
+            if (candidate != g_main_current_source() &&
+                !g_source_is_destroyed(candidate) &&
+                g_source_get_context(candidate) ==
+                    m_transportContext) {
+                source = candidate;
+                break;
+            }
         }
+
+        if (!source)
+            return;
+
+        ManualTimeoutSource *manualSource =
+            reinterpret_cast<ManualTimeoutSource *>(source);
+        manualSource->armed = TRUE;
+        g_main_context_wakeup(m_transportContext);
+
+        while (!g_source_is_destroyed(source) &&
+               g_main_context_iteration(
+                   m_transportContext, FALSE)) {
+        }
+
+        // A selected attached source must dispatch once armed. Avoid
+        // spinning if runTimeouts() is called recursively from a source
+        // which GLib will not dispatch again until the outer call returns.
+        if (!g_source_is_destroyed(source))
+            return;
     }
 }
 
-guint TestTransceiver::addTimeout(guint interval, GSourceFunc function, gpointer data)
+GMainContext *TestTransceiver::transportContext()
 {
-    m_timers.push_back({m_nextTimerId++, function, data});
-    return m_timers.back().id;
+    return m_transportContext;
 }
 
-void TestTransceiver::cancelTimer(guint id)
+GSource *TestTransceiver::createTimeoutSource(unsigned)
 {
-    for (auto it = m_timers.begin(); it != m_timers.end(); ++it) {
-        if (it->id == id) {
-            m_timers.erase(it);
-            return;
+    static GSourceFuncs sourceFunctions = {
+        prepareTimeoutSource,
+        checkTimeoutSource,
+        dispatchTimeoutSource,
+        nullptr,
+        nullptr,
+        nullptr
+    };
+    GSource *source = g_source_new(
+        &sourceFunctions, sizeof(ManualTimeoutSource));
+    reinterpret_cast<ManualTimeoutSource *>(source)->armed = FALSE;
+
+    try {
+        m_timeoutSources.push_back(source);
+    } catch (...) {
+        g_source_unref(source);
+        throw;
+    }
+    // TdTransport receives the original reference. The fake retains one
+    // observer reference so cancellation can never leave a dangling pointer
+    // in the deterministic timeout queue.
+    g_source_ref(source);
+    return source;
+}
+
+gboolean TestTransceiver::prepareTimeoutSource(
+    GSource *source, gint *timeout)
+{
+    if (timeout)
+        *timeout = -1;
+    return reinterpret_cast<ManualTimeoutSource *>(source)->armed;
+}
+
+gboolean TestTransceiver::checkTimeoutSource(GSource *source)
+{
+    return reinterpret_cast<ManualTimeoutSource *>(source)->armed;
+}
+
+gboolean TestTransceiver::dispatchTimeoutSource(
+    GSource *,
+    GSourceFunc callback,
+    gpointer userData)
+{
+    return callback ? callback(userData) : FALSE;
+}
+
+void TestTransceiver::pruneTimeoutSources()
+{
+    auto source = m_timeoutSources.begin();
+    while (source != m_timeoutSources.end()) {
+        if (g_source_is_destroyed(*source)) {
+            g_source_unref(*source);
+            source = m_timeoutSources.erase(source);
+        } else {
+            ++source;
         }
     }
 }
@@ -1078,6 +1167,57 @@ TEST(TestTransceiverHarness, MockViewMessagesPreservesSource)
     EXPECT_EQ(messageSourceForumTopicHistory::ID, request->source_->get_id());
 }
 
+TEST(TestTransceiverHarness, ManualTimeoutsAreIsolatedAndOrdered)
+{
+    struct CallbackData {
+        std::vector<int> *order;
+        int value;
+    };
+    const auto recordTimeout = [](gpointer userData) -> gboolean {
+        CallbackData *data = static_cast<CallbackData *>(userData);
+        data->order->push_back(data->value);
+        return FALSE;
+    };
+    const auto recordUnrelatedSource = [](gpointer userData) -> gboolean {
+        *static_cast<bool *>(userData) = true;
+        return FALSE;
+    };
+
+    TestTransceiver backend;
+    std::vector<int> order;
+    CallbackData firstData{&order, 1};
+    CallbackData secondData{&order, 2};
+
+    GSource *first = backend.createTimeoutSource(30);
+    g_source_set_callback(first, recordTimeout, &firstData, nullptr);
+    g_source_attach(first, backend.transportContext());
+    g_source_unref(first);
+
+    GSource *second = backend.createTimeoutSource(1);
+    g_source_set_callback(second, recordTimeout, &secondData, nullptr);
+    g_source_attach(second, backend.transportContext());
+    g_source_unref(second);
+
+    bool unrelatedSourceCalled = false;
+    GSource *unrelatedSource = g_idle_source_new();
+    g_source_set_callback(
+        unrelatedSource,
+        recordUnrelatedSource,
+        &unrelatedSourceCalled,
+        nullptr);
+    g_source_attach(unrelatedSource, g_main_context_default());
+
+    EXPECT_FALSE(g_main_context_iteration(
+        backend.transportContext(), FALSE));
+    backend.runTimeouts();
+
+    EXPECT_EQ((std::vector<int>{1, 2}), order);
+    EXPECT_FALSE(unrelatedSourceCalled);
+
+    g_source_destroy(unrelatedSource);
+    g_source_unref(unrelatedSource);
+}
+
 TEST(TestTransceiverHarness, IgnoresResponseAfterOwnerIsDestroyed)
 {
     TestTransceiver backend;
@@ -1086,6 +1226,41 @@ TEST(TestTransceiverHarness, IgnoresResponseAfterOwnerIsDestroyed)
     }
 
     backend.update(make_object<updateConnectionState>(make_object<connectionStateReady>()));
+}
+
+TEST(TestTransceiverHarness, ReplyDrainsOnlyTransportDeliveries)
+{
+    TestTransceiver backend;
+    TdTransceiver transceiver(nullptr, nullptr, nullptr, &backend);
+    bool responseCalled = false;
+    bool unrelatedSourceCalled = false;
+    const auto recordUnrelatedSource = [](gpointer userData) -> gboolean {
+        *static_cast<bool *>(userData) = true;
+        return FALSE;
+    };
+
+    transceiver.sendQuery(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object>) {
+            responseCalled = true;
+        });
+    backend.verifyRequest(getMe());
+
+    GSource *unrelatedSource = g_idle_source_new();
+    g_source_set_callback(
+        unrelatedSource,
+        recordUnrelatedSource,
+        &unrelatedSourceCalled,
+        nullptr);
+    g_source_attach(unrelatedSource, g_main_context_default());
+
+    backend.reply(make_object<ok>());
+
+    EXPECT_TRUE(responseCalled);
+    EXPECT_FALSE(unrelatedSourceCalled);
+
+    g_source_destroy(unrelatedSource);
+    g_source_unref(unrelatedSource);
 }
 
 TEST(TestTransceiverHarness, TimeoutCallbackMayDestroyTransceiver)

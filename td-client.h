@@ -27,6 +27,7 @@ public:
 
     static void disableTdlibLogging();
     static void setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback);
+    static void setStickerConversionCallback(bool enabled);
     static std::string getBaseDatabasePath();
     int  sendMessage(const char *buddyName, const char *message);
     void sendTyping(const char *buddyName, bool isTyping);

@@ -5,6 +5,7 @@
 #include "format.h"
 #include "buildopt.h"
 #include "telegram-application-credentials.h"
+#include "module-activity.h"
 #include <purple.h>
 
 #include <cstdint>
@@ -94,6 +95,17 @@ struct RequestData {
 
     RequestData(PurpleAccount *account) : account(account) {}
 };
+
+struct DeferredTwoFactorRequest {
+    std::string accountName;
+    std::string email;
+    PurpleConnection *connection = nullptr;
+};
+
+static void destroyDeferredTwoFactorRequest(gpointer data)
+{
+    delete static_cast<DeferredTwoFactorRequest *>(data);
+}
 
 static void cancelRequest(RequestData *data, int action)
 {
@@ -286,7 +298,8 @@ struct PurpleConversationInfo {
 
 static gboolean sendConversationReadReceipts(void *arg)
 {
-    std::unique_ptr<PurpleConversationInfo> info(static_cast<PurpleConversationInfo *>(arg));
+    PurpleConversationInfo *info =
+        static_cast<PurpleConversationInfo *>(arg);
     PurpleAccount *account = purple_accounts_find(info->accountName.c_str(), config::pluginId);
     PurpleConversation *conv = NULL;
     PurpleTdClient *tdClient = NULL;
@@ -299,6 +312,11 @@ static gboolean sendConversationReadReceipts(void *arg)
         tdClient->sendReadReceipts(conv);
 
     return G_SOURCE_REMOVE;
+}
+
+static void destroyPurpleConversationInfo(gpointer data)
+{
+    delete static_cast<PurpleConversationInfo *>(data);
 }
 
 static void
@@ -317,7 +335,11 @@ conversation_updated_cb(PurpleConversation *conv, PurpleConvUpdateType type)
         arg->accountName = purple_account_get_username(account);
         arg->convName = purple_conversation_get_name(conv);
         arg->type = purple_conversation_get_type(conv);
-        g_timeout_add(500, sendConversationReadReceipts, arg);
+        moduleActivityAddTimeout(
+            500,
+            sendConversationReadReceipts,
+            arg,
+            destroyPurpleConversationInfo);
     }
 }
 
@@ -386,8 +408,15 @@ static void tgprpl_login (PurpleAccount *acct)
         return;
     }
 
-    PurpleTdClient *tdClient = new PurpleTdClient(
-        acct, g_testBackend, applicationCredentials);
+    PurpleTdClient *tdClient = nullptr;
+    try {
+        tdClient = new PurpleTdClient(
+            acct, g_testBackend, applicationCredentials);
+    } catch (...) {
+        purple_connection_error(
+            gc, _("Telegram session could not be started"));
+        return;
+    }
 
     purple_connection_set_protocol_data (gc, tdClient);
     gc->flags = static_cast<PurpleConnectionFlags>(gc->flags | PURPLE_CONNECTION_HTML);
@@ -1018,20 +1047,107 @@ PurplePluginProtocolInfo prpl_info = {
 #endif
 };
 
-static gboolean tgprpl_load (PurplePlugin *plugin)
+static PurpleCmdId g_kickCommandId = 0;
+static PurpleCmdId g_hangupCommandId = 0;
+
+static void tdlibFatalErrorCallback(const char *);
+
+static void disableRuntimeCallbacks()
 {
-    purple_cmd_register("kick", "s", PURPLE_CMD_P_PLUGIN,
-                        (PurpleCmdFlag)(PURPLE_CMD_FLAG_CHAT | PURPLE_CMD_FLAG_PRPL_ONLY),
-                        config::pluginId, tgprpl_cmd_kick,
-                        // TRANSLATOR: Command description, the initial "kick <user>" must remain verbatim!
-                        _("kick <user>: Kick a user from the room using name or internal id"), NULL);
+    PurpleTdClient::setTdlibFatalErrorCallback(nullptr);
+    PurpleTdClient::setStickerConversionCallback(false);
+}
 
-    purple_cmd_register("hangup", "", PURPLE_CMD_P_PLUGIN,
-                        (PurpleCmdFlag)(PURPLE_CMD_FLAG_IM | PURPLE_CMD_FLAG_PRPL_ONLY),
-                        config::pluginId, hangupCommand,
-                        // TRANSLATOR: Command description, the initial "hangup" must remain verbatim!
-                        _("hangup: Terminate any active call (with any user)"), NULL);
+static void enableRuntimeCallbacks()
+{
+    PurpleTdClient::setTdlibFatalErrorCallback(
+        tdlibFatalErrorCallback);
+    PurpleTdClient::setStickerConversionCallback(true);
+}
 
+static gboolean tgprpl_load(PurplePlugin *)
+{
+    if (g_kickCommandId && g_hangupCommandId) {
+        enableRuntimeCallbacks();
+        return TRUE;
+    }
+
+    // Recover defensively if a previous load was interrupted between command
+    // registrations.
+    disableRuntimeCallbacks();
+    if (g_kickCommandId) {
+        purple_cmd_unregister(g_kickCommandId);
+        g_kickCommandId = 0;
+    }
+    if (g_hangupCommandId) {
+        purple_cmd_unregister(g_hangupCommandId);
+        g_hangupCommandId = 0;
+    }
+
+    const PurpleCmdId kickCommandId =
+        purple_cmd_register(
+            "kick", "s", PURPLE_CMD_P_PLUGIN,
+            (PurpleCmdFlag)(
+                PURPLE_CMD_FLAG_CHAT |
+                PURPLE_CMD_FLAG_PRPL_ONLY),
+            config::pluginId, tgprpl_cmd_kick,
+            // TRANSLATOR: Command description, the initial "kick <user>" must remain verbatim!
+            _("kick <user>: Kick a user from the room using name or internal id"),
+            NULL);
+    if (!kickCommandId)
+        return FALSE;
+
+    const PurpleCmdId hangupCommandId =
+        purple_cmd_register(
+            "hangup", "", PURPLE_CMD_P_PLUGIN,
+            (PurpleCmdFlag)(
+                PURPLE_CMD_FLAG_IM |
+                PURPLE_CMD_FLAG_PRPL_ONLY),
+            config::pluginId, hangupCommand,
+            // TRANSLATOR: Command description, the initial "hangup" must remain verbatim!
+            _("hangup: Terminate any active call (with any user)"),
+            NULL);
+    if (!hangupCommandId) {
+        purple_cmd_unregister(kickCommandId);
+        return FALSE;
+    }
+
+    g_kickCommandId = kickCommandId;
+    g_hangupCommandId = hangupCommandId;
+    enableRuntimeCallbacks();
+    return TRUE;
+}
+
+static gboolean tgprpl_unload(PurplePlugin *)
+{
+    // A timed-out TDLib close remains supervised by plugin code. Refuse
+    // dlclose until every worker and deferred callback has been safely reaped.
+    if (TdPollingBackend::hasActiveWorkers() ||
+        moduleActivityPending()) {
+        return FALSE;
+    }
+
+    disableRuntimeCallbacks();
+    // Closing the externally callable callback gates can race work which
+    // entered just before they were disabled. Real TDLib callers remain
+    // covered by their polling worker record until client destruction and
+    // reaping complete; direct execute() calls run on this owner context.
+    // Recheck after closing the gates so no admitted plugin code can outlive
+    // a successful unload.
+    if (TdPollingBackend::hasActiveWorkers() ||
+        moduleActivityPending()) {
+        enableRuntimeCallbacks();
+        return FALSE;
+    }
+
+    if (g_kickCommandId) {
+        purple_cmd_unregister(g_kickCommandId);
+        g_kickCommandId = 0;
+    }
+    if (g_hangupCommandId) {
+        purple_cmd_unregister(g_hangupCommandId);
+        g_hangupCommandId = 0;
+    }
     return TRUE;
 }
 
@@ -1067,18 +1183,17 @@ static gboolean tdlibFatalErrorHandler(void *)
 
 static void tdlibFatalErrorCallback(const char *)
 {
+    ModuleActivityGuard fatalCallbackActivity;
     /*
      * A fatal TDLib message may include request or account data. Do not copy,
      * log, or show it; the UI receives a generic recovery-oriented notice.
      */
-    g_idle_add(tdlibFatalErrorHandler, nullptr);
+    moduleActivityAddIdle(tdlibFatalErrorHandler, nullptr);
     // The error must have come either from the poll thread or from one of the threads created by tdlib.
-    // So, hang the thread to avoid crash. All other accounts will be unaffected until an attempt to
-    // disconnect this account is made, because then TdTransceiver destructor will wait forever for
-    // poll thread to terminate, and everything will hang.
-    // However, it's still possible to disable auto-login on the problematic account using
-    // purple_account_set_enabled (Account -> Disable in pidgin, etc.), because it will first disable
-    // auto-login, and only then disconnect the account and hang.
+    // So, hang this TDLib-owned thread to avoid a process crash. Disconnect
+    // remains frontend-bounded; the polling backend reports a timeout and
+    // keeps supervising the blocked cleanup. Plugin unload and storage reuse
+    // stay disabled while that work remains live.
     while (1) sleep(1000);
 }
 
@@ -1088,7 +1203,6 @@ static void tgprpl_init (PurplePlugin *plugin)
     (void)sendFileToChat;
 #endif
     PurpleTdClient::disableTdlibLogging();
-    PurpleTdClient::setTdlibFatalErrorCallback(tdlibFatalErrorCallback);
 
 #ifndef NoLottie
     rlottie::configureModelCacheSize(0);
@@ -1215,10 +1329,21 @@ static void requestTwoFactorAuth(PurpleConnection *gc, const char *primaryText, 
 
 static int reRequestTwoFactorAuth(gpointer user_data)
 {
-    std::unique_ptr<RequestData> request(static_cast<RequestData *>(user_data));
-    requestTwoFactorAuth(purple_account_get_connection(request->account),
-                        // TRANSLATOR: 2FA settings, primary content (after mistype)
-                        _("Please enter same password twice"), request->stringData.c_str());
+    DeferredTwoFactorRequest *request =
+        static_cast<DeferredTwoFactorRequest *>(user_data);
+    PurpleAccount *account =
+        purple_accounts_find(
+            request->accountName.c_str(), config::pluginId);
+    PurpleConnection *connection =
+        account ? purple_account_get_connection(account) : nullptr;
+    if (connection &&
+        connection == request->connection) {
+        requestTwoFactorAuth(
+            connection,
+            // TRANSLATOR: 2FA settings, primary content (after mistype)
+            _("Please enter same password twice"),
+            request->email.c_str());
+    }
     return FALSE; // this idle handler will not be called again
 }
 
@@ -1236,10 +1361,27 @@ static void setTwoFactorAuth(RequestData *data, PurpleRequestFields* fields)
 
         if ((password1 != password2) && (!password1 || !password2 || strcmp(password1, password2))) {
             // Calling purple_request_fields synchronously causes glitch in pidgin
-            RequestData *newRequest = new RequestData(request->account);
-            if (email)
-                newRequest->stringData = email;
-            g_idle_add(reRequestTwoFactorAuth, newRequest);
+            const char *accountName =
+                purple_account_get_username(request->account);
+            PurpleConnection *connection =
+                purple_account_get_connection(request->account);
+            if (!accountName || !connection)
+                return;
+            std::unique_ptr<DeferredTwoFactorRequest> newRequest;
+            try {
+                newRequest.reset(
+                    new DeferredTwoFactorRequest());
+                newRequest->accountName = accountName;
+                newRequest->connection = connection;
+                if (email)
+                    newRequest->email = email;
+            } catch (...) {
+                return;
+            }
+            moduleActivityAddIdle(
+                reRequestTwoFactorAuth,
+                newRequest.release(),
+                destroyDeferredTwoFactorRequest);
         } else if (tdClient)
             tdClient->setTwoFactorAuth(oldPass, password1, hint, email);
     }
@@ -1282,7 +1424,7 @@ static PurplePluginInfo plugin_info = {
     .author            = config::pluginAuthor,
     .homepage          = config::projectUrl,
     .load              = tgprpl_load,
-    .unload            = NULL,
+    .unload            = tgprpl_unload,
     .destroy           = NULL,
     .ui_info           = NULL,
     .extra_info        = &prpl_info,

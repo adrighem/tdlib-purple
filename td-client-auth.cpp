@@ -137,15 +137,13 @@ void PurpleTdClient::removeOldProxies()
 
 std::string PurpleTdClient::getBaseDatabasePath()
 {
-    return std::string(purple_user_dir()) + G_DIR_SEPARATOR_S + config::configSubdir;
+    return getPurple2BaseDatabasePath();
 }
 
 void PurpleTdClient::sendTdlibParameters()
 {
     auto parameters = td::td_api::make_object<td::td_api::setTdlibParameters>();
-    const char *username = purple_account_get_username(m_account);
-
-    parameters->database_directory_ = getBaseDatabasePath() + G_DIR_SEPARATOR_S + username;
+    parameters->database_directory_ = m_transceiver.databasePath();
     parameters->use_chat_info_database_ = true;
     parameters->use_message_database_ = true;
     parameters->use_secret_chats_ = (purple_account_get_bool(m_account, AccountOptions::EnableSecretChats,
