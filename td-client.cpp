@@ -720,22 +720,10 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
     }
 
     case td::td_api::updateMessageIsPinned::ID: {
-        const auto &messageUpdate = static_cast<const td::td_api::updateMessageIsPinned &>(update);
-        const char *format = messageUpdate.is_pinned_ ?
-            // TRANSLATOR: In-chat status update, argument is a Telegram message id.
-            _("Message {} was pinned") :
-            // TRANSLATOR: In-chat status update, argument is a Telegram message id.
-            _("Message {} was unpinned");
-        if (!showMessageLinkedUpdate(
-                chatIdFromTdInt(messageUpdate.chat_id_),
-                messageIdFromTdInt(
-                    messageUpdate.message_id_),
-                formatMessage(
-                    format,
-                    std::to_string(
-                        messageUpdate.message_id_)))) {
-            return;
-        }
+        // This update only synchronizes the target message's pinned-state
+        // metadata. The user-visible action arrives separately as a
+        // messagePinMessage service message, which carries sender, time, and
+        // exact topic information.
         break;
     }
 
@@ -2996,6 +2984,47 @@ void PurpleTdClient::projectForumTopic(ChatTarget target)
             purple_conversation_set_title(
                 conversation, displayTitle.c_str());
     }
+}
+
+void PurpleTdClient::restoreForumTopicConversationTitle(
+    PurpleConversation *conversation)
+{
+    if (!conversation ||
+        purple_conversation_get_account(conversation) != m_account ||
+        purple_conversation_get_type(conversation) !=
+            PURPLE_CONV_TYPE_CHAT) {
+        return;
+    }
+
+    const char *conversationName =
+        purple_conversation_get_name(conversation);
+    const ChatTarget target =
+        parsePurpleChatName(conversationName);
+    if (!isChildForumTopic(target))
+        return;
+
+    PurpleConvChat *chat =
+        purple_conversation_get_chat_data(conversation);
+    const TdAccountData::ForumTopicState *topic =
+        m_data.findForumTopic(target);
+    const td::td_api::chat *parent =
+        m_data.getChat(target.chatId());
+    if (!chat || purple_conv_chat_has_left(chat) ||
+        !topic || !topic->active || topic->deleted ||
+        topic->purpleId == 0 ||
+        purple_conv_chat_get_id(chat) != topic->purpleId ||
+        m_data.getChatTargetByPurpleId(topic->purpleId) != target ||
+        !parent || isKnownIneligibleForumParent(m_data, *parent)) {
+        return;
+    }
+
+    const std::string displayTitle =
+        getForumTopicDisplayTitle(*parent, *topic);
+    const char *currentTitle =
+        purple_conversation_get_title(conversation);
+    if (!currentTitle || displayTitle != currentTitle)
+        purple_conversation_set_title(
+            conversation, displayTitle.c_str());
 }
 
 void PurpleTdClient::suspendForumTopics(ChatId chatId)

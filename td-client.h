@@ -46,6 +46,7 @@ public:
     BasicGroupMembership getBasicGroupMembership(const char *purpleChatName);
     void leaveGroup(const std::string &purpleChatName, bool deleteSupergroup);
     void closeConversation(const char *conversationName);
+    void restoreForumTopicConversationTitle(PurpleConversation *conversation);
     void ensureForumTopicMetadata(ChatTarget target);
     bool satisfyForumTopicJoinIfOpen(ChatTarget target);
     int  sendGroupMessage(int purpleChatId, const char *message);

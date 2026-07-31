@@ -264,6 +264,144 @@ TEST_F(ForumTopicReceivingTest, ChildMessageOpensOnlyItsExactRoom)
 
 TEST_F(
     ForumTopicReceivingTest,
+    PidginAutosetCannotExposeUnsavedTopicRoomIdentity)
+{
+    constexpr int32_t TopicId = 42;
+    const std::string purpleName = topicPurpleName(TopicId);
+    const std::string displayTitle =
+        topicDisplayTitle(TopicId, "Support");
+
+    loginWithForumSupergroup();
+    openChildTopic(TopicId, "Support");
+
+    PurpleConversation *conversation = findRoom(purpleName);
+    ASSERT_NE(nullptr, conversation);
+    purple_conversation_set_title(
+        conversation, purpleName.c_str());
+
+    prpl.verifyEvents(
+        ConvSetTitleEvent(purpleName, purpleName),
+        ConvSetTitleEvent(purpleName, displayTitle));
+    expectConversation(purpleName, 2, displayTitle);
+    expectNoGeneralConversation();
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    PidginAutosetDoesNotReviveLeftTopicRoom)
+{
+    constexpr int32_t TopicId = 42;
+    const std::string purpleName = topicPurpleName(TopicId);
+
+    loginWithForumSupergroup();
+    openChildTopic(TopicId, "Support");
+
+    PurpleConversation *conversation = findRoom(purpleName);
+    ASSERT_NE(nullptr, conversation);
+    PurpleConvChat *chat =
+        purple_conversation_get_chat_data(conversation);
+    ASSERT_NE(nullptr, chat);
+    purple_conv_chat_left(chat);
+
+    purple_conversation_set_title(
+        conversation, purpleName.c_str());
+
+    prpl.verifyEvents(ConvSetTitleEvent(
+        purpleName, purpleName));
+    EXPECT_STREQ(
+        purpleName.c_str(),
+        purple_conversation_get_title(conversation));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    PidginTitleRestoreIsAccountScoped)
+{
+    constexpr int32_t TopicId = 42;
+    const std::string purpleName = topicPurpleName(TopicId);
+
+    loginWithForumSupergroup();
+    openChildTopic(TopicId, "Support");
+
+    std::unique_ptr<PurpleAccount, decltype(&purple_account_destroy)>
+        otherAccount(
+            purple_account_new("+7654321", "prpl-telegram"),
+            &purple_account_destroy);
+    PurpleConversation *otherConversation =
+        purple_conversation_new(
+            PURPLE_CONV_TYPE_CHAT, otherAccount.get(),
+            purpleName.c_str());
+    ASSERT_NE(nullptr, otherConversation);
+    PurpleConvChat *otherChat =
+        purple_conversation_get_chat_data(otherConversation);
+    ASSERT_NE(nullptr, otherChat);
+    otherChat->id = 2;
+    purple_conversation_set_title(
+        otherConversation, "Other account title");
+    prpl.discardEvents();
+
+    purple_conversation_set_title(
+        otherConversation, purpleName.c_str());
+
+    prpl.verifyEvents(ConvSetTitleEvent(
+        purpleName, purpleName));
+    EXPECT_STREQ(
+        purpleName.c_str(),
+        purple_conversation_get_title(otherConversation));
+
+    PurpleTdClient *client = getTdClient(account);
+    ASSERT_NE(nullptr, client);
+    client->restoreForumTopicConversationTitle(
+        otherConversation);
+    prpl.verifyNoEvents();
+    EXPECT_STREQ(
+        purpleName.c_str(),
+        purple_conversation_get_title(otherConversation));
+    tgl.verifyNoRequests();
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    PidginTitleRestoreToleratesSynchronousDisconnect)
+{
+    constexpr int32_t TopicId = 42;
+    const std::string purpleName = topicPurpleName(TopicId);
+    const std::string displayTitle =
+        topicDisplayTitle(TopicId, "Support");
+
+    loginWithForumSupergroup();
+    openChildTopic(TopicId, "Support");
+
+    PurpleConversation *conversation = findRoom(purpleName);
+    ASSERT_NE(nullptr, conversation);
+    prpl.onNextEvent(
+        [this](PurpleEventType type) {
+            EXPECT_EQ(PurpleEventType::ConvSetTitle, type);
+            prpl.onNextEvent(
+                [this](PurpleEventType nestedType) {
+                    EXPECT_EQ(
+                        PurpleEventType::ConvSetTitle,
+                        nestedType);
+                    pluginInfo().close(connection);
+                });
+        });
+
+    purple_conversation_set_title(
+        conversation, purpleName.c_str());
+
+    EXPECT_EQ(
+        nullptr,
+        purple_connection_get_protocol_data(connection));
+    prpl.verifyEvents(
+        ConvSetTitleEvent(purpleName, purpleName),
+        ConvSetTitleEvent(purpleName, displayTitle));
+    EXPECT_STREQ(
+        displayTitle.c_str(),
+        purple_conversation_get_title(conversation));
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
     LiveChildBeforeSupergroupMetadataUsesProvisionalExactRoom)
 {
     constexpr int32_t TopicId = 42;
@@ -337,6 +475,44 @@ TEST_F(
     expectConversation(
         purpleName, 2,
         topicDisplayTitle(TopicId, topicName));
+    expectNoGeneralConversation();
+}
+
+TEST_F(
+    ForumTopicReceivingTest,
+    PinServiceMessageIsHumanReadableAndWrittenOnceInExactChild)
+{
+    constexpr int32_t TopicId = 42;
+    constexpr int64_t ServiceMessageId = 10000;
+    constexpr int64_t PinnedMessageId = 2097153;
+    constexpr int32_t Date = 12345;
+    const std::string purpleName = topicPurpleName(TopicId);
+
+    loginWithForumSupergroup();
+    cacheTopic(TopicId, "Support");
+
+    receiveForumTopicServiceMessage(
+        ServiceMessageId, Date,
+        make_object<messagePinMessage>(PinnedMessageId),
+        TopicId);
+
+    verifyForumTopicReadReceipt(ServiceMessageId);
+    tgl.verifyNoRequests();
+    prpl.verifyEvents(
+        ServGotJoinedChatEvent(
+            connection, 2, purpleName, purpleName),
+        ConvSetTitleEvent(
+            purpleName,
+            topicDisplayTitle(TopicId, "Support")),
+        ConversationWriteEvent(
+            purpleName, " ",
+            senderNotice("Pinned a message"),
+            PURPLE_MESSAGE_SYSTEM, Date));
+
+    tgl.update(make_object<updateMessageIsPinned>(
+        groupChatId, PinnedMessageId, true));
+    tgl.verifyNoRequests();
+    prpl.verifyNoEvents();
     expectNoGeneralConversation();
 }
 

@@ -302,12 +302,25 @@ static gboolean sendConversationReadReceipts(void *arg)
 }
 
 static void
-conversation_updated_cb(PurpleConversation *conv, PurpleConvUpdateType type)
+conversation_updated_cb(PurpleConversation *conv, PurpleConvUpdateType type,
+                        gpointer data)
 {
+    PurpleAccount *registeredAccount = static_cast<PurpleAccount *>(data);
+    if (!conv || !registeredAccount)
+        return;
+
     PurpleAccount *account = purple_conversation_get_account(conv);
-    if (!strcmp(purple_account_get_protocol_id(account), config::pluginId) &&
-        (type == PURPLE_CONV_UPDATE_UNSEEN))
-    {
+    if (account != registeredAccount)
+        return;
+
+    PurpleTdClient *tdClient = getTdClient(account);
+    if (type == PURPLE_CONV_UPDATE_TITLE) {
+        if (tdClient)
+            tdClient->restoreForumTopicConversationTitle(conv);
+        return;
+    }
+
+    if (type == PURPLE_CONV_UPDATE_UNSEEN) {
         // With pidgin, when this callback is triggered by conversation window coming into window
         // manager focus, purple_conversation_has_focus will still return false if called right now,
         // so postpone the rest by half a second to get a better value when
@@ -393,7 +406,7 @@ static void tgprpl_login (PurpleAccount *acct)
     gc->flags = static_cast<PurpleConnectionFlags>(gc->flags | PURPLE_CONNECTION_HTML);
 
     purple_signal_connect(purple_conversations_get_handle(), "conversation-updated",
-                          acct, PURPLE_CALLBACK(conversation_updated_cb), NULL);
+                          acct, PURPLE_CALLBACK(conversation_updated_cb), acct);
     purple_signal_connect(purple_conversations_get_handle(), "deleting-conversation",
                           acct, PURPLE_CALLBACK(deleting_conversation_cb), acct);
 }

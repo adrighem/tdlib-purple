@@ -100,6 +100,7 @@ PurpleAccount *purple_account_new(const char *username, const char *protocol_id)
     account->username = strdup(username);
     account->alias = nullptr;
     account->proxy_info = NULL;
+    account->gc = NULL;
 
     g_accounts.emplace_back();
     g_accounts.back().account = account;
@@ -136,10 +137,10 @@ void purple_account_destroy(PurpleAccount *account)
     if (g_accounts.empty()) {
         g_list_free(g_chatConversations);
         g_chatConversations = nullptr;
+        ASSERT_EQ(nullptr, root.child) << "Blist nodes remain";
     }
 
     delete account;
-    ASSERT_EQ(nullptr, root.child) << "Blist nodes remain";
 }
 
 const char *purple_account_get_protocol_id(const PurpleAccount *account)
@@ -608,8 +609,43 @@ const char *purple_conversation_get_title(const PurpleConversation *conv)
 
 void purple_conversation_set_title(PurpleConversation *conv, const char *title)
 {
+    PurpleAccount *account = conv->account;
+    free(conv->title);
     conv->title = strdup(title);
     EVENT(ConvSetTitleEvent, conv->name, title);
+
+    const auto conversationStillExists =
+        [account, conv]() {
+            const auto accountInfo = std::find_if(
+                g_accounts.begin(), g_accounts.end(),
+                [account](const AccountInfo &info) {
+                    return info.account == account;
+                });
+            return accountInfo != g_accounts.end() &&
+                   std::find(
+                       accountInfo->conversations.begin(),
+                       accountInfo->conversations.end(), conv) !=
+                       accountInfo->conversations.end();
+        };
+    if (!conversationStillExists())
+        return;
+
+    const std::vector<SignalConnection> connections =
+        g_signalConnections;
+    for (const SignalConnection &connection : connections) {
+        if (!conversationStillExists())
+            break;
+        if (connection.instance != purple_conversations_get_handle() ||
+            connection.signal != "conversation-updated") {
+            continue;
+        }
+        typedef void (*ConversationUpdatedCallback)(
+            PurpleConversation *, PurpleConvUpdateType, gpointer);
+        reinterpret_cast<ConversationUpdatedCallback>(
+            connection.callback)(
+                conv, PURPLE_CONV_UPDATE_TITLE,
+                connection.data);
+    }
 }
 
 void purple_conversation_write(PurpleConversation *conv, const char *who,
