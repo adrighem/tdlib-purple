@@ -7,7 +7,7 @@ cd "$(dirname $0)"
 POTFILES_DIFF="$(
     diff -u0 \
         <(grep -Pv '^#' POTFILES.in) \
-        <(cd .. && { ls -1 *.cpp; ls -1 purple3/*.c; } | sort) \
+        <(cd .. && { ls -1 *.cpp; ls -1 purple3/*.c purple3/*.cpp; } | sort) \
         || true
 )"
 if [ -n "${POTFILES_DIFF}" ]

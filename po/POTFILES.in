@@ -10,9 +10,11 @@ identifiers.cpp
 module-activity.cpp
 purple-info.cpp
 purple3/telegram-purple3-application-credentials.c
+purple3/telegram-purple3-auth-presenter.cpp
 purple3/telegram-purple3-connection.c
 purple3/telegram-purple3-plugin.c
 purple3/telegram-purple3-protocol.c
+purple3/telegram-purple3-session.cpp
 receiving.cpp
 secret-chat.cpp
 sticker.cpp

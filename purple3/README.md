@@ -1,11 +1,11 @@
-# Purple 3 Bootstrap
+# Purple 3 Development
 
 This directory contains the experimental libpurple 3 adapter. It is separate
 from the production Purple 2 plugin so that both frontends can evolve around
 shared Telegram and TDLib code without version conditionals throughout the
 codebase.
 
-The current milestone only:
+The current milestone:
 
 - exposes the existing `telegram-tdlib` protocol identity
 - builds against the `purple-3` pkg-config interface
@@ -13,16 +13,25 @@ The current milestone only:
 - registers and removes a native `PurpleProtocol`
 - uses the Pidgin account name only as a local display label
 - exposes only an advanced secret-chat option
-- creates a protocol-specific asynchronous `PurpleConnection`
+- creates a protocol-specific asynchronous `PurpleConnection` backed by the
+  shared TDLib transport and authorization controller
+- presents Telegram's rotating login QR code and, when required, a masked
+  two-step-verification password prompt
+- stores each TDLib session under the stable Purple account UUID
 
-The shared Purple-neutral TDLib transport is now available, but the Purple 3
-connection intentionally stops after checking the application-level credential
-provider until the shared authorization controller and QR presenter are
-integrated. A credentialless build reports that its application credentials
-are unavailable; a configured build reaches the existing not-supported
-connection error. Telegram's API ID and API hash identify the application even
+A private build with configured application credentials can now complete
+Telegram's QR-only authorization flow. Phone-number and login-code onboarding
+are not offered, so another already-authorized Telegram client is required to
+scan the code. Telegram's API ID and API hash identify the application even
 during QR login. They are deliberately not Purple account settings,
-environment variables, or raw CMake values.
+environment variables, or raw CMake values. The optional
+two-step-verification password is requested when Telegram requires it; it is
+masked and is not saved as a Purple account setting.
+
+This phase ends when TDLib reports the account ready. Contacts, chat lists,
+incoming messages, and outgoing messages are not connected to Purple 3 yet, so
+a successfully connected account does not provide normal Telegram chat
+functionality.
 
 Pidgin preserves settings written by earlier development builds even after a
 protocol stops advertising them. On load, the adapter removes the obsolete
@@ -32,6 +41,14 @@ so this does not alter the production plugin's profile. This is logical
 removal from the active settings database, not forensic erasure of SQLite
 storage or backups.
 
+TDLib data is kept below the Purple data directory at
+`telegram-tdlib/accounts/<account-uuid>`. The UUID is normalized to lowercase,
+and the account directory is created with mode `0700`. Renaming the local
+Pidgin account label does not change this location. The directory contains the
+authorization state for that account and must be treated as private data. Each
+Purple 3 account UUID gets an independent TDLib session. Purple 2 TDLib data is
+not reused or migrated automatically.
+
 ## Build against a Pidgin development checkout
 
 The commands below assume the Pidgin checkout is in `~/src/pidgin` and use its
@@ -40,7 +57,10 @@ currently tested against Pidgin revision `a412f2ead95d`, whose `purple-3`
 pkg-config version is `2.96.1-dev`.
 
 In addition to the dependencies supplied by the Pidgin development
-environment, this build requires CMake, Ninja, and Python 3.8 or newer.
+environment, this build requires CMake, Ninja, Python 3.8 or newer, and a TDLib
+CMake package compatible with TDLib 1.8.65 or newer. If TDLib is not installed
+in a standard CMake search location, add
+`-DTd_DIR=/path/to/lib/cmake/Td` to the configure command.
 
 ```sh
 cd "$HOME/src/tdlib-purple"
@@ -132,14 +152,15 @@ Credential setup failures report stable, value-free diagnostic codes:
 | `CREDENTIAL_GENERATOR_FAILED` | The credential generator failed unexpectedly. |
 
 At runtime, `Telegram application credentials are unavailable in this build`
-means the credentialless stub is active. The current `not supported`
-connection error means valid application credentials were loaded, while
-authorization and QR presentation are not connected to the Purple 3 adapter
-yet.
+means the credentialless stub is active. A configured build starts Telegram
+authorization and presents a QR code. Subsequent connection errors describe an
+authorization, Purple UI, account-storage, or TDLib backend failure without
+including the configured credential values.
 
-## Inspect in Pidgin 3
+## Inspect and verify in Pidgin 3
 
-Close any existing Pidgin 3 process first, then run:
+Close any existing Pidgin 3 process first. To inspect the account editor
+without connecting accounts, run:
 
 ```sh
 PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
@@ -151,7 +172,25 @@ PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
 Open the account editor and confirm that `Telegram (tdlib)` is available in the
 protocol chooser, requires only a local Account Name, and shows no phone-number,
 API-ID, or API-hash setting. The advanced view contains the secret-chat option.
-`--nologin` prevents existing accounts from connecting while TDLib
-authentication is still unimplemented. If an account is enabled accidentally,
-the adapter refuses the connection with a clear credential-unavailable or
-not-supported error, depending on the build.
+`--nologin` prevents existing accounts from connecting.
+
+To verify authorization, first configure and build with the private credential
+files described above, then launch without `--nologin`:
+
+```sh
+PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
+  meson devenv -C "$HOME/src/pidgin/_build" \
+  --workdir "$HOME/src/pidgin" \
+  pidgin3
+```
+
+Create or enable a `Telegram (tdlib)` account and scan the displayed QR code
+with Telegram on your phone. If the Telegram account uses two-step
+verification, complete the masked password prompt. An account whose
+UUID-specific TDLib data is already authorized may reconnect without showing a
+new QR code. Treat a displayed QR code as a temporary login credential and do
+not share it.
+
+Successful authorization currently proves only the connection and
+authorization lifecycle: the account reaches Purple's ready state, but
+contacts and messages are still outside this milestone.

@@ -102,10 +102,12 @@ The repository and release packages intentionally use a credentialless provider.
 ## Purple 3 Development
 
 Experimental Purple 3 work lives in the isolated [`purple3`](purple3)
-adapter. The current bootstrap registers and cleanly loads the
-`telegram-tdlib` protocol, but does not connect to Telegram yet. See
-[`purple3/README.md`](purple3/README.md) for the local build, test, and Pidgin
-development launch commands.
+adapter. A private build with configured application credentials can establish
+a TDLib session and complete QR-only authorization, including a masked
+two-step-verification password prompt when required. This milestone stops at
+Purple's ready state: contacts and messages are not exposed through Purple 3
+yet. See [`purple3/README.md`](purple3/README.md) for build, test, storage, and
+Pidgin development launch details.
 
 ## Reporting Issues
 

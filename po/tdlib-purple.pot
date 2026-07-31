@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: tdlib-purple\n"
 "Report-Msgid-Bugs-To: https://github.com/ars3niy/tdlib-purple/issues/new \n"
-"POT-Creation-Date: 2026-07-31 16:58+0200\n"
+"POT-Creation-Date: 2026-07-31 18:29+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -233,19 +233,79 @@ msgstr ""
 msgid "Telegram application credentials are unavailable in this build."
 msgstr ""
 
-#: ../purple3/telegram-purple3-connection.c:63
-msgid "Telegram connectivity is not implemented in the Purple 3 adapter yet."
+#: ../purple3/telegram-purple3-auth-presenter.cpp:657
+msgid "Log in to Telegram"
 msgstr ""
 
-#: ../purple3/telegram-purple3-plugin.c:174
-msgid "Protocol"
+#: ../purple3/telegram-purple3-auth-presenter.cpp:658
+msgid "Scan this code with Telegram on your phone to log in."
+msgstr ""
+
+#: ../purple3/telegram-purple3-auth-presenter.cpp:660
+msgid "Telegram login QR code"
+msgstr ""
+
+#: ../purple3/telegram-purple3-auth-presenter.cpp:742
+#: ../purple3/telegram-purple3-auth-presenter.cpp:760 ../td-client-auth.cpp:296
+msgid "Password"
+msgstr ""
+
+#: ../purple3/telegram-purple3-auth-presenter.cpp:762 ../td-client-auth.cpp:297
+msgid "Enter password for two-factor authentication"
+msgstr ""
+
+#: ../purple3/telegram-purple3-auth-presenter.cpp:766
+#, c-format
+msgid "Hint: %s"
+msgstr ""
+
+#: ../purple3/telegram-purple3-auth-presenter.cpp:772
+#, c-format
+msgid "Recovery e-mail may have been sent to %s"
+msgstr ""
+
+#: ../purple3/telegram-purple3-connection.c:83
+#: ../purple3/telegram-purple3-connection.c:145
+#: ../purple3/telegram-purple3-connection.c:153
+msgid "Telegram connection failed."
+msgstr ""
+
+#: ../purple3/telegram-purple3-connection.c:111
+#: ../purple3/telegram-purple3-connection.c:133
+#: ../purple3/telegram-purple3-connection.c:293
+#: ../purple3/telegram-purple3-session.cpp:445
+msgid "Telegram connection was cancelled."
+msgstr ""
+
+#: ../purple3/telegram-purple3-connection.c:139
+msgid "Telegram authorization failed."
+msgstr ""
+
+#: ../purple3/telegram-purple3-connection.c:186
+msgid "The Telegram connection stopped unexpectedly."
+msgstr ""
+
+#: ../purple3/telegram-purple3-connection.c:229
+msgid "Telegram cleanup is still finishing in the background."
+msgstr ""
+
+#: ../purple3/telegram-purple3-connection.c:236
+msgid "Telegram cleanup failed."
+msgstr ""
+
+#: ../purple3/telegram-purple3-connection.c:279
+msgid "A Telegram connection is already active."
 msgstr ""
 
 #: ../purple3/telegram-purple3-plugin.c:175
-msgid "Telegram protocol plugin using TDLib"
+msgid "Protocol"
 msgstr ""
 
 #: ../purple3/telegram-purple3-plugin.c:176
+msgid "Telegram protocol plugin using TDLib"
+msgstr ""
+
+#: ../purple3/telegram-purple3-plugin.c:177
 #: ../purple3/telegram-purple3-protocol.c:121
 msgid "Telegram protocol support using TDLib"
 msgstr ""
@@ -253,6 +313,49 @@ msgstr ""
 #. TRANSLATOR: Account settings, key (boolean)
 #: ../purple3/telegram-purple3-protocol.c:49 ../tdlib-purple.cpp:1252
 msgid "Enable secret chats (takes effect at reconnect)"
+msgstr ""
+
+#: ../purple3/telegram-purple3-session.cpp:169
+msgid "The Telegram account has an invalid identity."
+msgstr ""
+
+#: ../purple3/telegram-purple3-session.cpp:196
+#: ../purple3/telegram-purple3-session.cpp:209
+#: ../purple3/telegram-purple3-session.cpp:221
+#: ../purple3/telegram-purple3-session.cpp:241
+msgid "Telegram account storage could not be prepared."
+msgstr ""
+
+#: ../purple3/telegram-purple3-session.cpp:390
+msgid "The Purple interface cannot present Telegram authorization."
+msgstr ""
+
+#: ../purple3/telegram-purple3-session.cpp:423
+#: ../purple3/telegram-purple3-session.cpp:1068
+msgid "Telegram connection could not be initialized."
+msgstr ""
+
+#: ../purple3/telegram-purple3-session.cpp:436
+#: ../purple3/telegram-purple3-session.cpp:461
+#: ../purple3/telegram-purple3-session.cpp:482
+#: ../purple3/telegram-purple3-session.cpp:1111
+msgid "Telegram connection could not be started."
+msgstr ""
+
+#: ../purple3/telegram-purple3-session.cpp:481
+msgid "Telegram account storage is still in use."
+msgstr ""
+
+#: ../purple3/telegram-purple3-session.cpp:1021
+msgid "Telegram application credentials are invalid."
+msgstr ""
+
+#: ../purple3/telegram-purple3-session.cpp:1085
+msgid "Telegram connection configuration is incomplete."
+msgstr ""
+
+#: ../purple3/telegram-purple3-session.cpp:1183
+msgid "Telegram diagnostics could not be initialized safely."
 msgstr ""
 
 #: ../receiving.cpp:202
@@ -708,14 +811,6 @@ msgstr ""
 #: ../td-client-auth.cpp:289
 #, c++-format
 msgid "Recovery e-mail may have been sent to {}"
-msgstr ""
-
-#: ../td-client-auth.cpp:296
-msgid "Password"
-msgstr ""
-
-#: ../td-client-auth.cpp:297
-msgid "Enter password for two-factor authentication"
 msgstr ""
 
 #: ../td-client-auth.cpp:318
