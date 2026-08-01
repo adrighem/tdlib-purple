@@ -8,6 +8,7 @@
 #include "call.h"
 #include "secret-chat.h"
 #include "sticker.h"
+#include "module-activity.h"
 #include <unistd.h>
 #include <stdlib.h>
 #include <algorithm>
@@ -49,6 +50,22 @@ static bool isChildForumTopic(ChatTarget target)
 {
     return target.valid() && target.isForumTopic() &&
            target.forumTopicId() != ForumTopicId::general();
+}
+
+static void findAccountChats(PurpleBlistNode *node, PurpleAccount *account, std::vector<PurpleChat *> &chats)
+{
+    if (!node) return;
+    PurpleBlistNodeType nodeType = purple_blist_node_get_type(node);
+    if (nodeType == PURPLE_BLIST_CHAT_NODE) {
+        PurpleChat *chat = PURPLE_CHAT(node);
+        if (purple_chat_get_account(chat) == account) {
+            chats.push_back(chat);
+        }
+    }
+    for (PurpleBlistNode *child = purple_blist_node_get_first_child(node); child;
+         child = purple_blist_node_get_sibling_next(child)) {
+        findAccountChats(child, account, chats);
+    }
 }
 
 static PurpleConvChat *getActiveChatWithPurpleId(
@@ -469,7 +486,6 @@ PurpleTdClient::PurpleTdClient(
     ITransceiverBackend *testBackend,
     const TdlibPurpleApplicationCredentials &applicationCredentials)
 :   m_account(acct),
-    m_applicationCredentials(applicationCredentials),
     m_transceiver(this, acct, &PurpleTdClient::processUpdate, testBackend),
     m_data(acct, m_transceiver),
     m_lifetime(std::make_shared<LifetimeState>()),
@@ -479,13 +495,33 @@ PurpleTdClient::PurpleTdClient(
             projectForumTopic(target);
         }))
 {
-    StickerConversionThread::setCallback(&PurpleTdClient::onAnimatedStickerConverted);
+    TdAuthConfiguration authConfiguration(
+        applicationCredentials.api_id,
+        applicationCredentials.api_hash,
+        m_transceiver.databasePath(),
+        purple_account_get_bool(
+            m_account,
+            AccountOptions::EnableSecretChats,
+            AccountOptions::EnableSecretChatsDefault) != FALSE,
+        TdAuthMode::PhoneNumber);
+    m_authController.reset(new TdAuthController(
+        std::move(authConfiguration),
+        [this](
+            TdAuthController::FunctionPtr function,
+            TdAuthController::ResponseCallback response) {
+            return m_transceiver.sendQuery(
+                std::move(function), std::move(response));
+        },
+        *this));
     setPurpleConnectionInProgress();
 }
 
 PurpleTdClient::~PurpleTdClient()
 {
     m_lifetime->alive = false;
+    if (m_authController)
+        m_authController->shutdown();
+    closeAuthPrompt();
     m_forumTopics->shutdown();
 
     std::vector<PurpleXfer *> transfers;
@@ -515,17 +551,44 @@ PurpleTdClient::~PurpleTdClient()
         fullMessage.inlineDownloadTimeout = true;
 
     showMessages(messages, m_data);
+    m_transceiver.shutdown();
 }
 
-void PurpleTdClient::setLogLevel(int level)
+bool PurpleTdClient::disableTdlibLogging() noexcept
 {
-    // Why not just call setLogVerbosityLevel? No idea!
-    td::Client::execute({0, td::td_api::make_object<td::td_api::setLogVerbosityLevel>(level)});
+    /*
+     * Even TDLib warning and error messages can include phone numbers or
+     * serialized request data. Keep only fatal handling and discard the
+     * internal log stream; plugin-owned diagnostics remain available.
+     */
+    try {
+        const auto verbosityResult = td::Client::execute(
+            {0, td::td_api::make_object<td::td_api::setLogVerbosityLevel>(0)});
+        const auto streamResult = td::Client::execute(
+            {0,
+             td::td_api::make_object<td::td_api::setLogStream>(
+                 td::td_api::make_object<td::td_api::logStreamEmpty>())});
+
+        return verbosityResult.object &&
+               verbosityResult.object->get_id() == td::td_api::ok::ID &&
+               streamResult.object &&
+               streamResult.object->get_id() == td::td_api::ok::ID;
+    } catch (...) {
+        return false;
+    }
 }
 
 void PurpleTdClient::setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback)
 {
     td::Log::set_fatal_error_callback(callback);
+}
+
+void PurpleTdClient::setStickerConversionCallback(bool enabled)
+{
+    StickerConversionThread::setCallback(
+        enabled
+            ? &PurpleTdClient::onAnimatedStickerConverted
+            : nullptr);
 }
 
 void PurpleTdClient::processUpdate(td::td_api::Object &update)
@@ -536,10 +599,10 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
     case td::td_api::updateAuthorizationState::ID: {
         auto &update_authorization_state = static_cast<td::td_api::updateAuthorizationState &>(update);
         purple_debug_misc(config::pluginId, "Incoming update: authorization state\n");
-        if (update_authorization_state.authorization_state_) {
-            m_lastAuthState = update_authorization_state.authorization_state_->get_id();
+        if (update_authorization_state.authorization_state_)
             processAuthorizationState(*update_authorization_state.authorization_state_);
-        }
+        else if (m_authController)
+            m_authController->onAuthorizationState(nullptr);
         break;
     }
 
@@ -577,12 +640,12 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
             chatType == td::td_api::chatTypeSecret::ID ||
             m_data.isGroupChatWithMembership(*newChat.chat_)) {
             addChat(std::move(newChat.chat_));
-        } else if ((isBasicGroup || isSupergroup) && !groupMetadataKnown) {
+        } else if ((isBasicGroup || isSupergroup) && (!groupMetadataKnown || !purple_account_is_connected(m_account))) {
             const ChatId chatId = getId(*newChat.chat_);
             purple_debug_misc(
                 config::pluginId,
                 "Caching group chat %" G_GINT64_FORMAT
-                " until membership metadata arrives\n",
+                " until membership metadata arrives or connection completes\n",
                 chatId.value());
             m_data.addChat(std::move(newChat.chat_));
             m_deferredGroupChats.insert(chatId);
@@ -1324,6 +1387,24 @@ void PurpleTdClient::onChatListReady()
         }
     }
 
+    std::vector<PurpleChat *> savedChats;
+    for (PurpleBlistNode *root = purple_blist_get_root(); root;
+         root = purple_blist_node_get_sibling_next(root)) {
+        findAccountChats(root, m_account, savedChats);
+    }
+
+    for (PurpleChat *chatNode : savedChats) {
+        GHashTable *components = purple_chat_get_components(chatNode);
+        const char *chatName = getChatName(components);
+        if (chatName) {
+            const ChatTarget target = parsePurpleChatName(chatName);
+            if (isChildForumTopic(target)) {
+                m_data.setForumTopicSaved(target, true);
+                ensureForumTopicMetadata(target);
+            }
+        }
+    }
+
     resolveDeferredGroupChats();
     m_chatListReady = true;
     markForumRoomListsReadyIfPossible();
@@ -1337,15 +1418,14 @@ void PurpleTdClient::onChatListReady()
         purple_debug_misc(config::pluginId, "Setting own alias to '%s'\n", alias.c_str());
         purple_account_set_alias(m_account, alias.c_str());
     } else
-        purple_debug_warning(config::pluginId, "Did not receive user information for self (%s) at login\n",
-            purple_account_get_username(m_account));
+        purple_debug_warning(config::pluginId,
+                             "Did not receive user information for self at login\n");
 
     purple_blist_add_account(m_account);
 }
 
 void PurpleTdClient::onAnimatedStickerConverted(AccountThread *arg)
 {
-    std::unique_ptr<AccountThread> baseThread(arg);
     StickerConversionThread *thread = dynamic_cast<StickerConversionThread *>(arg);
     if (!thread)
         return;
@@ -1994,6 +2074,9 @@ void PurpleTdClient::updateSupergroup(td::td_api::object_ptr<td::td_api::supergr
 
 bool PurpleTdClient::resolveDeferredGroupChat(ChatId chatId)
 {
+    if (!purple_account_is_connected(m_account))
+        return false;
+
     const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
     auto deferred = m_deferredGroupChats.find(chatId);
     if (deferred == m_deferredGroupChats.end())
@@ -2281,22 +2364,24 @@ static void showFailedContactMessage(void *handle, const std::string &errorMessa
 
 static int failedContactIdle(gpointer userdata)
 {
-    char *message = static_cast<char *>(userdata);
+    const char *message = static_cast<const char *>(userdata);
     showFailedContactMessage(NULL, message);
-    free(message);
     return FALSE; // This idle callback will not be called again
 }
 
 static void notifyFailedContactDeferred(const std::string &message)
 {
-    g_idle_add(failedContactIdle, strdup(message.c_str()));
+    moduleActivityAddIdle(
+        failedContactIdle,
+        g_strdup(message.c_str()),
+        g_free);
 }
 
 void PurpleTdClient::addContact(const std::string &purpleName, const std::string &alias,
                                 const std::string &groupName)
 {
     if (m_data.getUserByPhone(purpleName.c_str())) {
-        purple_debug_info(config::pluginId, "User with phone number %s already exists\n", purpleName.c_str());
+        purple_debug_info(config::pluginId, "User with that phone number already exists\n");
         return;
     }
 
@@ -2422,8 +2507,8 @@ void PurpleTdClient::addContactCreatePrivateChatResponse(uint64_t requestId, td:
             getImConversation(m_account, displayName.c_str());
         }
     } else {
-        purple_debug_misc(config::pluginId, "Failed to create private chat to %s\n",
-                          request->phoneNumber.c_str());
+        purple_debug_misc(config::pluginId,
+                          "Failed to create private chat for contact\n");
         notifyFailedContact(getDisplayedError(object));
     }
 }
@@ -3127,6 +3212,25 @@ void PurpleTdClient::ensureForumTopicMetadata(
     ChatTarget target)
 {
     m_forumTopics->ensureForumTopicMetadata(target);
+}
+
+void PurpleTdClient::handleBlistNodeAdded(PurpleBlistNode *node)
+{
+    if (!node || purple_blist_node_get_type(node) != PURPLE_BLIST_CHAT_NODE)
+        return;
+
+    PurpleChat *chatNode = PURPLE_CHAT(node);
+    if (purple_chat_get_account(chatNode) != m_account)
+        return;
+
+    GHashTable *components = purple_chat_get_components(chatNode);
+    const char *chatName = getChatName(components);
+    if (chatName) {
+        const ChatTarget target = parsePurpleChatName(chatName);
+        if (isChildForumTopic(target)) {
+            projectForumTopic(target);
+        }
+    }
 }
 
 int PurpleTdClient::sendGroupMessage(int purpleChatId, const char *message)

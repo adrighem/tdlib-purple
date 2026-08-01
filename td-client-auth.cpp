@@ -1,74 +1,86 @@
 #include "td-client.h"
+#include "module-activity.h"
 #include "purple-info.h"
 #include "config.h"
 #include "format.h"
 
-void PurpleTdClient::processAuthorizationState(td::td_api::AuthorizationState &authState)
+#include <utility>
+
+namespace {
+
+struct ReconnectContext {
+    std::string accountName;
+    std::string protocolId;
+};
+
+static gboolean restartOnboardingIdle(gpointer data)
 {
-    switch (authState.get_id()) {
-    case td::td_api::authorizationStateWaitEmailAddress::ID:
-        purple_debug_misc(config::pluginId, "Authorization email requested\n");
-        requestAuthEmail();
-        break;
+    ReconnectContext *context = static_cast<ReconnectContext *>(data);
 
-    case td::td_api::authorizationStateWaitEmailCode::ID:
-        purple_debug_misc(config::pluginId, "Authorization email confirmation code requested\n");
-        requestAuthEmailCode();
-        break;
+    PurpleAccount *account = purple_accounts_find(
+        context->accountName.c_str(), context->protocolId.c_str());
+    if (account) {
+        purple_account_remove_setting(account, AccountOptions::ApiId);
+        purple_account_remove_setting(account, AccountOptions::ApiHash);
 
-    case td::td_api::authorizationStateWaitTdlibParameters::ID:
-        purple_debug_misc(config::pluginId, "Authorization state update: TDLib parameters requested\n");
-        m_transceiver.sendQuery(td::td_api::make_object<td::td_api::disableProxy>(), nullptr);
-        if (addProxy()) {
-            m_transceiver.sendQuery(td::td_api::make_object<td::td_api::getProxies>(),
-                                    &PurpleTdClient::getProxiesResponse);
-            sendTdlibParameters();
+        purple_account_disconnect(account);
+        purple_account_connect(account);
+    }
+
+    return FALSE;
+}
+
+} // namespace
+
+void PurpleTdClient::processAuthorizationState(
+    td::td_api::AuthorizationState &authState)
+{
+    if (!m_authController)
+        return;
+
+    if (authState.get_id() ==
+            td::td_api::authorizationStateWaitTdlibParameters::ID &&
+        !m_authParameterSetupStarted) {
+        m_authParameterSetupStarted = true;
+        purple_debug_misc(
+            config::pluginId,
+            "Authorization state update: TDLib parameters requested\n");
+        m_transceiver.sendQuery(
+            td::td_api::make_object<td::td_api::disableProxy>(), nullptr);
+        if (!addProxy()) {
+            m_authController->shutdown();
+            return;
         }
-        break;
-
-    case td::td_api::authorizationStateWaitPhoneNumber::ID:
-        purple_debug_misc(config::pluginId, "Authorization state update: phone number requested\n");
-        sendPhoneNumber();
-        break;
-
-    case td::td_api::authorizationStateWaitCode::ID: {
-        auto &codeState = static_cast<td::td_api::authorizationStateWaitCode &>(authState);
-        purple_debug_misc(config::pluginId, "Authorization state update: authentication code requested\n");
-        requestAuthCode(codeState.code_info_.get());
-        break;
+        m_transceiver.sendQuery(
+            td::td_api::make_object<td::td_api::getProxies>(),
+            &PurpleTdClient::getProxiesResponse);
     }
 
-    case td::td_api::authorizationStateWaitRegistration::ID: {
-        purple_debug_misc(config::pluginId, "Authorization state update: new user registration\n");
-        registerUser();
-        break;
-    }
-
-    case td::td_api::authorizationStateWaitPassword::ID: {
-        purple_debug_misc(config::pluginId, "Authorization state update: password requested\n");
-        auto &pwInfo = static_cast<const td::td_api::authorizationStateWaitPassword &>(authState);
-        requestPassword(pwInfo);
-        break;
-    }
-
-    case td::td_api::authorizationStateReady::ID:
-        purple_debug_misc(config::pluginId, "Authorization state update: ready\n");
-        onLoggedIn();
-        break;
-    }
+    m_authController->onAuthorizationState(&authState);
 }
 
 bool PurpleTdClient::addProxy()
 {
     PurpleProxyInfo *purpleProxy = purple_proxy_get_setup(m_account);
-    PurpleProxyType  proxyType   = purpleProxy ? purple_proxy_info_get_type(purpleProxy) : PURPLE_PROXY_NONE;
-    const char *     username    = purpleProxy ? purple_proxy_info_get_username(purpleProxy) : "";
-    const char *     password    = purpleProxy ? purple_proxy_info_get_password(purpleProxy) : "";
-    const char *     host        = purpleProxy ? purple_proxy_info_get_host(purpleProxy) : "";
-    int              port        = purpleProxy ? purple_proxy_info_get_port(purpleProxy) : 0;
-    if (username == NULL) username = "";
-    if (password == NULL) password = "";
-    if (host == NULL) host = "";
+    PurpleProxyType proxyType = purpleProxy
+        ? purple_proxy_info_get_type(purpleProxy)
+        : PURPLE_PROXY_NONE;
+    const char *username = purpleProxy
+        ? purple_proxy_info_get_username(purpleProxy)
+        : "";
+    const char *password = purpleProxy
+        ? purple_proxy_info_get_password(purpleProxy)
+        : "";
+    const char *host = purpleProxy
+        ? purple_proxy_info_get_host(purpleProxy)
+        : "";
+    int port = purpleProxy ? purple_proxy_info_get_port(purpleProxy) : 0;
+    if (!username)
+        username = "";
+    if (!password)
+        password = "";
+    if (!host)
+        host = "";
     std::string errorMessage;
 
     td::td_api::object_ptr<td::td_api::ProxyType> tdProxyType;
@@ -77,373 +89,666 @@ bool PurpleTdClient::addProxy()
         tdProxyType = nullptr;
         break;
     case PURPLE_PROXY_SOCKS5:
-        tdProxyType = td::td_api::make_object<td::td_api::proxyTypeSocks5>(username, password);
+        tdProxyType =
+            td::td_api::make_object<td::td_api::proxyTypeSocks5>(
+                username, password);
         break;
     case PURPLE_PROXY_HTTP:
-        tdProxyType = td::td_api::make_object<td::td_api::proxyTypeHttp>(username, password, true);
+        tdProxyType =
+            td::td_api::make_object<td::td_api::proxyTypeHttp>(
+                username, password, true);
         break;
     default:
-        // TRANSLATOR: Buddy-window error message, argument will be some kind of proxy-identifier.
-        errorMessage = formatMessage(_("Proxy type {} is not supported"), proxyTypeToString(proxyType));
+        errorMessage = formatMessage(
+            // TRANSLATOR: Buddy-window error message, argument will be some
+            // kind of proxy identifier.
+            _("Proxy type {} is not supported"),
+            proxyTypeToString(proxyType));
         break;
     }
 
     if (!errorMessage.empty()) {
-        purple_connection_error(purple_account_get_connection(m_account), errorMessage.c_str());
+        purple_connection_error(
+            purple_account_get_connection(m_account),
+            errorMessage.c_str());
         return false;
-    } else if (tdProxyType) {
-        auto addProxy = td::td_api::make_object<td::td_api::addProxy>();
-        addProxy->proxy_ = td::td_api::make_object<td::td_api::proxy>(host, port, std::move(tdProxyType));
-        addProxy->enable_ = true;
-        m_transceiver.sendQuery(std::move(addProxy), &PurpleTdClient::addProxyResponse);
+    }
+    if (tdProxyType) {
+        auto addProxyRequest =
+            td::td_api::make_object<td::td_api::addProxy>();
+        addProxyRequest->proxy_ =
+            td::td_api::make_object<td::td_api::proxy>(
+                host, port, std::move(tdProxyType));
+        addProxyRequest->enable_ = true;
+        m_transceiver.sendQuery(
+            std::move(addProxyRequest),
+            &PurpleTdClient::addProxyResponse);
         m_isProxyAdded = true;
     }
 
     return true;
 }
 
-void PurpleTdClient::addProxyResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
+void PurpleTdClient::addProxyResponse(
+    uint64_t,
+    td::td_api::object_ptr<td::td_api::Object> object)
 {
-    if (object && (object->get_id() == td::td_api::addedProxy::ID)) {
-        m_addedProxy = td::move_tl_object_as<td::td_api::addedProxy>(object);
+    if (object && object->get_id() == td::td_api::addedProxy::ID) {
+        m_addedProxy =
+            td::move_tl_object_as<td::td_api::addedProxy>(object);
         if (m_proxies)
             removeOldProxies();
     } else {
-        // TRANSLATOR: Buddy-window error message
-        std::string message = formatMessage(_("Could not set proxy: {}"), getDisplayedError(object));
-        purple_connection_error(purple_account_get_connection(m_account), message.c_str());
+        std::string message = formatMessage(
+            // TRANSLATOR: Buddy-window error message
+            _("Could not set proxy: {}"), getDisplayedError(object));
+        purple_connection_error(
+            purple_account_get_connection(m_account), message.c_str());
     }
 }
 
-void PurpleTdClient::getProxiesResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
+void PurpleTdClient::getProxiesResponse(
+    uint64_t,
+    td::td_api::object_ptr<td::td_api::Object> object)
 {
-    if (object && (object->get_id() == td::td_api::addedProxies::ID)) {
-        m_proxies = td::move_tl_object_as<td::td_api::addedProxies>(object);
+    if (object && object->get_id() == td::td_api::addedProxies::ID) {
+        m_proxies =
+            td::move_tl_object_as<td::td_api::addedProxies>(object);
         if (!m_isProxyAdded || m_addedProxy)
             removeOldProxies();
     } else {
-        // TRANSLATOR: Buddy-window error message
-        std::string message = formatMessage(_("Could not get proxies: {}"), getDisplayedError(object));
-        purple_connection_error(purple_account_get_connection(m_account), message.c_str());
+        std::string message = formatMessage(
+            // TRANSLATOR: Buddy-window error message
+            _("Could not get proxies: {}"), getDisplayedError(object));
+        purple_connection_error(
+            purple_account_get_connection(m_account), message.c_str());
     }
 }
 
 void PurpleTdClient::removeOldProxies()
 {
-    for (const td::td_api::object_ptr<td::td_api::addedProxy> &proxy: m_proxies->proxies_)
-        if (proxy && (!m_addedProxy || (proxy->id_ != m_addedProxy->id_)))
-            m_transceiver.sendQuery(td::td_api::make_object<td::td_api::removeProxy>(proxy->id_), nullptr);
+    for (const td::td_api::object_ptr<td::td_api::addedProxy> &proxy:
+         m_proxies->proxies_) {
+        if (proxy && (!m_addedProxy || proxy->id_ != m_addedProxy->id_)) {
+            m_transceiver.sendQuery(
+                td::td_api::make_object<td::td_api::removeProxy>(
+                    proxy->id_),
+                nullptr);
+        }
+    }
 }
 
 std::string PurpleTdClient::getBaseDatabasePath()
 {
-    return std::string(purple_user_dir()) + G_DIR_SEPARATOR_S + config::configSubdir;
+    return getPurple2BaseDatabasePath();
 }
 
-void PurpleTdClient::sendTdlibParameters()
+static std::string getAuthCodeDesc(const TdAuthCodeDelivery &delivery)
 {
-    auto parameters = td::td_api::make_object<td::td_api::setTdlibParameters>();
-    const char *username = purple_account_get_username(m_account);
-
-    parameters->database_directory_ = getBaseDatabasePath() + G_DIR_SEPARATOR_S + username;
-    purple_debug_misc(config::pluginId, "Account %s using database directory %s\n",
-                      username, parameters->database_directory_.c_str());
-    parameters->use_chat_info_database_ = true;
-    parameters->use_message_database_ = true;
-    parameters->use_secret_chats_ = (purple_account_get_bool(m_account, AccountOptions::EnableSecretChats,
-                                                             AccountOptions::EnableSecretChatsDefault) != FALSE);
-    parameters->api_id_ = m_applicationCredentials.api_id;
-    parameters->api_hash_ = m_applicationCredentials.api_hash;
-    parameters->system_language_code_ = "en";
-    parameters->device_model_ = "Desktop";
-    parameters->system_version_ = "Unknown";
-    parameters->application_version_ = "1.0";
-
-    m_transceiver.sendQuery(std::move(parameters),
-                            &PurpleTdClient::authResponse);
-}
-
-void PurpleTdClient::sendPhoneNumber()
-{
-    const char *number = purple_account_get_username(m_account);
-    m_transceiver.sendQuery(td::td_api::make_object<td::td_api::setAuthenticationPhoneNumber>(number, nullptr),
-                            &PurpleTdClient::authResponse);
-}
-
-static std::string getAuthCodeDesc(const td::td_api::AuthenticationCodeType &codeType)
-{
-    switch (codeType.get_id()) {
-    case td::td_api::authenticationCodeTypeTelegramMessage::ID:
-        // TRANSLATOR: Authentication dialog, secondary content. Appears after a colon (':'). Argument is a number.
-        return formatMessage(_("Telegram message (length: {})"),
-                             static_cast<const td::td_api::authenticationCodeTypeTelegramMessage &>(codeType).length_);
-    case td::td_api::authenticationCodeTypeSms::ID:
-        // TRANSLATOR: Authentication dialog, secondary content. Appears after a colon (':'). Argument is a number.
-        return formatMessage(_("SMS (length: {})"),
-                             static_cast<const td::td_api::authenticationCodeTypeSms &>(codeType).length_);
-    case td::td_api::authenticationCodeTypeCall::ID:
-        // TRANSLATOR: Authentication dialog, secondary content. Appears after a colon (':'). Argument is a number.
-        return formatMessage(_("Phone call (length: {})"),
-                             static_cast<const td::td_api::authenticationCodeTypeCall &>(codeType).length_);
-    case td::td_api::authenticationCodeTypeFlashCall::ID:
-        // TRANSLATOR: Authentication dialog, secondary content. Official name "flash call". Appears after a colon (':'). Argument is some text-string-ish.
-        return formatMessage(_("Poor man's phone call (pattern: {})"),
-                             static_cast<const td::td_api::authenticationCodeTypeFlashCall &>(codeType).pattern_);
-    default:
-        // Shouldn't happen, so don't translate.
-        return "Pigeon post";
+    switch (delivery.type) {
+    case TdAuthCodeType::TelegramMessage:
+        return formatMessage(
+            // TRANSLATOR: Authentication dialog, secondary content. Appears
+            // after a colon. Argument is a number.
+            _("Telegram message (length: {})"), delivery.length);
+    case TdAuthCodeType::Sms:
+        // TRANSLATOR: Authentication dialog, secondary content. Appears after
+        // a colon. Argument is a number.
+        return formatMessage(_("SMS (length: {})"), delivery.length);
+    case TdAuthCodeType::SmsWord:
+        return _("Word sent by SMS");
+    case TdAuthCodeType::SmsPhrase:
+        return _("Phrase sent by SMS");
+    case TdAuthCodeType::PhoneCall:
+        return formatMessage(
+            // TRANSLATOR: Authentication dialog, secondary content. Appears
+            // after a colon. Argument is a number.
+            _("Phone call (length: {})"), delivery.length);
+    case TdAuthCodeType::FlashCall:
+        return formatMessage(
+            // TRANSLATOR: Authentication dialog, secondary content. Official
+            // name is flash call. Argument is a phone-number pattern.
+            _("Flash call (pattern: {})"), delivery.pattern);
+    case TdAuthCodeType::MissedCall:
+        return formatMessage(
+            _("Missed call (length: {})"), delivery.length);
+    case TdAuthCodeType::Fragment:
+        return formatMessage(
+            _("Fragment (length: {})"), delivery.length);
+    case TdAuthCodeType::FirebaseAndroid:
+    case TdAuthCodeType::FirebaseIos:
+        return formatMessage(
+            _("Device verification (length: {})"), delivery.length);
+    case TdAuthCodeType::None:
+    case TdAuthCodeType::Unknown:
+        return _("Unknown delivery method");
     }
+    return _("Unknown delivery method");
 }
 
-void PurpleTdClient::requestAuthCode(const td::td_api::authenticationCodeInfo *codeInfo)
+void PurpleTdClient::requestAuthCode(
+    TdAuthPromptId prompt,
+    const TdAuthCodeChallenge &challenge)
 {
-    // TRANSLATOR: Authentication dialog, primary content. Will be followed by instructions and an input box.
-    std::string message = _("Enter authentication code") + std::string("\n");
-
-    if (codeInfo) {
-        if (codeInfo->type_) {
-            // TRANSLATOR: Authentication dialog, secondary content. Argument will be a term.
-            message += formatMessage(_("Code sent via: {}"), getAuthCodeDesc(*codeInfo->type_)) + "\n";
-        }
-        if (codeInfo->next_type_) {
-            // TRANSLATOR: Authentication dialog, secondary content. Argument will be a term.
-            message += formatMessage(_("Next code will be: {}"), getAuthCodeDesc(*codeInfo->next_type_)) + "\n";
-        }
+    // TRANSLATOR: Authentication dialog, primary content. Will be followed by
+    // instructions and an input box.
+    std::string message = _("Enter authentication code");
+    message += '\n';
+    if (challenge.code.type != TdAuthCodeType::None) {
+        message += formatMessage(
+            // TRANSLATOR: Authentication dialog, secondary content. Argument
+            // is a delivery method.
+            _("Code sent via: {}"), getAuthCodeDesc(challenge.code));
+        message += '\n';
+    }
+    if (challenge.nextCode.type != TdAuthCodeType::None) {
+        message += formatMessage(
+            // TRANSLATOR: Authentication dialog, secondary content. Argument
+            // is a delivery method.
+            _("Next code will be: {}"),
+            getAuthCodeDesc(challenge.nextCode));
+        message += '\n';
     }
 
-    purple_request_input (purple_account_get_connection(m_account),
-                               // TRANSLATOR: Authentication dialog, title.
-                               _("Login code"),
-                               message.c_str(),
-                               NULL, // secondary message
-                               NULL, // default value
-                               FALSE, // multiline input
-                               FALSE, // masked input
-                               NULL,
-                               // TRANSLATOR: Authentication dialog, alternative is "_Cancel". The underscore marks accelerator keys, they must be different!
-                               _("_OK"), G_CALLBACK(requestCodeEntered),
-                               // TRANSLATOR: Authentication dialog, alternative is "_OK". The underscore marks accelerator keys, they must be different!
-                               _("_Cancel"), G_CALLBACK(requestCodeCancelled),
-                               m_account,
-                               NULL, // buddy
-                               NULL, // conversation
-                               this);
+    requestAuthInput(
+        prompt,
+        TdAuthPromptType::Code,
+        _("Login code"),
+        message.c_str(),
+        nullptr,
+        false);
 }
 
-void PurpleTdClient::requestAuthEmail()
+void PurpleTdClient::requestAuthEmail(TdAuthPromptId prompt)
 {
-    std::string message = _("Enter authentication email") + std::string("\n");
-
-    purple_request_input (purple_account_get_connection(m_account),
-                               // TRANSLATOR: Authentication dialog, title.
-                               _("Authentication email"),
-                               message.c_str(),
-                               NULL, // secondary message
-                               NULL, // default value
-                               FALSE, // multiline input
-                               FALSE, // masked input
-                               NULL,
-                               // TRANSLATOR: Authentication dialog, alternative is "_Cancel". The underscore marks accelerator keys, they must be different!
-                               _("_OK"), G_CALLBACK(requestAuthEmailEntered),
-                               // TRANSLATOR: Authentication dialog, alternative is "_OK". The underscore marks accelerator keys, they must be different!
-                               _("_Cancel"), G_CALLBACK(requestAuthEmailCancelled),
-                               m_account,
-                               NULL, // buddy
-                               NULL, // conversation
-                               this);
+    requestAuthInput(
+        prompt,
+        TdAuthPromptType::EmailAddress,
+        _("Authentication email"),
+        _("Enter authentication email"),
+        nullptr,
+        false);
 }
 
-void PurpleTdClient::requestAuthEmailEntered(PurpleTdClient *self, const gchar *email)
+void PurpleTdClient::requestAuthEmailCode(
+    TdAuthPromptId prompt,
+    const TdAuthEmailCodeChallenge &challenge)
 {
-    purple_debug_misc(config::pluginId, "Authentication email entered: '%s'\n", email);
-    auto authEmail = td::td_api::make_object<td::td_api::setAuthenticationEmailAddress>(email);
+    std::string details;
+    if (!challenge.emailAddressPattern.empty()) {
+        details = formatMessage(
+            // TRANSLATOR: Authentication dialog, secondary content. Argument
+            // is a masked email-address pattern supplied by Telegram.
+            _("Code sent to: {}"), challenge.emailAddressPattern);
+    }
+    if (challenge.length > 0) {
+        if (!details.empty())
+            details += '\n';
+        details += formatMessage(
+            _("Code length: {}"), challenge.length);
+    }
 
-    self->m_transceiver.sendQuery(std::move(authEmail), &PurpleTdClient::authResponse);
+    requestAuthInput(
+        prompt,
+        TdAuthPromptType::EmailCode,
+        _("Code from authentication email"),
+        _("Enter code sent to authentication email"),
+        details.empty() ? nullptr : details.c_str(),
+        false);
 }
 
-void PurpleTdClient::requestAuthEmailCancelled(PurpleTdClient *self)
-{
-    purple_connection_error(purple_account_get_connection(self->m_account),
-                            // TRANSLATOR: Connection failure, error message (title; empty content)
-                            _("Authentication email required"));
-}
-
-void PurpleTdClient::requestAuthEmailCode()
-{
-    std::string message = _("Enter code sent to authentication email") + std::string("\n");
-
-    purple_request_input (purple_account_get_connection(m_account),
-                               // TRANSLATOR: Authentication dialog, title.
-                               _("Code from authentication email"),
-                               message.c_str(),
-                               NULL, // secondary message
-                               NULL, // default value
-                               FALSE, // multiline input
-                               FALSE, // masked input
-                               NULL,
-                               // TRANSLATOR: Authentication dialog, alternative is "_Cancel". The underscore marks accelerator keys, they must be different!
-                               _("_OK"), G_CALLBACK(requestAuthEmailCodeEntered),
-                               // TRANSLATOR: Authentication dialog, alternative is "_OK". The underscore marks accelerator keys, they must be different!
-                               _("_Cancel"), G_CALLBACK(requestAuthEmailCodeCancelled),
-                               m_account,
-                               NULL, // buddy
-                               NULL, // conversation
-                               this);
-}
-
-void PurpleTdClient::requestAuthEmailCodeEntered(PurpleTdClient *self, const gchar *code)
-{
-    purple_debug_misc(config::pluginId, "Authentication email code entered: '%s'\n", code);
-    auto authEmailCode = td::td_api::make_object<td::td_api::checkAuthenticationEmailCode>(
-                                               td::td_api::make_object<td::td_api::emailAddressAuthenticationCode>(code));
-
-    self->m_transceiver.sendQuery(std::move(authEmailCode), &PurpleTdClient::authResponse);
-}
-
-void PurpleTdClient::requestAuthEmailCodeCancelled(PurpleTdClient *self)
-{
-    purple_connection_error(purple_account_get_connection(self->m_account),
-                            // TRANSLATOR: Connection failure, error message (title; empty content)
-                            _("Authentication email required"));
-}
-
-void PurpleTdClient::requestCodeEntered(PurpleTdClient *self, const gchar *code)
-{
-    purple_debug_misc(config::pluginId, "Authentication code entered\n");
-    auto checkCode = td::td_api::make_object<td::td_api::checkAuthenticationCode>();
-    if (code)
-        checkCode->code_ = code;
-    self->m_transceiver.sendQuery(std::move(checkCode), &PurpleTdClient::authResponse);
-}
-
-void PurpleTdClient::requestCodeCancelled(PurpleTdClient *self)
-{
-    purple_connection_error(purple_account_get_connection(self->m_account),
-                            // TRANSLATOR: Connection failure, error message (title; empty content)
-                            _("Authentication code required"));
-}
-
-void PurpleTdClient::passwordEntered(PurpleTdClient *self, const gchar *password)
-{
-    purple_debug_misc(config::pluginId, "Password code entered\n");
-    auto checkPassword = td::td_api::make_object<td::td_api::checkAuthenticationPassword>();
-    if (password)
-        checkPassword->password_ = password;
-    self->m_transceiver.sendQuery(std::move(checkPassword), &PurpleTdClient::authResponse);
-}
-
-void PurpleTdClient::passwordCancelled(PurpleTdClient *self)
-{
-    // TRANSLATOR: Connection failure, error message title (title; empty content)
-    purple_connection_error(purple_account_get_connection(self->m_account), _("Password required"));
-}
-
-void PurpleTdClient::requestPassword(const td::td_api::authorizationStateWaitPassword &pwInfo)
+void PurpleTdClient::requestPassword(
+    TdAuthPromptId prompt,
+    const TdAuthPasswordChallenge &challenge)
 {
     std::string hints;
-    if (!pwInfo.password_hint_.empty()) {
-        // TRANSLATOR: 2FA dialog, secondary content, appears in new line. Argument is an arbitrary string from Telegram.
-        hints = formatMessage(_("Hint: {}"), pwInfo.password_hint_);
+    if (!challenge.hint.empty()) {
+        // TRANSLATOR: 2FA dialog, secondary content. Argument is arbitrary
+        // text supplied by Telegram.
+        hints = formatMessage(_("Hint: {}"), challenge.hint);
     }
-    if (!pwInfo.recovery_email_address_pattern_.empty()) {
+    if (!challenge.recoveryEmailAddressPattern.empty()) {
         if (!hints.empty())
             hints += '\n';
-        // TRANSLATOR: 2FA dialog, secondary content, appears in new line. Argument is an e-mail address.
-        hints += formatMessage(_("Recovery e-mail may have been sent to {}"), pwInfo.recovery_email_address_pattern_);
+        hints += formatMessage(
+            // TRANSLATOR: 2FA dialog, secondary content. Argument is a masked
+            // email-address pattern supplied by Telegram.
+            _("Recovery e-mail may have been sent to {}"),
+            challenge.recoveryEmailAddressPattern);
     }
-    if (!purple_request_input (purple_account_get_connection(m_account),
-                               // TRANSLATOR: 2FA dialog, title
-                               _("Password"),
-                               // TRANSLATOR: 2FA dialog, primary content
-                               _("Enter password for two-factor authentication"),
-                               hints.empty() ? NULL : hints.c_str(),
-                               NULL, // default value
-                               FALSE, // multiline input
-                               FALSE, // masked input
-                               NULL,
-                               // TRANSLATOR: 2FA dialog, alternative is "_Cancel". The underscore marks accelerator keys, they must be different!
-                               _("_OK"), G_CALLBACK(passwordEntered),
-                               // TRANSLATOR: 2FA dialog, alternative is "_OK". The underscore marks accelerator keys, they must be different!
-                               _("_Cancel"), G_CALLBACK(passwordCancelled),
-                               m_account,
-                               NULL, // buddy
-                               NULL, // conversation
-                               this))
+
+    requestAuthInput(
+        prompt,
+        TdAuthPromptType::Password,
+        _("Password"),
+        _("Enter password for two-factor authentication"),
+        hints.empty() ? nullptr : hints.c_str(),
+        true);
+}
+
+void PurpleTdClient::registerUser(TdAuthPromptId prompt)
+{
+    std::string firstName;
+    std::string lastName;
+    getNamesFromAlias(
+        purple_account_get_alias(m_account), firstName, lastName);
+
+    if (!firstName.empty() && !m_registrationAliasRejected) {
+        m_authController->submitRegistration(
+            prompt, firstName, lastName);
+        return;
+    }
+
+    requestAuthInput(
+        prompt,
+        TdAuthPromptType::Registration,
+        _("Registration"),
+        _("New account is being created. Please enter your display name."),
+        nullptr,
+        false);
+}
+
+void PurpleTdClient::requestAuthInput(
+    TdAuthPromptId prompt,
+    TdAuthPromptType type,
+    const char *title,
+    const char *primary,
+    const char *secondary,
+    bool masked)
+{
+    PurpleConnection *connection =
+        purple_account_get_connection(m_account);
+    AuthPromptContext *context = createAuthPromptContext(prompt, type);
+    m_activeAuthPrompt = prompt;
+    void *request = purple_request_input(
+        connection,
+        title,
+        primary,
+        secondary,
+        nullptr,
+        FALSE,
+        masked ? TRUE : FALSE,
+        nullptr,
+        // TRANSLATOR: Authentication dialog button. The underscore marks an
+        // accelerator and must differ from the Cancel button.
+        _("_OK"),
+        G_CALLBACK(authPromptEntered),
+        // TRANSLATOR: Authentication dialog button. The underscore marks an
+        // accelerator and must differ from the OK button.
+        _("_Cancel"),
+        G_CALLBACK(authPromptCancelled),
+        m_account,
+        nullptr,
+        nullptr,
+        context);
+    if (!request) {
+        if (m_activeAuthPrompt == prompt)
+            m_activeAuthPrompt = TdAuthPromptId();
+        m_authController->failPrompt(
+            prompt, TdAuthPresentationFailure::Unsupported);
+    }
+}
+
+PurpleTdClient::AuthPromptContext *
+PurpleTdClient::createAuthPromptContext(
+    TdAuthPromptId prompt,
+    TdAuthPromptType type)
+{
+    std::unique_ptr<AuthPromptContext> context(new AuthPromptContext{
+        this,
+        m_lifetime,
+        prompt,
+        type,
+    });
+    AuthPromptContext *result = context.get();
+    m_authPromptContexts.push_back(std::move(context));
+    return result;
+}
+
+void PurpleTdClient::closeAuthPrompt(TdAuthPromptId prompt)
+{
+    if (!m_activeAuthPrompt.valid())
+        return;
+    if (prompt.valid() && prompt != m_activeAuthPrompt)
+        return;
+    m_activeAuthPrompt = TdAuthPromptId();
+    PurpleConnection *connection =
+        purple_account_get_connection(m_account);
+    if (connection)
+        purple_request_close_with_handle(connection);
+}
+
+void PurpleTdClient::authPromptEntered(
+    AuthPromptContext *prompt,
+    const gchar *value)
+{
+    if (!prompt)
+        return;
+    std::shared_ptr<LifetimeState> lifetime = prompt->lifetime.lock();
+    if (!lifetime || !lifetime->alive || !prompt->client)
+        return;
+
+    PurpleTdClient *self = prompt->client;
+    if (!self->m_authController)
+        return;
+    if (self->m_activeAuthPrompt != prompt->prompt)
+        return;
+    self->m_activeAuthPrompt = TdAuthPromptId();
+    const std::string input = value ? value : "";
+    TdAuthSubmissionResult result = TdAuthSubmissionResult::Stopped;
+    switch (prompt->type) {
+    case TdAuthPromptType::EmailAddress:
+        result = self->m_authController->submitEmailAddress(
+            prompt->prompt, input);
+        break;
+    case TdAuthPromptType::EmailCode:
+        result = self->m_authController->submitEmailCode(
+            prompt->prompt, input);
+        break;
+    case TdAuthPromptType::Code:
+        result = self->m_authController->submitCode(
+            prompt->prompt, input);
+        break;
+    case TdAuthPromptType::Password:
+        result = self->m_authController->submitPassword(
+            prompt->prompt, input);
+        break;
+    case TdAuthPromptType::Registration: {
+        std::string firstName;
+        std::string lastName;
+        getNamesFromAlias(input.c_str(), firstName, lastName);
+        result = self->m_authController->submitRegistration(
+            prompt->prompt, firstName, lastName);
+        break;
+    }
+    default:
+        return;
+    }
+    (void)result;
+}
+
+void PurpleTdClient::authPromptCancelled(AuthPromptContext *prompt)
+{
+    if (!prompt)
+        return;
+    std::shared_ptr<LifetimeState> lifetime = prompt->lifetime.lock();
+    if (!lifetime || !lifetime->alive || !prompt->client)
+        return;
+    PurpleTdClient *self = prompt->client;
+    if (!self->m_authController)
+        return;
+    if (self->m_activeAuthPrompt != prompt->prompt)
+        return;
+    self->m_activeAuthPrompt = TdAuthPromptId();
+    self->m_authController->cancelPrompt(prompt->prompt);
+}
+
+void PurpleTdClient::onPhoneNumberRequired(TdAuthPromptId prompt)
+{
+    m_lastAuthPromptType = TdAuthPromptType::PhoneNumber;
+    purple_debug_misc(
+        config::pluginId,
+        "Authorization state update: phone number requested\n");
+    const char *number = purple_account_get_username(m_account);
+    m_authController->submitPhoneNumber(
+        prompt, number ? number : "");
+}
+
+void PurpleTdClient::onPremiumPurchaseRequired(TdAuthPromptId prompt)
+{
+    m_lastAuthPromptType = TdAuthPromptType::PremiumPurchase;
+    m_authController->failPrompt(
+        prompt, TdAuthPresentationFailure::Unsupported);
+}
+
+void PurpleTdClient::onEmailAddressRequired(
+    TdAuthPromptId prompt,
+    const TdAuthEmailAddressChallenge &)
+{
+    m_lastAuthPromptType = TdAuthPromptType::EmailAddress;
+    purple_debug_misc(
+        config::pluginId, "Authorization email requested\n");
+    requestAuthEmail(prompt);
+}
+
+void PurpleTdClient::onEmailCodeRequired(
+    TdAuthPromptId prompt,
+    const TdAuthEmailCodeChallenge &challenge)
+{
+    m_lastAuthPromptType = TdAuthPromptType::EmailCode;
+    purple_debug_misc(
+        config::pluginId,
+        "Authorization email confirmation code requested\n");
+    requestAuthEmailCode(prompt, challenge);
+}
+
+void PurpleTdClient::onCodeRequired(
+    TdAuthPromptId prompt,
+    const TdAuthCodeChallenge &challenge)
+{
+    m_lastAuthPromptType = TdAuthPromptType::Code;
+    purple_debug_misc(
+        config::pluginId,
+        "Authorization state update: authentication code requested\n");
+    requestAuthCode(prompt, challenge);
+}
+
+void PurpleTdClient::onQrLinkChanged(
+    TdAuthPromptId prompt,
+    const std::string &link)
+{
+    (void)link;
+    m_lastAuthPromptType = TdAuthPromptType::QrCode;
+    m_authController->failPrompt(
+        prompt, TdAuthPresentationFailure::Unsupported);
+}
+
+void PurpleTdClient::onRegistrationRequired(
+    TdAuthPromptId prompt,
+    const TdAuthRegistrationChallenge &)
+{
+    m_lastAuthPromptType = TdAuthPromptType::Registration;
+    purple_debug_misc(
+        config::pluginId,
+        "Authorization state update: new user registration\n");
+    registerUser(prompt);
+}
+
+void PurpleTdClient::onPasswordRequired(
+    TdAuthPromptId prompt,
+    const TdAuthPasswordChallenge &challenge)
+{
+    m_lastAuthPromptType = TdAuthPromptType::Password;
+    purple_debug_misc(
+        config::pluginId,
+        "Authorization state update: password requested\n");
+    requestPassword(prompt, challenge);
+}
+
+void PurpleTdClient::onPromptClosed(
+    TdAuthPromptId prompt,
+    TdAuthPromptType,
+    TdAuthPromptCloseReason)
+{
+    closeAuthPrompt(prompt);
+}
+
+void PurpleTdClient::onRequestFailed(
+    const TdAuthRequestFailure &failure)
+{
+    if (failure.operation == TdAuthOperation::SetPhoneNumber) {
+        // Purple 2 takes its fixed phone number from the account identity, so
+        // redisplaying the same automatic value would only create a loop.
+        m_authController->shutdown();
+        purple_connection_error(
+            purple_account_get_connection(m_account),
+            failure.errorCode == 0
+                ? _("A phone number is required for Purple 2 authentication")
+                : _("Telegram rejected the configured phone number"));
+        return;
+    }
+
+    if (failure.operation == TdAuthOperation::RegisterUser)
+        m_registrationAliasRejected = true;
+
+    const char *details = nullptr;
+    if (failure.errorCode == 0) {
+        details = (
+            // TRANSLATOR: Authentication retry notification. No submitted
+            // value is included.
+            _("Required authentication input was empty. Please try again."));
+    } else {
+        details = (
+            // TRANSLATOR: Authentication retry notification. No
+            // server-provided text or submitted value is included.
+            _("Telegram rejected the authentication response. Please try "
+              "again."));
+    }
+    purple_notify_error(
+        m_account,
+        // TRANSLATOR: Authentication retry notification title.
+        _("Authentication error"),
+        details,
+        nullptr);
+}
+
+void PurpleTdClient::onAuthorizationReady()
+{
+    purple_debug_misc(
+        config::pluginId,
+        "Authorization state update: ready\n");
+    onLoggedIn();
+}
+
+void PurpleTdClient::onAuthorizationCancelled()
+{
+    const char *message = _("Authentication was cancelled");
+    switch (m_lastAuthPromptType) {
+    case TdAuthPromptType::EmailAddress:
+        message = _("Authentication email required");
+        break;
+    case TdAuthPromptType::EmailCode:
+        message = _("Authentication email code required");
+        break;
+    case TdAuthPromptType::Code:
+        message = _("Authentication code required");
+        break;
+    case TdAuthPromptType::Password:
+        message = _("Password required");
+        break;
+    case TdAuthPromptType::Registration:
+        message = _("Display name is required for registration");
+        break;
+    case TdAuthPromptType::QrCode:
+        message = _("QR authentication was cancelled");
+        break;
+    default:
+        break;
+    }
+    purple_connection_error(
+        purple_account_get_connection(m_account), message);
+}
+
+void PurpleTdClient::onAuthorizationFailed(const TdAuthFailure &failure)
+{
+    if (failure.type == TdAuthFailureType::RequestRejected &&
+        failure.errorCode == 400 &&
+        (failure.errorMessage.find("api_id") != std::string::npos ||
+         failure.errorMessage.find("API_ID") != std::string::npos))
     {
-        // Only happens with like empathy, not worth translating
-        purple_connection_error(purple_account_get_connection(m_account),
-            "Authentication code is required but this libpurple doesn't support input requests");
+        purple_debug_warning(
+            config::pluginId,
+            "API ID/Hash rejected, restarting onboarding flow\n");
+        auto context = new ReconnectContext{
+            purple_account_get_username(m_account),
+            purple_account_get_protocol_id(m_account)
+        };
+        moduleActivityAddIdle(
+            restartOnboardingIdle,
+            context,
+            [](gpointer data) { delete static_cast<ReconnectContext *>(data); });
+        return;
     }
-}
 
-void PurpleTdClient::registerUser()
-{
-    std::string firstName, lastName;
-    getNamesFromAlias(purple_account_get_alias(m_account), firstName, lastName);
-
-    if (firstName.empty() && lastName.empty()) {
-        if (!purple_request_input (purple_account_get_connection(m_account),
-                                // TRANSLATOR: Registration dialog, title
-                                _("Registration"),
-                                // TRANSLATOR: Registration dialog, content
-                                _("New account is being created. Please enter your display name."),
-                                NULL,
-                                NULL, // default value
-                                FALSE, // multiline input
-                                FALSE, // masked input
-                                NULL,
-                                // TRANSLATOR: Registration dialog, alternative is "_Cancel". The underscore marks accelerator keys, they must be different!
-                                _("_OK"), G_CALLBACK(displayNameEntered),
-                                // TRANSLATOR: Registration dialog, alternative is "_OK". The underscore marks accelerator keys, they must be different!
-                                _("_Cancel"), G_CALLBACK(displayNameCancelled),
-                                m_account,
-                                NULL, // buddy
-                                NULL, // conversation
-                                this))
-        {
-            // Same as when requesting authentication code - not worth translating
-            purple_connection_error(purple_account_get_connection(m_account),
-                "Registration is required but this libpurple doesn't support input requests");
+    const char *message = _("Telegram authentication failed");
+    switch (failure.type) {
+    case TdAuthFailureType::InvalidConfiguration:
+        message = _(
+            "Telegram application credentials are missing or invalid");
+        break;
+    case TdAuthFailureType::RequestRejected:
+        message = _("Telegram rejected the authentication request");
+        break;
+    case TdAuthFailureType::TransportUnavailable:
+        message = _("Telegram authentication transport stopped");
+        break;
+    case TdAuthFailureType::MalformedResponse:
+        message = _("Telegram returned an invalid authentication response");
+        break;
+    case TdAuthFailureType::MalformedState:
+        message = _("Telegram returned an invalid authentication state");
+        break;
+    case TdAuthFailureType::UnsupportedState:
+        message = _("Telegram requested an unsupported authentication step");
+        break;
+    case TdAuthFailureType::PresentationUnavailable:
+        if (m_lastAuthPromptType == TdAuthPromptType::QrCode) {
+            message = _("QR authentication is not supported by Purple 2");
+        } else if (
+            m_lastAuthPromptType == TdAuthPromptType::PremiumPurchase) {
+            message = _(
+                "Telegram Premium authentication is not supported");
+        } else {
+            message = _(
+                "This libpurple client cannot show the required authentication input");
         }
-    } else
-        m_transceiver.sendQuery(td::td_api::make_object<td::td_api::registerUser>(firstName, lastName, false),
-                                &PurpleTdClient::authResponse);
+        break;
+    case TdAuthFailureType::PresentationFailed:
+        message = _("Required authentication input was empty");
+        break;
+    case TdAuthFailureType::TerminalState:
+        message = _("Telegram authorization ended before login completed");
+        break;
+    case TdAuthFailureType::InternalError:
+        message = _("Telegram authentication could not be completed");
+        break;
+    }
+    purple_connection_error(
+        purple_account_get_connection(m_account), message);
 }
 
-void PurpleTdClient::displayNameEntered(PurpleTdClient *self, const gchar *name)
+void PurpleTdClient::reportAuthorizationEnded()
 {
-    std::string firstName, lastName;
-    getNamesFromAlias(name, firstName, lastName);
-    if (firstName.empty() && lastName.empty())
-        purple_connection_error(purple_account_get_connection(self->m_account),
-                                // TRANSLATOR: Connection error message after failed registration.
-                                _("Display name is required for registration"));
-    else
-        self->m_transceiver.sendQuery(td::td_api::make_object<td::td_api::registerUser>(firstName, lastName, false),
-                                      &PurpleTdClient::authResponse);
+    if (m_authLifecycleErrorReported)
+        return;
+    m_authLifecycleErrorReported = true;
+    purple_connection_error(
+        purple_account_get_connection(m_account),
+        _("Telegram authorization ended"));
 }
 
-void PurpleTdClient::displayNameCancelled(PurpleTdClient *self)
+void PurpleTdClient::onLoggingOut()
 {
-    purple_connection_error(purple_account_get_connection(self->m_account),
-                            // TRANSLATOR: Connection error message after failed registration.
-                            _("Display name is required for registration"));
+    reportAuthorizationEnded();
 }
 
-void PurpleTdClient::authResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object)
+void PurpleTdClient::onClosing()
 {
-    if (object && (object->get_id() == td::td_api::ok::ID))
-        purple_debug_misc(config::pluginId, "Authentication success on query %lu\n", (unsigned long)requestId);
-    else
-        notifyAuthError(object);
+    reportAuthorizationEnded();
 }
 
-void PurpleTdClient::notifyAuthError(const td::td_api::object_ptr<td::td_api::Object> &response)
+void PurpleTdClient::onClosed()
 {
-    std::string message;
+    reportAuthorizationEnded();
+}
 
-    message = _("Authentication error: {}");
-    message = formatMessage(message.c_str(), getDisplayedError(response));
-
-    purple_connection_error(purple_account_get_connection(m_account), message.c_str());
+void PurpleTdClient::notifyAuthError(
+    const td::td_api::object_ptr<td::td_api::Object> &response)
+{
+    (void)response;
+    // Server error text can echo submitted values. Keep this post-auth login
+    // bootstrap failure stable and value-free too.
+    purple_connection_error(
+        purple_account_get_connection(m_account),
+        _("Telegram login could not be completed"));
 }

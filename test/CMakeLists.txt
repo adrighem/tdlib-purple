@@ -2,8 +2,6 @@ if (DEFINED GTEST_PATH)
     set(GTEST_LIBRARY_DIR "${GTEST_PATH}/lib")
 endif (DEFINED GTEST_PATH)
 
-set(GLIB_LIBRARIES "glib-2.0" CACHE STRING "GLib libraries")
-
 # Compiling plugin sources again is not optimal but it's the easy way
 add_executable(tests EXCLUDE_FROM_ALL
     test-main.cpp
@@ -25,6 +23,7 @@ add_executable(tests EXCLUDE_FROM_ALL
     forum-topic-room-test.cpp
     forum-topic-sending-test.cpp
     forum-topics-adapter-test.cpp
+    plugin-lifecycle-test.cpp
     libpurple-mock-test.cpp
     test-transceiver.cpp
     libpurple-mock.cpp
@@ -79,6 +78,38 @@ if (NOT NoVoip)
     target_link_libraries(tests PRIVATE ${tgvoip_LIBRARIES})
 endif (NOT NoVoip)
 
+add_executable(td-transport-tests EXCLUDE_FROM_ALL
+    td-transport-test-main.cpp
+    td-transport-test.cpp
+    td-auth-controller-test.cpp
+    td-polling-backend-test.cpp
+    ${CMAKE_SOURCE_DIR}/td-auth-controller.cpp
+    ${CMAKE_SOURCE_DIR}/td-polling-backend.cpp
+    ${CMAKE_SOURCE_DIR}/td-transport.cpp
+)
+target_compile_features(td-transport-tests PRIVATE cxx_std_14)
+target_include_directories(td-transport-tests PRIVATE ${CMAKE_SOURCE_DIR})
+target_include_directories(
+    td-transport-tests
+    SYSTEM PRIVATE
+        ${GLIB_INCLUDE_DIRS}
+)
+if (GLIB_LIBRARY_DIRS)
+    target_link_directories(
+        td-transport-tests
+        PRIVATE
+            ${GLIB_LIBRARY_DIRS}
+    )
+endif()
+target_link_libraries(
+    td-transport-tests
+    PRIVATE
+        gtest
+        Td::TdStatic
+        ${GLIB_LIBRARIES}
+)
+add_dependencies(tests td-transport-tests)
+
 add_custom_target(
     run-tests
     COMMAND
@@ -86,7 +117,9 @@ add_custom_target(
         "-B"
         "${CMAKE_SOURCE_DIR}/credentials/test/test_generate_application_credentials.py"
     COMMAND
+        "${CMAKE_CURRENT_BINARY_DIR}/td-transport-tests"
+    COMMAND
         "${CMAKE_CURRENT_BINARY_DIR}/tests"
-    DEPENDS tests
+    DEPENDS td-transport-tests tests
     USES_TERMINAL
 )

@@ -24,6 +24,7 @@ include(cmake/TelegramApplicationCredentials.cmake)
 if (NOT NoPkgConfig)
     include(FindPkgConfig)
     pkg_check_modules(Purple REQUIRED purple)
+    pkg_check_modules(GLIB REQUIRED glib-2.0)
     if (NOT NoWebp)
         pkg_check_modules(libwebp libwebp)
         pkg_check_modules(libpng libpng)
@@ -34,6 +35,14 @@ if (NOT NoPkgConfig)
 
     pkg_get_variable(PURPLE_PLUGIN_DIR purple plugindir)
     pkg_get_variable(PURPLE_DATA_DIR purple datarootdir)
+else()
+    set(
+        GLIB_INCLUDE_DIRS
+        "${Purple_INCLUDE_DIRS}"
+        CACHE STRING
+        "GLib include directories"
+    )
+    set(GLIB_LIBRARIES "glib-2.0" CACHE STRING "GLib libraries")
 endif (NOT NoPkgConfig)
 
 if (NOT NoWebp)
@@ -58,6 +67,10 @@ set(TDLIB_PURPLE_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/tdlib-purple.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-client-auth.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/td-auth-controller.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/td-transport.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/td-polling-backend.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/module-activity.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transceiver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/account-data.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/purple-info.cpp
@@ -98,11 +111,17 @@ target_include_directories(telegram-tdlib
         ${CMAKE_CURRENT_SOURCE_DIR}/credentials
         ${CMAKE_BINARY_DIR}
 )
+target_include_directories(
+    telegram-tdlib
+    SYSTEM PRIVATE
+        ${GLIB_INCLUDE_DIRS}
+)
 target_include_directories(telegram-tdlib SYSTEM PRIVATE ${Purple_INCLUDE_DIRS})
 if (Purple_LIBRARY_DIRS)
     target_link_directories(telegram-tdlib PRIVATE ${Purple_LIBRARY_DIRS})
 endif (Purple_LIBRARY_DIRS)
 target_link_libraries(telegram-tdlib PRIVATE Td::TdStatic ${Purple_LIBRARIES})
+target_link_libraries(telegram-tdlib PRIVATE ${GLIB_LIBRARIES})
 
 set(VERSION_SCRIPT_FLAG "-Wl,--version-script=${CMAKE_SOURCE_DIR}/ld_version_script")
 set(CMAKE_EXE_LINKER_FLAGS ${VERSION_SCRIPT_FLAG})
@@ -165,7 +184,7 @@ if (NOT NoLottie)
         endif (NoBundledLottie)
         set(BUILD_SHARED_LIBS OFF)
         add_subdirectory(rlottie)
-        target_compile_options(rlottie PRIVATE -fPIC -Wno-error=unused-value)
+        target_compile_options(rlottie PRIVATE -fPIC -Wno-error)
         target_include_directories(telegram-tdlib PRIVATE rlottie/inc)
         target_link_libraries(telegram-tdlib PRIVATE rlottie)
         set(TDLIB_PURPLE_RLOTTIE_TARGET rlottie)

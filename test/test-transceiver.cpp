@@ -1,11 +1,21 @@
 #include "test-transceiver.h"
 #include "format.h"
+#include "printout.h"
 #include <td/telegram/td_api.h>
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 #include <iostream>
 using namespace td::td_api;
 
 #define COMPARE(param) ASSERT_EQ(expected.param, actual.param)
+#define ASSERT_REDACTED_EQ(expected_value, actual_value, field_name) \
+    do { \
+        if ((expected_value) != (actual_value)) { \
+            FAIL() << field_name << " differs (values redacted)"; \
+        } \
+    } while (false)
+#define COMPARE_REDACTED(param) \
+    ASSERT_REDACTED_EQ(expected.param, actual.param, #param)
 
 namespace td {
 namespace td_api {
@@ -15,12 +25,16 @@ static void compare(const TextEntityType &actual, const TextEntityType &expected
     ASSERT_EQ(expected.get_id(), actual.get_id());
     switch (expected.get_id()) {
         case textEntityTypePreCode::ID:
-            ASSERT_EQ(static_cast<const textEntityTypePreCode &>(expected).language_,
-                      static_cast<const textEntityTypePreCode &>(actual).language_);
+            ASSERT_REDACTED_EQ(
+                static_cast<const textEntityTypePreCode &>(expected).language_,
+                static_cast<const textEntityTypePreCode &>(actual).language_,
+                "text entity language");
             break;
         case textEntityTypeTextUrl::ID:
-            ASSERT_EQ(static_cast<const textEntityTypeTextUrl &>(expected).url_,
-                      static_cast<const textEntityTypeTextUrl &>(actual).url_);
+            ASSERT_REDACTED_EQ(
+                static_cast<const textEntityTypeTextUrl &>(expected).url_,
+                static_cast<const textEntityTypeTextUrl &>(actual).url_,
+                "text entity URL");
             break;
         case textEntityTypeMentionName::ID:
             ASSERT_EQ(static_cast<const textEntityTypeMentionName &>(expected).user_id_,
@@ -48,7 +62,7 @@ static void compare(const textEntity &actual, const textEntity &expected)
 
 void compare(const formattedText &actual, const formattedText &expected)
 {
-    ASSERT_EQ(expected.text_, actual.text_);
+    ASSERT_REDACTED_EQ(expected.text_, actual.text_, "formatted text");
     ASSERT_EQ(expected.entities_.size(), actual.entities_.size());
     for (size_t i = 0; i < expected.entities_.size(); i++)
         compare(*actual.entities_[i], *expected.entities_[i]);
@@ -56,41 +70,95 @@ void compare(const formattedText &actual, const formattedText &expected)
 
 void compare(const setTdlibParameters &actual, const setTdlibParameters &expected)
 {
-    COMPARE(database_directory_);
+    COMPARE_REDACTED(database_directory_);
+    COMPARE_REDACTED(api_id_);
+    COMPARE_REDACTED(api_hash_);
     COMPARE(use_secret_chats_);
-    COMPARE(api_id_);
-    COMPARE(api_hash_);
 }
 
 void compare(const setAuthenticationPhoneNumber &actual, const setAuthenticationPhoneNumber &expected)
 {
-    COMPARE(phone_number_);
+    COMPARE_REDACTED(phone_number_);
     COMPARE(settings_ != nullptr);
 }
 
 void compare(const checkAuthenticationCode &actual, const checkAuthenticationCode &expected)
 {
-    COMPARE(code_);
+    COMPARE_REDACTED(code_);
 }
 
 void compare(const checkAuthenticationPassword &actual, const checkAuthenticationPassword &expected)
 {
-    COMPARE(password_);
+    COMPARE_REDACTED(password_);
+}
+
+void compare(const setAuthenticationEmailAddress &actual,
+             const setAuthenticationEmailAddress &expected)
+{
+    COMPARE_REDACTED(email_address_);
+}
+
+void compare(const checkAuthenticationEmailCode &actual,
+             const checkAuthenticationEmailCode &expected)
+{
+    COMPARE(code_ != nullptr);
+    if (actual.code_ != nullptr) {
+        COMPARE(code_->get_id());
+        if (actual.code_->get_id() ==
+            emailAddressAuthenticationCode::ID)
+        {
+            const auto &actual_code =
+                static_cast<const emailAddressAuthenticationCode &>(
+                    *actual.code_);
+            const auto &expected_code =
+                static_cast<const emailAddressAuthenticationCode &>(
+                    *expected.code_);
+            ASSERT_REDACTED_EQ(
+                expected_code.code_,
+                actual_code.code_,
+                "email authentication code");
+        }
+    }
 }
 
 void compare(const proxyTypeSocks5 &actual, const proxyTypeSocks5 &expected)
 {
-    COMPARE(username_);
-    COMPARE(password_);
+    COMPARE_REDACTED(username_);
+    COMPARE_REDACTED(password_);
+}
+
+void compare(const proxyTypeHttp &actual, const proxyTypeHttp &expected)
+{
+    COMPARE_REDACTED(username_);
+    COMPARE_REDACTED(password_);
+    COMPARE(http_only_);
+}
+
+void compare(const proxyTypeMtproto &actual, const proxyTypeMtproto &expected)
+{
+    COMPARE_REDACTED(secret_);
 }
 
 void compare(const proxy &actual, const proxy &expected)
 {
-    COMPARE(server_);
+    COMPARE_REDACTED(server_);
     COMPARE(port_);
     COMPARE(type_ != nullptr);
     if (actual.type_ != nullptr) {
         COMPARE(type_->get_id());
+        if (actual.type_->get_id() == proxyTypeSocks5::ID) {
+            compare(
+                static_cast<const proxyTypeSocks5 &>(*actual.type_),
+                static_cast<const proxyTypeSocks5 &>(*expected.type_));
+        } else if (actual.type_->get_id() == proxyTypeHttp::ID) {
+            compare(
+                static_cast<const proxyTypeHttp &>(*actual.type_),
+                static_cast<const proxyTypeHttp &>(*expected.type_));
+        } else if (actual.type_->get_id() == proxyTypeMtproto::ID) {
+            compare(
+                static_cast<const proxyTypeMtproto &>(*actual.type_),
+                static_cast<const proxyTypeMtproto &>(*expected.type_));
+        }
     }
 }
 
@@ -129,26 +197,30 @@ static void compare(const InputFile &actual, const InputFile &expected)
             static_cast<const inputFileId &>(actual).id_);
         break;
     case inputFileRemote::ID:
-        ASSERT_EQ(
+        ASSERT_REDACTED_EQ(
             static_cast<const inputFileRemote &>(expected).id_,
-            static_cast<const inputFileRemote &>(actual).id_);
+            static_cast<const inputFileRemote &>(actual).id_,
+            "remote file identifier");
         break;
     case inputFileLocal::ID:
-        ASSERT_EQ(
+        ASSERT_REDACTED_EQ(
             static_cast<const inputFileLocal &>(expected).path_,
-            static_cast<const inputFileLocal &>(actual).path_);
+            static_cast<const inputFileLocal &>(actual).path_,
+            "local file path");
         break;
     case inputFileGenerated::ID: {
         const auto &actualGenerated =
             static_cast<const inputFileGenerated &>(actual);
         const auto &expectedGenerated =
             static_cast<const inputFileGenerated &>(expected);
-        ASSERT_EQ(
+        ASSERT_REDACTED_EQ(
             expectedGenerated.original_path_,
-            actualGenerated.original_path_);
-        ASSERT_EQ(
+            actualGenerated.original_path_,
+            "generated file source path");
+        ASSERT_REDACTED_EQ(
             expectedGenerated.conversion_,
-            actualGenerated.conversion_);
+            actualGenerated.conversion_,
+            "generated file conversion");
         ASSERT_EQ(
             expectedGenerated.expected_size_,
             actualGenerated.expected_size_);
@@ -251,7 +323,7 @@ void compare(const getBasicGroupFullInfo &actual, const getBasicGroupFullInfo &e
 
 void compare(const joinChatByInviteLink &actual, const joinChatByInviteLink &expected)
 {
-    COMPARE(invite_link_);
+    COMPARE_REDACTED(invite_link_);
 }
 
 void compare(const getMessage &actual, const getMessage &expected)
@@ -269,7 +341,7 @@ void compare(const getForumTopic &actual, const getForumTopic &expected)
 void compare(const getForumTopics &actual, const getForumTopics &expected)
 {
     COMPARE(chat_id_);
-    COMPARE(query_);
+    COMPARE_REDACTED(query_);
     COMPARE(offset_date_);
     COMPARE(offset_message_id_);
     COMPARE(offset_forum_topic_id_);
@@ -346,8 +418,8 @@ void compare(const changeImportedContacts &actual, const changeImportedContacts 
 
 void compare(const registerUser &actual, const registerUser &expected)
 {
-    COMPARE(first_name_);
-    COMPARE(last_name_);
+    COMPARE_REDACTED(first_name_);
+    COMPARE_REDACTED(last_name_);
 }
 
 void compare(const addContact &actual, const addContact &expected)
@@ -356,15 +428,14 @@ void compare(const addContact &actual, const addContact &expected)
     COMPARE(share_phone_number_);
 }
 
-std::string requestToString(const td::td_api::Function &request)
-{
-    return td::td_api::to_string(request);
-}
-
 void compare_func(const td::td_api::Function &actual, const td::td_api::Function &expected)
 {
-    ASSERT_EQ(expected.get_id(), actual.get_id()) <<
-        requestToString(actual) << " expected " << requestToString(expected);
+    if (expected.get_id() != actual.get_id()) {
+        FAIL() << "Request type mismatch: received "
+               << ::requestTypeToString(actual) << ", expected "
+               << ::requestTypeToString(expected)
+               << " (request values redacted)";
+    }
 
 #define C(class) case class::ID: \
     compare(static_cast<const class &>(actual), static_cast<const class &>(expected)); \
@@ -375,6 +446,8 @@ void compare_func(const td::td_api::Function &actual, const td::td_api::Function
         C(setAuthenticationPhoneNumber)
         C(checkAuthenticationCode)
         C(checkAuthenticationPassword)
+        C(setAuthenticationEmailAddress)
+        C(checkAuthenticationEmailCode)
         C(registerUser)
         C(changeImportedContacts)
         case getContacts::ID: break;
@@ -395,6 +468,7 @@ void compare_func(const td::td_api::Function &actual, const td::td_api::Function
         C(getForumTopicHistory)
         C(sendChatAction)
         C(addProxy)
+        C(removeProxy)
         C(addContact)
         case disableProxy::ID: break;
         case getProxies::ID: break;
@@ -730,6 +804,20 @@ object_ptr<chatInviteLink> makeChatInviteLink(const std::string &link)
     return result;
 }
 
+TestTransceiver::TestTransceiver()
+    : m_transportContext(g_main_context_new())
+{
+}
+
+TestTransceiver::~TestTransceiver()
+{
+    for (GSource *source: m_timeoutSources) {
+        g_source_destroy(source);
+        g_source_unref(source);
+    }
+    g_main_context_unref(m_transportContext);
+}
+
 void TestTransceiver::send(td::Client::Request &&request)
 {
     m_lastReceivedRequestId = request.id;
@@ -827,26 +915,103 @@ void TestTransceiver::reply(uint64_t requestId, td::td_api::object_ptr<td::td_ap
 
 void TestTransceiver::runTimeouts()
 {
-    while (!m_timers.empty()) {
-        const TimerInfo timer = m_timers.front();
-        m_timers.erase(m_timers.begin());
-        while (timer.function(timer.data)) {
+    while (true) {
+        pruneTimeoutSources();
+
+        GSource *source = nullptr;
+        for (GSource *candidate: m_timeoutSources) {
+            if (candidate != g_main_current_source() &&
+                !g_source_is_destroyed(candidate) &&
+                g_source_get_context(candidate) ==
+                    m_transportContext) {
+                source = candidate;
+                break;
+            }
         }
+
+        if (!source)
+            return;
+
+        ManualTimeoutSource *manualSource =
+            reinterpret_cast<ManualTimeoutSource *>(source);
+        manualSource->armed = TRUE;
+        g_main_context_wakeup(m_transportContext);
+
+        while (!g_source_is_destroyed(source) &&
+               g_main_context_iteration(
+                   m_transportContext, FALSE)) {
+        }
+
+        // A selected attached source must dispatch once armed. Avoid
+        // spinning if runTimeouts() is called recursively from a source
+        // which GLib will not dispatch again until the outer call returns.
+        if (!g_source_is_destroyed(source))
+            return;
     }
 }
 
-guint TestTransceiver::addTimeout(guint interval, GSourceFunc function, gpointer data)
+GMainContext *TestTransceiver::transportContext()
 {
-    m_timers.push_back({m_nextTimerId++, function, data});
-    return m_timers.back().id;
+    return m_transportContext;
 }
 
-void TestTransceiver::cancelTimer(guint id)
+GSource *TestTransceiver::createTimeoutSource(unsigned)
 {
-    for (auto it = m_timers.begin(); it != m_timers.end(); ++it) {
-        if (it->id == id) {
-            m_timers.erase(it);
-            return;
+    static GSourceFuncs sourceFunctions = {
+        prepareTimeoutSource,
+        checkTimeoutSource,
+        dispatchTimeoutSource,
+        nullptr,
+        nullptr,
+        nullptr
+    };
+    GSource *source = g_source_new(
+        &sourceFunctions, sizeof(ManualTimeoutSource));
+    reinterpret_cast<ManualTimeoutSource *>(source)->armed = FALSE;
+
+    try {
+        m_timeoutSources.push_back(source);
+    } catch (...) {
+        g_source_unref(source);
+        throw;
+    }
+    // TdTransport receives the original reference. The fake retains one
+    // observer reference so cancellation can never leave a dangling pointer
+    // in the deterministic timeout queue.
+    g_source_ref(source);
+    return source;
+}
+
+gboolean TestTransceiver::prepareTimeoutSource(
+    GSource *source, gint *timeout)
+{
+    if (timeout)
+        *timeout = -1;
+    return reinterpret_cast<ManualTimeoutSource *>(source)->armed;
+}
+
+gboolean TestTransceiver::checkTimeoutSource(GSource *source)
+{
+    return reinterpret_cast<ManualTimeoutSource *>(source)->armed;
+}
+
+gboolean TestTransceiver::dispatchTimeoutSource(
+    GSource *,
+    GSourceFunc callback,
+    gpointer userData)
+{
+    return callback ? callback(userData) : FALSE;
+}
+
+void TestTransceiver::pruneTimeoutSources()
+{
+    auto source = m_timeoutSources.begin();
+    while (source != m_timeoutSources.end()) {
+        if (g_source_is_destroyed(*source)) {
+            g_source_unref(*source);
+            source = m_timeoutSources.erase(source);
+        } else {
+            ++source;
         }
     }
 }
@@ -867,6 +1032,107 @@ std::string TestTransceiver::addInputPhoto(const void *data, size_t size)
     std::string path = "/tmp/test_photo_" + std::to_string(m_inputPhotoPaths.size());
     m_inputPhotoPaths.push_back(path);
     return path;
+}
+
+static const char sensitiveMarkerA[] =
+    "SYNTHETIC_AUTH_VALUE_A_DO_NOT_PRINT";
+static const char sensitiveMarkerB[] =
+    "SYNTHETIC_AUTH_VALUE_B_DO_NOT_PRINT";
+
+static std::string captureRequestComparisonFailure(
+    const Function &actual,
+    const Function &expected)
+{
+    ::testing::TestPartResultArray failures;
+
+    {
+        ::testing::ScopedFakeTestPartResultReporter reporter(
+            ::testing::ScopedFakeTestPartResultReporter::
+                INTERCEPT_ONLY_CURRENT_THREAD,
+            &failures);
+        compare_func(actual, expected);
+    }
+
+    if (failures.size() != 1) {
+        ADD_FAILURE()
+            << "Expected exactly one intercepted request comparison failure";
+        return "";
+    }
+
+    return failures.GetTestPartResult(0).message();
+}
+
+static void assertSensitiveMarkersAreRedacted(const std::string &message)
+{
+    if (message.find(sensitiveMarkerA) != std::string::npos ||
+        message.find(sensitiveMarkerB) != std::string::npos)
+    {
+        ADD_FAILURE()
+            << "Request comparison failure exposed a synthetic marker";
+    }
+}
+
+TEST(TestTransceiverHarness, RedactsAuthenticationMismatchDiagnostics)
+{
+    auto actualPassword =
+        make_object<checkAuthenticationPassword>(sensitiveMarkerA);
+    auto expectedPassword =
+        make_object<checkAuthenticationPassword>(sensitiveMarkerB);
+
+    std::string sameTypeFailure = captureRequestComparisonFailure(
+        *actualPassword, *expectedPassword);
+    EXPECT_NE(
+        sameTypeFailure.find("password_ differs (values redacted)"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(sameTypeFailure);
+
+    auto actualEmail =
+        make_object<setAuthenticationEmailAddress>(sensitiveMarkerA);
+    auto expectedEmail =
+        make_object<setAuthenticationEmailAddress>(sensitiveMarkerB);
+    std::string emailFailure = captureRequestComparisonFailure(
+        *actualEmail, *expectedEmail);
+    EXPECT_NE(
+        emailFailure.find("email_address_ differs (values redacted)"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(emailFailure);
+
+    auto actualEmailCode =
+        make_object<checkAuthenticationEmailCode>(
+            make_object<emailAddressAuthenticationCode>(
+                sensitiveMarkerA));
+    auto expectedEmailCode =
+        make_object<checkAuthenticationEmailCode>(
+            make_object<emailAddressAuthenticationCode>(
+                sensitiveMarkerB));
+    std::string emailCodeFailure = captureRequestComparisonFailure(
+        *actualEmailCode, *expectedEmailCode);
+    EXPECT_NE(
+        emailCodeFailure.find(
+            "email authentication code differs (values redacted)"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(emailCodeFailure);
+
+    auto actualParameters = make_object<setTdlibParameters>();
+    auto expectedParameters = make_object<setTdlibParameters>();
+    actualParameters->api_hash_ = sensitiveMarkerA;
+    expectedParameters->api_hash_ = sensitiveMarkerB;
+    std::string apiHashFailure = captureRequestComparisonFailure(
+        *actualParameters, *expectedParameters);
+    EXPECT_NE(
+        apiHashFailure.find("api_hash_ differs (values redacted)"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(apiHashFailure);
+
+    auto expectedPhone =
+        make_object<setAuthenticationPhoneNumber>(
+            sensitiveMarkerB, nullptr);
+    std::string typeFailure = captureRequestComparisonFailure(
+        *actualPassword, *expectedPhone);
+    EXPECT_NE(
+        typeFailure.find("Request type mismatch"),
+        std::string::npos);
+    assertSensitiveMarkersAreRedacted(typeFailure);
 }
 
 TEST(TestTransceiverHarness, MockSendMessagePreservesTypedTopic)
@@ -901,6 +1167,57 @@ TEST(TestTransceiverHarness, MockViewMessagesPreservesSource)
     EXPECT_EQ(messageSourceForumTopicHistory::ID, request->source_->get_id());
 }
 
+TEST(TestTransceiverHarness, ManualTimeoutsAreIsolatedAndOrdered)
+{
+    struct CallbackData {
+        std::vector<int> *order;
+        int value;
+    };
+    const auto recordTimeout = [](gpointer userData) -> gboolean {
+        CallbackData *data = static_cast<CallbackData *>(userData);
+        data->order->push_back(data->value);
+        return FALSE;
+    };
+    const auto recordUnrelatedSource = [](gpointer userData) -> gboolean {
+        *static_cast<bool *>(userData) = true;
+        return FALSE;
+    };
+
+    TestTransceiver backend;
+    std::vector<int> order;
+    CallbackData firstData{&order, 1};
+    CallbackData secondData{&order, 2};
+
+    GSource *first = backend.createTimeoutSource(30);
+    g_source_set_callback(first, recordTimeout, &firstData, nullptr);
+    g_source_attach(first, backend.transportContext());
+    g_source_unref(first);
+
+    GSource *second = backend.createTimeoutSource(1);
+    g_source_set_callback(second, recordTimeout, &secondData, nullptr);
+    g_source_attach(second, backend.transportContext());
+    g_source_unref(second);
+
+    bool unrelatedSourceCalled = false;
+    GSource *unrelatedSource = g_idle_source_new();
+    g_source_set_callback(
+        unrelatedSource,
+        recordUnrelatedSource,
+        &unrelatedSourceCalled,
+        nullptr);
+    g_source_attach(unrelatedSource, g_main_context_default());
+
+    EXPECT_FALSE(g_main_context_iteration(
+        backend.transportContext(), FALSE));
+    backend.runTimeouts();
+
+    EXPECT_EQ((std::vector<int>{1, 2}), order);
+    EXPECT_FALSE(unrelatedSourceCalled);
+
+    g_source_destroy(unrelatedSource);
+    g_source_unref(unrelatedSource);
+}
+
 TEST(TestTransceiverHarness, IgnoresResponseAfterOwnerIsDestroyed)
 {
     TestTransceiver backend;
@@ -909,6 +1226,41 @@ TEST(TestTransceiverHarness, IgnoresResponseAfterOwnerIsDestroyed)
     }
 
     backend.update(make_object<updateConnectionState>(make_object<connectionStateReady>()));
+}
+
+TEST(TestTransceiverHarness, ReplyDrainsOnlyTransportDeliveries)
+{
+    TestTransceiver backend;
+    TdTransceiver transceiver(nullptr, nullptr, nullptr, &backend);
+    bool responseCalled = false;
+    bool unrelatedSourceCalled = false;
+    const auto recordUnrelatedSource = [](gpointer userData) -> gboolean {
+        *static_cast<bool *>(userData) = true;
+        return FALSE;
+    };
+
+    transceiver.sendQuery(
+        make_object<getMe>(),
+        [&](uint64_t, object_ptr<Object>) {
+            responseCalled = true;
+        });
+    backend.verifyRequest(getMe());
+
+    GSource *unrelatedSource = g_idle_source_new();
+    g_source_set_callback(
+        unrelatedSource,
+        recordUnrelatedSource,
+        &unrelatedSourceCalled,
+        nullptr);
+    g_source_attach(unrelatedSource, g_main_context_default());
+
+    backend.reply(make_object<ok>());
+
+    EXPECT_TRUE(responseCalled);
+    EXPECT_FALSE(unrelatedSourceCalled);
+
+    g_source_destroy(unrelatedSource);
+    g_source_unref(unrelatedSource);
 }
 
 TEST(TestTransceiverHarness, TimeoutCallbackMayDestroyTransceiver)

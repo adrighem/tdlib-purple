@@ -31,4 +31,11 @@ When reporting bugs or proposing fixes, include:
 
 Debug logs may contain private names, phone numbers, chat titles, and message text. Remove sensitive data before posting logs publicly.
 
-Never commit Telegram API credentials, login codes, authorization data, or session files. Configure API credentials through the local Pidgin account settings and remove credentials from logs before sharing them.
+Never commit Telegram API credentials, login codes, authorization data, or
+session files. Public builds use the credential-unavailable provider. Private
+builds take only paths to two owner-only files outside the source tree, as
+documented in the README. Purple 3 uses only that application provider. Purple
+2 first accepts a complete legacy per-account override for compatibility, then
+falls back to the provider; the override remains in Purple 2's plaintext
+account settings. Never put credential values in CMake options, compiler
+caches, logs, tests, or bug reports.

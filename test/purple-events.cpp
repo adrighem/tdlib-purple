@@ -3,6 +3,7 @@
 #include <td/telegram/td_api.h>
 #include <algorithm>
 #include <gtest/gtest.h>
+#include <gtest/gtest-spi.h>
 using namespace td::td_api;
 
 PurpleEventReceiver g_purpleEvents;
@@ -14,6 +15,7 @@ void PurpleEventReceiver::addEvent(std::unique_ptr<PurpleEvent> event)
         inputOkCb     = inputEvent.ok_cb;
         inputCancelCb = inputEvent.cancel_cb;
         inputUserData = inputEvent.user_data;
+        inputHandle   = inputEvent.handle;
     }
     const PurpleEventType type = event->type;
     m_events.push(std::move(event));
@@ -24,6 +26,12 @@ void PurpleEventReceiver::addEvent(std::unique_ptr<PurpleEvent> event)
 }
 
 #define COMPARE(param) ASSERT_EQ(expected.param, actual.param)
+#define COMPARE_REDACTED(param) \
+    do { \
+        if ((expected.param) != (actual.param)) { \
+            FAIL() << #param << " differs (values redacted)"; \
+        } \
+    } while (false)
 
 static void compare(const AccountSetAliasEvent &actual, const AccountSetAliasEvent &expected)
 {
@@ -38,7 +46,7 @@ static void compare(const ShowAccountEvent &actual, const ShowAccountEvent &expe
 
 static void compare(const AddBuddyEvent &actual, const AddBuddyEvent &expected)
 {
-    COMPARE(username);
+    COMPARE_REDACTED(username);
     COMPARE(alias);
     COMPARE(account);
     COMPARE(contact);
@@ -58,7 +66,7 @@ static void compare(const AddChatEvent &actual, const AddChatEvent &expected)
 static void compare(const RemoveChatEvent &actual, const RemoveChatEvent &expected)
 {
     COMPARE(name);
-    COMPARE(inviteLink);
+    COMPARE_REDACTED(inviteLink);
 }
 
 static void compare(const AliasChatEvent &actual, const AliasChatEvent &expected)
@@ -75,19 +83,19 @@ static void compare(const HideAccountEvent &actual, const HideAccountEvent &expe
 static void compare(const RemoveBuddyEvent &actual, const RemoveBuddyEvent &expected)
 {
     COMPARE(account);
-    COMPARE(username);
+    COMPARE_REDACTED(username);
 }
 
 static void compare(const AliasBuddyEvent &actual, const AliasBuddyEvent &expected)
 {
-    COMPARE(username);
+    COMPARE_REDACTED(username);
     COMPARE(newAlias);
 }
 
 static void compare(const ConnectionErrorEvent &actual, const ConnectionErrorEvent &expected)
 {
     COMPARE(connection);
-    COMPARE(message);
+    COMPARE_REDACTED(message);
 }
 
 static void compare(const ConnectionSetStateEvent &actual, const ConnectionSetStateEvent &expected)
@@ -113,8 +121,8 @@ static void compare(const NewConversationEvent &actual, const NewConversationEve
 static void compare(const ConversationWriteEvent &actual, const ConversationWriteEvent &expected)
 {
     COMPARE(conversation);
-    COMPARE(username);
-    COMPARE(message);
+    COMPARE_REDACTED(username);
+    COMPARE_REDACTED(message);
     COMPARE(flags);
     if (expected.mtime) {
         COMPARE(mtime);
@@ -132,14 +140,14 @@ static void compare(const NotifyMessageEvent &actual, const NotifyMessageEvent &
     COMPARE(handle);
     COMPARE(type);
     COMPARE(title);
-    COMPARE(primary);
-    COMPARE(secondary);
+    COMPARE_REDACTED(primary);
+    COMPARE_REDACTED(secondary);
 }
 
 static void compare(const UserStatusEvent &actual, const UserStatusEvent &expected)
 {
     COMPARE(account);
-    COMPARE(username);
+    COMPARE_REDACTED(username);
     COMPARE(status);
 }
 
@@ -147,15 +155,55 @@ static void compare(const RequestInputEvent &actual, const RequestInputEvent &ex
 {
     COMPARE(handle);
     COMPARE(account);
-    COMPARE(username);
+    COMPARE_REDACTED(username);
     COMPARE(conv);
+    COMPARE_REDACTED(default_value);
+    COMPARE(masked);
+}
+
+TEST(PurpleEventHarness, RedactsInputDefaultsInMismatchDiagnostics)
+{
+    static const char actualMarker[] =
+        "SYNTHETIC_INPUT_VALUE_A_DO_NOT_PRINT";
+    static const char expectedMarker[] =
+        "SYNTHETIC_INPUT_VALUE_B_DO_NOT_PRINT";
+    RequestInputEvent actual(
+        nullptr, nullptr, nullptr, nullptr, actualMarker, TRUE,
+        nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr);
+    RequestInputEvent expected(
+        nullptr, nullptr, nullptr, nullptr, expectedMarker, TRUE,
+        nullptr, nullptr, nullptr, nullptr,
+        nullptr, nullptr, nullptr, nullptr);
+    ::testing::TestPartResultArray failures;
+
+    {
+        ::testing::ScopedFakeTestPartResultReporter reporter(
+            ::testing::ScopedFakeTestPartResultReporter::
+                INTERCEPT_ONLY_CURRENT_THREAD,
+            &failures);
+        compare(actual, expected);
+    }
+
+    ASSERT_EQ(failures.size(), 1);
+    std::string message =
+        failures.GetTestPartResult(0).message();
+    EXPECT_NE(
+        message.find("default_value differs (values redacted)"),
+        std::string::npos);
+    if (message.find(actualMarker) != std::string::npos ||
+        message.find(expectedMarker) != std::string::npos)
+    {
+        ADD_FAILURE()
+            << "Input comparison failure exposed a synthetic marker";
+    }
 }
 
 static void compare(const RequestActionEvent &actual, const RequestActionEvent &expected)
 {
     COMPARE(handle);
     COMPARE(account);
-    COMPARE(username);
+    COMPARE_REDACTED(username);
     COMPARE(conv);
     COMPARE(callbacks.size());
 }
@@ -170,8 +218,8 @@ static void compare(const ServGotChatEvent &actual, const ServGotChatEvent &expe
 {
     COMPARE(connection);
     COMPARE(id);
-    COMPARE(username);
-    COMPARE(message);
+    COMPARE_REDACTED(username);
+    COMPARE_REDACTED(message);
     COMPARE(flags);
     COMPARE(mtime);
 }
@@ -179,8 +227,8 @@ static void compare(const ServGotChatEvent &actual, const ServGotChatEvent &expe
 static void compare(const ServGotImEvent &actual, const ServGotImEvent &expected)
 {
     COMPARE(connection);
-    COMPARE(username);
-    COMPARE(message);
+    COMPARE_REDACTED(username);
+    COMPARE_REDACTED(message);
     COMPARE(flags);
     COMPARE(mtime);
 }
@@ -196,14 +244,14 @@ static void compare(const ServGotJoinedChatEvent &actual, const ServGotJoinedCha
 static void compare(const BuddyTypingStartEvent &actual, const BuddyTypingStartEvent &expected)
 {
     COMPARE(connection);
-    COMPARE(username);
+    COMPARE_REDACTED(username);
     COMPARE(state);
 }
 
 static void compare(const BuddyTypingStopEvent &actual, const BuddyTypingStopEvent &expected)
 {
     COMPARE(connection);
-    COMPARE(username);
+    COMPARE_REDACTED(username);
 }
 
 static void compare(const PresentConversationEvent &actual, const PresentConversationEvent &expected)
@@ -437,6 +485,25 @@ void PurpleEventReceiver::discardEvents()
 {
     while (!m_events.empty()) m_events.pop();
     m_nextEventCallback = std::function<void(PurpleEventType)>();
+    captureNotify = false;
+}
+
+void PurpleEventReceiver::captureNotifyEvents()
+{
+    captureNotify = true;
+}
+
+void PurpleEventReceiver::addNotify(
+    void *handle,
+    PurpleNotifyMsgType type,
+    const char *title,
+    const char *primary,
+    const char *secondary)
+{
+    if (!captureNotify)
+        return;
+    addEvent(std::unique_ptr<PurpleEvent>(new NotifyMessageEvent(
+        handle, type, title, primary, secondary)));
 }
 
 void PurpleEventReceiver::onNextEvent(
@@ -448,19 +515,35 @@ void PurpleEventReceiver::onNextEvent(
 void PurpleEventReceiver::inputEnter(const gchar *value)
 {
     ASSERT_NE(nullptr, inputOkCb);
-    ((void (*)(void *, const char *))(inputOkCb))(inputUserData, value);
+    GCallback callback = inputOkCb;
+    void *userData = inputUserData;
     inputOkCb = NULL;
     inputCancelCb = NULL;
     inputUserData = NULL;
+    inputHandle = NULL;
+    ((void (*)(void *, const char *))(callback))(userData, value);
 }
 
 void PurpleEventReceiver::inputCancel()
 {
     ASSERT_NE(nullptr, inputCancelCb);
-    ((void (*)(void *))(inputCancelCb))(inputUserData);
+    GCallback callback = inputCancelCb;
+    void *userData = inputUserData;
     inputOkCb = NULL;
     inputCancelCb = NULL;
     inputUserData = NULL;
+    inputHandle = NULL;
+    ((void (*)(void *))(callback))(userData);
+}
+
+void PurpleEventReceiver::closeInputRequests(void *handle)
+{
+    if (inputHandle != handle)
+        return;
+    inputOkCb = NULL;
+    inputCancelCb = NULL;
+    inputUserData = NULL;
+    inputHandle = NULL;
 }
 
 void PurpleEventReceiver::requestedAction(const char *button)
@@ -481,6 +564,21 @@ void PurpleEventReceiver::requestedAction(const char *button)
 void PurpleEventReceiver::addCommand(const char* command, PurpleCmdFunc handler, void* data)
 {
     commands[command] = std::make_pair(handler, data);
+}
+
+void PurpleEventReceiver::removeCommand(const char *command)
+{
+    commands.erase(command);
+}
+
+bool PurpleEventReceiver::hasCommand(const char *command) const
+{
+    return commands.find(command) != commands.end();
+}
+
+std::size_t PurpleEventReceiver::commandCount() const
+{
+    return commands.size();
 }
 
 void PurpleEventReceiver::runCommand(const char* command, PurpleConversation *conv,

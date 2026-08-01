@@ -19,8 +19,9 @@ This project uses release-please to manage release pull requests, changelog upda
 
 ## Version Source
 
-The current version lives in `CMakeLists.txt` and `.release-please-manifest.json`.
-release-please updates both through `release-please-config.json`.
+The current version lives in `CMakeLists.txt`, `purple3/CMakeLists.txt`, and
+`.release-please-manifest.json`. release-please updates all three through
+`release-please-config.json`.
 
 ## Linux Assets
 

@@ -86,6 +86,9 @@ std::vector<object_ptr<T>> make_vector(Args&&... args) {
 
 class TestTransceiver: public ITransceiverBackend {
 public:
+    TestTransceiver();
+    ~TestTransceiver() override;
+
     void  send(td::Client::Request &&request) override;
 
     // Check that given request, and no other, has been received, and clear the queue
@@ -124,18 +127,26 @@ public:
     // Reply to a specific request
     void reply(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
 
-    guint addTimeout(guint interval, GSourceFunc function, gpointer data) override;
-    void  cancelTimer(guint id) override;
+    GMainContext *transportContext() override;
+    GSource *createTimeoutSource(unsigned interval) override;
 
     const std::string &getInputPhotoPath(unsigned index) const { return m_inputPhotoPaths.at(index); }
     std::string addInputPhoto(const void *data, size_t size);
 
 private:
-    struct TimerInfo {
-        guint       id;
-        GSourceFunc function;
-        gpointer    data;
+    struct ManualTimeoutSource {
+        GSource source;
+        gboolean armed;
     };
+
+    static gboolean prepareTimeoutSource(
+        GSource *source, gint *timeout);
+    static gboolean checkTimeoutSource(GSource *source);
+    static gboolean dispatchTimeoutSource(
+        GSource *source,
+        GSourceFunc callback,
+        gpointer userData);
+    void pruneTimeoutSources();
 
     std::queue<td::Client::Request> m_requests;
     std::queue<uint64_t>            m_verifiedRequestIds;
@@ -143,13 +154,11 @@ private:
     const td::td_api::Function     *expectedRequest = nullptr;
     uint64_t                        expectedRequestId = 1;
     std::vector<std::string>        m_inputPhotoPaths;
-    std::vector<TimerInfo>          m_timers;
-    guint                           m_nextTimerId = 1;
+    GMainContext                   *m_transportContext;
+    std::vector<GSource *>          m_timeoutSources;
 };
 
 // Functions in td::td_api namespace
-std::string requestToString(const td::td_api::Function &request);
-
 void compare_func(const td::td_api::Function &actual, const td::td_api::Function &expected);
 
 object_ptr<user> makeUser(std::int32_t id_, std::string const &first_name_,

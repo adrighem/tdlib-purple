@@ -2,8 +2,11 @@
 #define _CLIENT_UTILS_H
 
 #include "account-data.h"
+#include "module-activity.h"
 #include <purple.h>
+#include <condition_variable>
 #include <functional>
+#include <mutex>
 #include <thread>
 
 using ContinuationGuard = std::function<bool()>;
@@ -132,19 +135,30 @@ int  transmitMessage(ChatTarget target, const char *message, TdTransceiver &tran
 void requestRecoveryEmailConfirmation(PurpleConnection *gc, const char *emailInfo);
 
 void updateOption(const td::td_api::updateOption &option, TdAccountData &account);
+// Self-owning background operation. Derived instances must be heap-allocated;
+// startThread() relinquishes the caller's ownership and eventually deletes
+// the object. The AccountThread pointer passed to Callback is borrowed for
+// that callback invocation only.
 class AccountThread {
 public:
     using Callback = void (PurpleTdClient::*)(AccountThread *thread);
-    static void setSingleThread();
+    static void setSingleThread(bool enabled = true);
     static bool isSingleThread();
 
     AccountThread(PurpleAccount *purpleAccount);
     virtual ~AccountThread() {}
     void startThread();
 private:
+    static void destroyAfterMainThread(gpointer data);
+
+    ModuleActivityGuard m_activity;
+    std::mutex m_startMutex;
+    std::condition_variable m_startCondition;
+    bool m_threadAssigned = false;
     std::thread m_thread;
     std::string m_accountUserName;
     std::string m_accountProtocolId;
+    bool m_runSucceeded = false;
 
     void            threadFunc();
     static gboolean mainThreadCallback(gpointer data);

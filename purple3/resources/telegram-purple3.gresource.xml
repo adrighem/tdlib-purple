@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/im/tdlib-purple/protocols/telegram">
+    <file alias="icons/16x16/apps/im-telegram.png">telegram16.png</file>
+    <file alias="icons/22x22/apps/im-telegram.png">telegram22.png</file>
+    <file alias="icons/48x48/apps/im-telegram.png">telegram48.png</file>
+  </gresource>
+</gresources>

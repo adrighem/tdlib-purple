@@ -13,6 +13,7 @@
 #include <iterator>
 #include <ctime>
 #include <limits>
+#include <memory>
 
 enum {
     MAX_MESSAGE_PARTS = 10,
@@ -2254,15 +2255,38 @@ AccountThread::AccountThread(PurpleAccount* purpleAccount)
 
 void AccountThread::threadFunc()
 {
-    run();
-    g_idle_add(&AccountThread::mainThreadCallback, this);
+    // Keep plugin code guarded through the worker's final handoff and return.
+    // An unhandoffable completion retains the object's separate guard.
+    ModuleActivityGuard threadActivity;
+    try {
+        std::unique_lock<std::mutex> lock(m_startMutex);
+        m_startCondition.wait(
+            lock, [this]() { return m_threadAssigned; });
+    } catch (...) {
+        // Retain the self-owned object and its activity guard. Destroying its
+        // still-joinable thread here would terminate the process.
+        return;
+    }
+
+    try {
+        run();
+        m_runSucceeded = true;
+    } catch (...) {
+    }
+
+    // The destroy notifier owns this self-managed worker after attachment
+    // and also cleans it up if attachment fails or the source is canceled.
+    moduleActivityAddIdle(
+        &AccountThread::mainThreadCallback,
+        this,
+        &AccountThread::destroyAfterMainThread);
 }
 
 static bool g_singleThread = false;
 
-void AccountThread::setSingleThread()
+void AccountThread::setSingleThread(bool enabled)
 {
-    g_singleThread = true;
+    g_singleThread = enabled;
 }
 
 bool AccountThread::isSingleThread()
@@ -2273,25 +2297,74 @@ bool AccountThread::isSingleThread()
 void AccountThread::startThread()
 {
     if (!g_singleThread) {
-        if (!m_thread.joinable())
-            m_thread = std::thread(std::bind(&AccountThread::threadFunc, this));
+        if (!m_thread.joinable()) {
+            try {
+                {
+                    std::lock_guard<std::mutex> lock(m_startMutex);
+                    m_thread = std::thread(
+                        std::bind(
+                            &AccountThread::threadFunc, this));
+                    m_threadAssigned = true;
+                }
+                m_startCondition.notify_one();
+            } catch (...) {
+                delete this;
+            }
+        }
     } else {
-        run();
-        mainThreadCallback(this);
+        try {
+            run();
+            m_runSucceeded = true;
+        } catch (...) {
+        }
+        try {
+            mainThreadCallback(this);
+        } catch (...) {
+        }
+        destroyAfterMainThread(this);
     }
 }
 
 gboolean AccountThread::mainThreadCallback(gpointer data)
 {
-    AccountThread  *self     = static_cast<AccountThread *>(data);
+    AccountThread *self =
+        static_cast<AccountThread *>(data);
     PurpleAccount  *account  = purple_accounts_find(self->m_accountUserName.c_str(),
                                                     self->m_accountProtocolId.c_str());
     PurpleTdClient *tdClient = account ? getTdClient(account) : nullptr;
     if (self->m_thread.joinable())
         self->m_thread.join();
 
-    if (tdClient)
+    if (self->m_runSucceeded && tdClient)
         self->callback(tdClient);
 
     return FALSE; // this idle callback will not be called again
+}
+
+void AccountThread::destroyAfterMainThread(gpointer data)
+{
+    AccountThread *self =
+        static_cast<AccountThread *>(data);
+    if (!self)
+        return;
+
+    try {
+        if (self->m_thread.joinable()) {
+            if (self->m_thread.get_id() ==
+                std::this_thread::get_id()) {
+                // Attachment failure can invoke this notifier inside the
+                // worker itself. Keep the self-owned object and its activity
+                // guard process-lived: dropping the last guard just before
+                // returning through plugin code would race module unload.
+                return;
+            } else {
+                self->m_thread.join();
+            }
+        }
+    } catch (...) {
+        // Retain the activity guard rather than destroy a still-joinable
+        // std::thread or allow its code to outlive the plugin module.
+        return;
+    }
+    delete self;
 }

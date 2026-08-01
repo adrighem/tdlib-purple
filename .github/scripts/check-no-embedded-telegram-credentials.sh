@@ -23,3 +23,21 @@ if git ls-files | grep -q \
     echo "Generated Telegram application credentials must not be committed." >&2
     exit 1
 fi
+
+git grep -l \
+    'tdlib_purple_application_credentials_embedded' \
+    -- '*.c' '*.cc' '*.cpp' '*.cxx' '*.h' '*.hh' '*.hpp' '*.hxx' |
+while IFS= read -r provider_file; do
+    case "${provider_file}" in
+        credentials/telegram-application-credentials-private.h | \
+        credentials/telegram-application-credentials-stub.c | \
+        credentials/telegram-application-credentials.c | \
+        purple3/test/application-credentials-test-backend.c | \
+        test/application-credentials-test-backend.c)
+            ;;
+        *)
+            echo "Unexpected tracked application credential provider symbol in ${provider_file}." >&2
+            exit 1
+            ;;
+    esac
+done

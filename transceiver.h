@@ -1,65 +1,105 @@
 #ifndef _TRANSCEIVER_H
 #define _TRANSCEIVER_H
 
+#include "td-polling-backend.h"
+#include "td-transport.h"
+
+#include <glib.h>
+#include <purple.h>
 #include <td/telegram/Client.h>
 #include <td/telegram/td_api.hpp>
-#include <thread>
-#include <mutex>
-#include <map>
+
 #include <atomic>
-#include <purple.h>
+#include <cstdint>
 #include <functional>
+#include <memory>
+#include <mutex>
+#include <string>
 
 class PurpleTdClient;
-class TdTransceiverImpl;
-class TdTransceiver;
 
+std::string getPurple2BaseDatabasePath();
+std::string getPurple2DatabasePath(PurpleAccount *account);
+
+// Compatibility seam used by the existing Purple 2 test harness. Production
+// traffic uses TdPollingBackend directly.
 class ITransceiverBackend {
 public:
     virtual ~ITransceiverBackend() {}
 
-    void          setOwner(TdTransceiver *owner) { m_owner = owner; }
-    virtual void  send(td::Client::Request &&request) = 0;
-    virtual guint addTimeout(guint interval, GSourceFunc function, gpointer data) = 0;
-    virtual void  cancelTimer(guint id) = 0;
-    void          receive(td::Client::Response response);
+    virtual void send(td::Client::Request &&request) = 0;
+    // Borrowed context owned by the test backend.
+    virtual GMainContext *transportContext() = 0;
+    // Transfers one reference to a fresh, unattached, non-destroyed source.
+    virtual GSource *createTimeoutSource(unsigned timeoutSeconds) = 0;
+
+    // Test fakes must call receive() serially on the transport's owner
+    // thread. The compatibility facade deliberately preserves the legacy
+    // harness's immediate, reentrant delivery semantics.
+    void setReceiver(TdTransport::ReceiveCallback receiver);
+    void receive(td::Client::Response response);
+
 private:
-    TdTransceiver *m_owner = nullptr;
+    std::mutex m_receiverMutex;
+    TdTransport::ReceiveCallback m_receiver;
 };
 
-// A wrapper around td::Client which processes incoming events (updates and responses to requests)
-// in glib main thread using idle function, and also provides request-id-to-callback mapping
+// Thin Purple 2 compatibility facade around the Purple-neutral dispatcher and
+// polling backend.
 class TdTransceiver {
-    friend class ITransceiverBackend;
 private:
-    using TdObjectPtr = td::td_api::object_ptr<td::td_api::Object>;
+    using TdObjectPtr =
+        td::td_api::object_ptr<td::td_api::Object>;
+
 public:
-    using ResponseCb  = void (PurpleTdClient::*)(uint64_t requestId, TdObjectPtr object);
-    using ResponseCb2 = std::function<void(uint64_t, TdObjectPtr)>;
-    using UpdateCb    = void (PurpleTdClient::*)(td::td_api::Object &object);
+    using ResponseCb =
+        void (PurpleTdClient::*)(uint64_t, TdObjectPtr);
+    using ResponseCb2 =
+        std::function<void(uint64_t, TdObjectPtr)>;
+    using UpdateCb =
+        void (PurpleTdClient::*)(td::td_api::Object &);
 
-    TdTransceiver(PurpleTdClient *owner, PurpleAccount *account, UpdateCb updateCb,
-                  ITransceiverBackend *testBackend);
+    TdTransceiver(
+        PurpleTdClient *owner,
+        PurpleAccount *account,
+        UpdateCb updateCb,
+        ITransceiverBackend *testBackend);
     ~TdTransceiver();
-    uint64_t sendQuery(td::td_api::object_ptr<td::td_api::Function> f, ResponseCb handler);
-    uint64_t sendQuery(td::td_api::object_ptr<td::td_api::Function> f, ResponseCb2 handler);
 
-    uint64_t sendQueryWithTimeout(td::td_api::object_ptr<td::td_api::Function> f,
-                                  ResponseCb2 handler, unsigned timeoutSeconds);
-    void     setQueryTimer(uint64_t queryId, ResponseCb handler, unsigned timeoutSeconds,
-                           bool cancelNormalResponse);
-    void     setQueryTimer(uint64_t queryId, ResponseCb2 handler, unsigned timeoutSeconds,
-                           bool cancelNormalResponse);
+    TdTransceiver(const TdTransceiver &) = delete;
+    TdTransceiver &operator=(const TdTransceiver &) = delete;
+
+    uint64_t sendQuery(
+        td::td_api::object_ptr<td::td_api::Function> function,
+        ResponseCb handler);
+    uint64_t sendQuery(
+        td::td_api::object_ptr<td::td_api::Function> function,
+        ResponseCb2 handler);
+    uint64_t sendQueryWithTimeout(
+        td::td_api::object_ptr<td::td_api::Function> function,
+        ResponseCb2 handler,
+        unsigned timeoutSeconds);
+    void setQueryTimer(
+        uint64_t queryId,
+        ResponseCb handler,
+        unsigned timeoutSeconds,
+        bool cancelNormalResponse);
+    void setQueryTimer(
+        uint64_t queryId,
+        ResponseCb2 handler,
+        unsigned timeoutSeconds,
+        bool cancelNormalResponse);
+    const std::string &databasePath() const;
+    void shutdown();
+
 private:
-    void  pollThreadLoop();
-    void *queueResponse(td::Client::Response &&response);
-    static gboolean timerCallback(gpointer userdata);
-
-    std::shared_ptr<TdTransceiverImpl>  m_impl;
-    PurpleAccount                      *m_account;
-    std::thread                         m_pollThread;
-    std::atomic_bool                    m_stopThread;
-    ITransceiverBackend                *m_testBackend;
+    PurpleTdClient *m_owner = nullptr;
+    std::string m_databasePath;
+    std::unique_ptr<TdTransport> m_transport;
+    std::unique_ptr<TdPollingBackend> m_backend;
+    std::shared_ptr<std::atomic<bool>> m_acceptBackendFailures;
+    ITransceiverBackend *m_testBackend = nullptr;
+    bool m_shutdown = false;
 };
 
 #endif

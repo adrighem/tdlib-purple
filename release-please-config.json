@@ -11,6 +11,10 @@
         {
           "type": "generic",
           "path": "CMakeLists.txt"
+        },
+        {
+          "type": "generic",
+          "path": "purple3/CMakeLists.txt"
         }
       ]
     }

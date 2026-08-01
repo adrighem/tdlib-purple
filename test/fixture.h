@@ -10,6 +10,8 @@
 #include <vector>
 #include <memory>
 
+void fixture_init();
+
 class CommTest: public testing::Test {
 public:
     CommTest();
