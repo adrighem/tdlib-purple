@@ -1,9 +1,36 @@
 #include "td-client.h"
+#include "module-activity.h"
 #include "purple-info.h"
 #include "config.h"
 #include "format.h"
 
 #include <utility>
+
+namespace {
+
+struct ReconnectContext {
+    std::string accountName;
+    std::string protocolId;
+};
+
+static gboolean restartOnboardingIdle(gpointer data)
+{
+    ReconnectContext *context = static_cast<ReconnectContext *>(data);
+
+    PurpleAccount *account = purple_accounts_find(
+        context->accountName.c_str(), context->protocolId.c_str());
+    if (account) {
+        purple_account_remove_setting(account, AccountOptions::ApiId);
+        purple_account_remove_setting(account, AccountOptions::ApiHash);
+
+        purple_account_disconnect(account);
+        purple_account_connect(account);
+    }
+
+    return FALSE;
+}
+
+} // namespace
 
 void PurpleTdClient::processAuthorizationState(
     td::td_api::AuthorizationState &authState)
@@ -624,6 +651,25 @@ void PurpleTdClient::onAuthorizationCancelled()
 
 void PurpleTdClient::onAuthorizationFailed(const TdAuthFailure &failure)
 {
+    if (failure.type == TdAuthFailureType::RequestRejected &&
+        failure.errorCode == 400 &&
+        (failure.errorMessage.find("api_id") != std::string::npos ||
+         failure.errorMessage.find("API_ID") != std::string::npos))
+    {
+        purple_debug_warning(
+            config::pluginId,
+            "API ID/Hash rejected, restarting onboarding flow\n");
+        auto context = new ReconnectContext{
+            purple_account_get_username(m_account),
+            purple_account_get_protocol_id(m_account)
+        };
+        moduleActivityAddIdle(
+            restartOnboardingIdle,
+            context,
+            [](gpointer data) { delete static_cast<ReconnectContext *>(data); });
+        return;
+    }
+
     const char *message = _("Telegram authentication failed");
     switch (failure.type) {
     case TdAuthFailureType::InvalidConfiguration:

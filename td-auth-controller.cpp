@@ -303,6 +303,7 @@ public:
                 TdAuthOperation::None,
                 0,
                 0,
+                "",
                 TdAuthPromptCloseReason::Failed);
             return;
         }
@@ -380,6 +381,7 @@ public:
                 TdAuthOperation::None,
                 stateId,
                 0,
+                "",
                 TdAuthPromptCloseReason::Failed);
             break;
         }
@@ -581,6 +583,7 @@ public:
                 m_pendingOperation,
                 m_rawStateId,
                 0,
+                "",
                 TdAuthPromptCloseReason::Failed);
         } catch (...) {
             stopAfterObserverFailure();
@@ -625,6 +628,7 @@ private:
                     m_pendingOperation,
                     m_rawStateId,
                     0,
+                    "",
                     TdAuthPromptCloseReason::Failed);
                 return;
             } catch (...) {
@@ -661,6 +665,7 @@ private:
                 TdAuthOperation::SetTdlibParameters,
                 rawStateId,
                 0,
+                "",
                 TdAuthPromptCloseReason::Failed);
             return;
         }
@@ -724,6 +729,7 @@ private:
                     TdAuthOperation::RequestQrCode,
                     rawStateId,
                     0,
+                    "",
                     TdAuthPromptCloseReason::Failed);
                 return;
             }
@@ -812,6 +818,7 @@ private:
                 TdAuthOperation::None,
                 rawStateId,
                 0,
+                "",
                 TdAuthPromptCloseReason::Failed);
             return;
         }
@@ -1101,6 +1108,7 @@ private:
                 TdAuthFailureType::TransportUnavailable,
                 operation,
                 0,
+                "",
                 TdAuthPromptCloseReason::Failed);
         }
     }
@@ -1128,10 +1136,13 @@ private:
         if (response && response->get_id() == error::ID && retryable) {
             const std::int32_t errorCode =
                 static_cast<const error &>(*response).code_;
+            const std::string errorMessage =
+                static_cast<const error &>(*response).message_;
             TdAuthRequestFailure failure;
             failure.state = m_state;
             failure.operation = operation;
             failure.errorCode = errorCode;
+            failure.errorMessage = errorMessage;
             notifyObserver([&failure](TdAuthObserver &observer) {
                 observer.onRequestFailed(failure);
             });
@@ -1147,12 +1158,17 @@ private:
             response && response->get_id() == error::ID
                 ? static_cast<const error &>(*response).code_
                 : 0;
+        const std::string errorMessage =
+            response && response->get_id() == error::ID
+                ? static_cast<const error &>(*response).message_
+                : "";
         failCurrentRequest(
             response && response->get_id() == error::ID
                 ? TdAuthFailureType::RequestRejected
                 : TdAuthFailureType::MalformedResponse,
             operation,
             errorCode,
+            errorMessage,
             TdAuthPromptCloseReason::Failed);
     }
 
@@ -1160,6 +1176,7 @@ private:
         TdAuthFailureType failureType,
         TdAuthOperation operation,
         std::int32_t errorCode,
+        const std::string &errorMessage,
         TdAuthPromptCloseReason closeReason)
     {
         invalidateRequest();
@@ -1169,6 +1186,7 @@ private:
             operation,
             m_rawStateId,
             errorCode,
+            errorMessage,
             closeReason);
     }
 
@@ -1305,6 +1323,7 @@ private:
         TdAuthOperation operation,
         std::int32_t rawStateId,
         std::int32_t errorCode,
+        const std::string &errorMessage,
         TdAuthPromptCloseReason closeReason)
     {
         if (m_stopped || m_completion != Completion::None)
@@ -1322,6 +1341,7 @@ private:
         failure.operation = operation;
         failure.rawStateId = rawStateId;
         failure.errorCode = errorCode;
+        failure.errorMessage = errorMessage;
         notifyCompletion(
             closeReason,
             [&failure](TdAuthObserver &observer) {

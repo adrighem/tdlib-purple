@@ -140,6 +140,15 @@ PurpleBlistNode root = {
     .flags = (PurpleBlistNodeFlags)0
 };
 
+void purple_account_disconnect(PurpleAccount *account)
+{
+    EVENT(ConnectionErrorEvent, account->gc, "mock_disconnect");
+}
+
+void purple_account_connect(PurpleAccount *account)
+{
+}
+
 void purple_account_destroy(PurpleAccount *account)
 {
     free(account->username);

@@ -202,12 +202,14 @@ struct TdAuthFailure {
     TdAuthOperation operation = TdAuthOperation::None;
     std::int32_t rawStateId = 0;
     std::int32_t errorCode = 0;
+    std::string errorMessage;
 };
 
 struct TdAuthRequestFailure {
     TdAuthState state = TdAuthState::None;
     TdAuthOperation operation = TdAuthOperation::None;
     std::int32_t errorCode = 0;
+    std::string errorMessage;
 };
 
 // All callbacks are synchronous and run on the controller's owner context.

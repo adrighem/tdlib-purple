@@ -567,6 +567,57 @@ TEST_F(LoginTest, EmailAuthenticationRetriesWithoutExposingErrorText)
     tgl.reply(make_object<ok>());
 }
 
+TEST_F(LoginTest, InvalidApiIdRestartsOnboardingFlow)
+{
+    purple_account_set_string(account, "api-id", "9999999");
+    purple_account_set_string(account, "api-hash", "0123456789abcdef0123456789abcdef");
+
+    pluginInfo().login(account);
+    prpl.verifyEvents(
+        ConnectionSetStateEvent(connection, PURPLE_CONNECTING),
+        ConnectionUpdateProgressEvent(connection, 1, 2)
+    );
+
+    tgl.update(make_object<updateAuthorizationState>(make_object<authorizationStateWaitTdlibParameters>()));
+    tgl.verifyRequestsV(
+        make_object<disableProxy>(),
+        make_object<getProxies>(),
+        make_object<setTdlibParameters>(
+            false,
+            std::string(purple_user_dir()) + G_DIR_SEPARATOR_S +
+            "tdlib" + G_DIR_SEPARATOR_S + "+" + selfPhoneNumber,
+            "",
+            "",
+            false,
+            false,
+            false,
+            true, // use secret chats
+            9999999,
+            "0123456789abcdef0123456789abcdef",
+            "",
+            "",
+            "",
+            ""
+        )
+    );
+
+    tgl.reply(make_object<ok>()); // disableProxy
+    tgl.reply(make_object<addedProxies>(std::vector<object_ptr<addedProxy>>())); // getProxies
+    tgl.reply(make_object<error>(400, "Valid api_id must be provided. Can be obtained at https://my.telegram.org"));
+
+    // The idle callback should be triggered, which disconnects and reconnects the account
+    g_main_context_iteration(NULL, FALSE);
+
+    // Verify the account settings were cleared
+    EXPECT_STREQ("default", purple_account_get_string(account, "api-id", "default"));
+    EXPECT_STREQ("default", purple_account_get_string(account, "api-hash", "default"));
+
+    // Verify the mock events emitted by disconnect/connect
+    prpl.verifyEvents(
+        ConnectionErrorEvent(connection, "mock_disconnect")
+    );
+}
+
 TEST_F(LoginTest, RepeatedParameterStateDoesNotRepeatProxySetup)
 {
     pluginInfo().login(account);
