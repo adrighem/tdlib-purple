@@ -52,6 +52,22 @@ static bool isChildForumTopic(ChatTarget target)
            target.forumTopicId() != ForumTopicId::general();
 }
 
+static void findAccountChats(PurpleBlistNode *node, PurpleAccount *account, std::vector<PurpleChat *> &chats)
+{
+    if (!node) return;
+    PurpleBlistNodeType nodeType = purple_blist_node_get_type(node);
+    if (nodeType == PURPLE_BLIST_CHAT_NODE) {
+        PurpleChat *chat = PURPLE_CHAT(node);
+        if (purple_chat_get_account(chat) == account) {
+            chats.push_back(chat);
+        }
+    }
+    for (PurpleBlistNode *child = purple_blist_node_get_first_child(node); child;
+         child = purple_blist_node_get_sibling_next(child)) {
+        findAccountChats(child, account, chats);
+    }
+}
+
 static PurpleConvChat *getActiveChatWithPurpleId(
     PurpleConversation *conversation, PurpleAccount *account,
     int32_t purpleChatId)
@@ -624,12 +640,12 @@ void PurpleTdClient::processUpdate(td::td_api::Object &update)
             chatType == td::td_api::chatTypeSecret::ID ||
             m_data.isGroupChatWithMembership(*newChat.chat_)) {
             addChat(std::move(newChat.chat_));
-        } else if ((isBasicGroup || isSupergroup) && !groupMetadataKnown) {
+        } else if ((isBasicGroup || isSupergroup) && (!groupMetadataKnown || !purple_account_is_connected(m_account))) {
             const ChatId chatId = getId(*newChat.chat_);
             purple_debug_misc(
                 config::pluginId,
                 "Caching group chat %" G_GINT64_FORMAT
-                " until membership metadata arrives\n",
+                " until membership metadata arrives or connection completes\n",
                 chatId.value());
             m_data.addChat(std::move(newChat.chat_));
             m_deferredGroupChats.insert(chatId);
@@ -1371,6 +1387,24 @@ void PurpleTdClient::onChatListReady()
         }
     }
 
+    std::vector<PurpleChat *> savedChats;
+    for (PurpleBlistNode *root = purple_blist_get_root(); root;
+         root = purple_blist_node_get_sibling_next(root)) {
+        findAccountChats(root, m_account, savedChats);
+    }
+
+    for (PurpleChat *chatNode : savedChats) {
+        GHashTable *components = purple_chat_get_components(chatNode);
+        const char *chatName = getChatName(components);
+        if (chatName) {
+            const ChatTarget target = parsePurpleChatName(chatName);
+            if (isChildForumTopic(target)) {
+                m_data.setForumTopicSaved(target, true);
+                ensureForumTopicMetadata(target);
+            }
+        }
+    }
+
     resolveDeferredGroupChats();
     m_chatListReady = true;
     markForumRoomListsReadyIfPossible();
@@ -2040,6 +2074,9 @@ void PurpleTdClient::updateSupergroup(td::td_api::object_ptr<td::td_api::supergr
 
 bool PurpleTdClient::resolveDeferredGroupChat(ChatId chatId)
 {
+    if (!purple_account_is_connected(m_account))
+        return false;
+
     const std::shared_ptr<LifetimeState> lifetime = m_lifetime;
     auto deferred = m_deferredGroupChats.find(chatId);
     if (deferred == m_deferredGroupChats.end())
@@ -3175,6 +3212,25 @@ void PurpleTdClient::ensureForumTopicMetadata(
     ChatTarget target)
 {
     m_forumTopics->ensureForumTopicMetadata(target);
+}
+
+void PurpleTdClient::handleBlistNodeAdded(PurpleBlistNode *node)
+{
+    if (!node || purple_blist_node_get_type(node) != PURPLE_BLIST_CHAT_NODE)
+        return;
+
+    PurpleChat *chatNode = PURPLE_CHAT(node);
+    if (purple_chat_get_account(chatNode) != m_account)
+        return;
+
+    GHashTable *components = purple_chat_get_components(chatNode);
+    const char *chatName = getChatName(components);
+    if (chatName) {
+        const ChatTarget target = parsePurpleChatName(chatName);
+        if (isChildForumTopic(target)) {
+            projectForumTopic(target);
+        }
+    }
 }
 
 int PurpleTdClient::sendGroupMessage(int purpleChatId, const char *message)

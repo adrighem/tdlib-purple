@@ -409,6 +409,17 @@ resolveApplicationCredentials(
     return TRUE;
 }
 
+static void blist_node_added_cb(PurpleBlistNode *node, gpointer data)
+{
+    PurpleAccount *registeredAccount = static_cast<PurpleAccount *>(data);
+    if (!node || !registeredAccount)
+        return;
+
+    PurpleTdClient *tdClient = getTdClient(registeredAccount);
+    if (tdClient)
+        tdClient->handleBlistNodeAdded(node);
+}
+
 static void tgprpl_login (PurpleAccount *acct)
 {
     purple_debug_misc(config::pluginId, "version %s, test backend: %p\n", config::versionString, g_testBackend);
@@ -438,6 +449,8 @@ static void tgprpl_login (PurpleAccount *acct)
                           acct, PURPLE_CALLBACK(conversation_updated_cb), acct);
     purple_signal_connect(purple_conversations_get_handle(), "deleting-conversation",
                           acct, PURPLE_CALLBACK(deleting_conversation_cb), acct);
+    purple_signal_connect(purple_blist_get_handle(), "blist-node-added",
+                          acct, PURPLE_CALLBACK(blist_node_added_cb), acct);
 }
 
 static void tgprpl_close (PurpleConnection *gc)

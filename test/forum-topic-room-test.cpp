@@ -2,6 +2,7 @@
 #include "forum-topics.h"
 #include "supergroup-test.h"
 #include "purple-info.h"
+#include "td-client.h"
 
 #include <gtest/gtest.h>
 
@@ -1199,4 +1200,38 @@ TEST_F(ForumTopicRoomTest, DisconnectCompletesListAndIgnoresLateReply)
     prpl.verifyNoEvents();
     expectNoTopicSideEffects(42);
     purple_roomlist_unref(roomlist);
+}
+
+TEST_F(ForumTopicRoomTest, BlistNodeAddedImmediatelyAliasesIfMetadataKnown)
+{
+    loginWithForumSupergroup();
+
+    const ChatTarget target = ChatTarget::forumTopic(
+        ChatId::fromString(std::to_string(groupChatId).c_str()),
+        ForumTopicId::fromValue(42));
+    tgl.update(make_object<updateForumTopicInfo>(
+        makeForumTopicInfo(groupChatId, 42, "My Topic")));
+
+    PurpleChat *bookmark = purple_chat_new(
+        account, getPurpleChatName(target).c_str(),
+        getChatComponents(target));
+    purple_blist_add_chat(bookmark, nullptr, nullptr);
+
+    prpl.verifyEvents(
+        AddChatEvent(
+            getPurpleChatName(target), getPurpleChatName(target),
+            account, nullptr, nullptr
+        )
+    );
+
+    PurpleTdClient *client = getTdClient(account);
+    ASSERT_NE(nullptr, client);
+    client->handleBlistNodeAdded(PURPLE_BLIST_NODE(bookmark));
+
+    prpl.verifyEvents(
+        AliasChatEvent(getPurpleChatName(target), groupChatTitle + " / My Topic")
+    );
+
+    purple_blist_remove_chat(bookmark);
+    prpl.discardEvents();
 }

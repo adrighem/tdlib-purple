@@ -30,6 +30,7 @@ struct SignalConnection {
 static std::vector<SignalConnection> g_signalConnections;
 static gulong g_nextSignalId = 1;
 static char g_conversationsHandle;
+static char g_blistHandle;
 static std::map<PurpleCmdId, std::string> g_registeredCommands;
 static PurpleCmdId g_nextCommandId = 1;
 static unsigned g_commandRegistrationFailureCountdown = 0;
@@ -1982,6 +1983,11 @@ void setUiName(const char *name)
 void *purple_conversations_get_handle()
 {
     return &g_conversationsHandle;
+}
+
+void *purple_blist_get_handle()
+{
+    return &g_blistHandle;
 }
 
 PurpleConversationUiOps *purple_conversation_get_ui_ops(const PurpleConversation *conv)

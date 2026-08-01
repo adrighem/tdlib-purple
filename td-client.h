@@ -51,6 +51,7 @@ public:
     void restoreForumTopicConversationTitle(PurpleConversation *conversation);
     void ensureForumTopicMetadata(ChatTarget target);
     bool satisfyForumTopicJoinIfOpen(ChatTarget target);
+    void handleBlistNodeAdded(PurpleBlistNode *node);
     int  sendGroupMessage(int purpleChatId, const char *message);
     void setGroupDescription(int purpleChatId, const char *description);
     void kickUserFromChat(PurpleConversation *conv, const char *name);
