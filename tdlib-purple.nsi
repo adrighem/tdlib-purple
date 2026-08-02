@@ -4,12 +4,13 @@ SetCompressor /SOLID /FINAL lzma
 
 ; todo: SetBrandingImage
 ; HM NIS Edit Wizard helper defines
-!define PRODUCT_NAME "tdlib-purple"
+!define PRODUCT_NAME "Unofficial Telegram for Purple"
+!define PRODUCT_ID "tdlib-purple"
 !define PRPL_INSTALL_TARGET "libtelegram-tdlib.dll"
 !define PRODUCT_VERSION "${PLUGIN_VERSION}"
 !define PRODUCT_PUBLISHER "The ${PRODUCT_NAME} team"
-!define PRODUCT_WEB_SITE "https://github.com/ars3niy/tdlib-purple"
-!define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_NAME}"
+!define PRODUCT_WEB_SITE "https://github.com/adrighem/tdlib-purple"
+!define PRODUCT_UNINST_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\${PRODUCT_ID}"
 !define PRODUCT_UNINST_ROOT_KEY "HKLM"
 
 ; MUI 1.67 compatible ------
@@ -40,7 +41,7 @@ SetCompressor /SOLID /FINAL lzma
 ; MUI end ------
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
-OutFile "${BUILD_DIR}\${PRODUCT_NAME}-${PRODUCT_VERSION}.exe"
+OutFile "${BUILD_DIR}\${PRODUCT_ID}-${PRODUCT_VERSION}.exe"
 
 Var "PidginDir"
 
@@ -57,6 +58,21 @@ Section "MainSection" SEC01
     File "/oname=protocols\16\telegram.png" "data\telegram16.png"
     File "/oname=protocols\22\telegram.png" "data\telegram22.png"
     File "/oname=protocols\48\telegram.png" "data\telegram48.png"
+
+    SetOutPath "$PidginDir\licenses\tdlib-purple"
+    File "LICENSE"
+    SetOutPath "$PidginDir\licenses\tdlib-purple\fmt"
+    File "fmt\LICENSE.rst"
+    SetOutPath "$PidginDir\licenses\tdlib-purple\rlottie"
+    File "rlottie\COPYING.rlottie"
+    File "rlottie\licenses\COPYING.FTL"
+    File "rlottie\licenses\COPYING.LGPL"
+    File "rlottie\licenses\COPYING.PIX"
+    File "rlottie\licenses\COPYING.RPD"
+    File "rlottie\licenses\COPYING.SKIA"
+    File "rlottie\licenses\COPYING.STB"
+    SetOutPath "$PidginDir\licenses\tdlib-purple\tdlib"
+    File "td\LICENSE_1_0.txt"
 
     SetOverwrite try
     copy:
@@ -92,4 +108,3 @@ FunctionEnd
 Function RunPidgin
     ExecShell "" "$PidginDir\pidgin.exe"
 FunctionEnd
-

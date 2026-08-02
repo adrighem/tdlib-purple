@@ -201,6 +201,35 @@ if (NOT DEFINED SHARE_INSTALL_PREFIX)
     set(SHARE_INSTALL_PREFIX "share")
 endif (NOT DEFINED SHARE_INSTALL_PREFIX)
 
+set(
+    TDLIB_PURPLE_LICENSE_INSTALL_DIR
+    "${SHARE_INSTALL_PREFIX}/licenses/tdlib-purple"
+    CACHE STRING
+    "Directory below the install prefix for project and dependency licenses"
+)
+set(
+    TDLIB_PURPLE_TDLIB_LICENSE_FILE
+    ""
+    CACHE FILEPATH
+    "Path to the TDLib Boost Software License 1.0 text"
+)
+if ("${TDLIB_PURPLE_TDLIB_LICENSE_FILE}" STREQUAL "")
+    foreach(_tdlib_license_candidate
+        "${CMAKE_CURRENT_SOURCE_DIR}/td/LICENSE_1_0.txt"
+        "${CMAKE_CURRENT_SOURCE_DIR}/td_repo/LICENSE_1_0.txt"
+    )
+        if (EXISTS "${_tdlib_license_candidate}")
+            set(TDLIB_PURPLE_TDLIB_LICENSE_FILE "${_tdlib_license_candidate}")
+            break()
+        endif()
+    endforeach()
+elseif (NOT EXISTS "${TDLIB_PURPLE_TDLIB_LICENSE_FILE}")
+    message(FATAL_ERROR
+        "TDLIB_PURPLE_TDLIB_LICENSE_FILE does not exist: "
+        "${TDLIB_PURPLE_TDLIB_LICENSE_FILE}"
+    )
+endif()
+
 if (NOT tgvoip_INCLUDE_DIRS STREQUAL "")
     target_include_directories(telegram-tdlib SYSTEM PRIVATE ${tgvoip_INCLUDE_DIRS})
 endif (NOT tgvoip_INCLUDE_DIRS STREQUAL "")
@@ -217,6 +246,29 @@ install(FILES data/telegram16.png DESTINATION "${PURPLE_DATA_DIR}/pixmaps/pidgin
 install(FILES data/telegram22.png DESTINATION "${PURPLE_DATA_DIR}/pixmaps/pidgin/protocols/22" RENAME telegram.png)
 install(FILES data/telegram48.png DESTINATION "${PURPLE_DATA_DIR}/pixmaps/pidgin/protocols/48" RENAME telegram.png)
 install(FILES data/tdlib-purple.metainfo.xml DESTINATION "${SHARE_INSTALL_PREFIX}/metainfo")
+install(FILES LICENSE DESTINATION "${TDLIB_PURPLE_LICENSE_INSTALL_DIR}")
+install(FILES fmt/LICENSE.rst DESTINATION "${TDLIB_PURPLE_LICENSE_INSTALL_DIR}/fmt")
+install(
+    FILES rlottie/COPYING.rlottie
+    DESTINATION "${TDLIB_PURPLE_LICENSE_INSTALL_DIR}/rlottie"
+)
+install(
+    DIRECTORY rlottie/licenses/
+    DESTINATION "${TDLIB_PURPLE_LICENSE_INSTALL_DIR}/rlottie"
+    FILES_MATCHING PATTERN "COPYING.*"
+)
+if (NOT "${TDLIB_PURPLE_TDLIB_LICENSE_FILE}" STREQUAL "")
+    install(
+        FILES "${TDLIB_PURPLE_TDLIB_LICENSE_FILE}"
+        DESTINATION "${TDLIB_PURPLE_LICENSE_INSTALL_DIR}/tdlib"
+        RENAME LICENSE_1_0.txt
+    )
+else()
+    message(WARNING
+        "TDLib license text was not found. Distributors of statically linked "
+        "builds must set TDLIB_PURPLE_TDLIB_LICENSE_FILE."
+    )
+endif()
 
 if (NOT TARGET uninstall)
     configure_file(
@@ -277,11 +329,11 @@ set(CPACK_PACKAGE_NAME "tdlib-purple")
 set(CPACK_PACKAGE_VERSION "\${PROJECT_VERSION}")
 set(CPACK_PACKAGE_RELEASE "1")
 set(CPACK_PACKAGE_CONTACT "tdlib-purple contributors <noreply@example.invalid>")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Telegram plugin for libpurple using TDLib")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Unofficial Telegram plugin for libpurple using TDLib")
 set(CPACK_PACKAGE_VENDOR "tdlib-purple contributors")
-set(CPACK_PACKAGE_LICENSE "GPL-2.0-or-later")
+set(CPACK_PACKAGE_LICENSE "GPL-3.0-or-later")
 set(CPACK_RPM_PACKAGE_REQUIRES "libpurple")
-set(CPACK_RPM_PACKAGE_LICENSE "GPL-2.0-or-later")
+set(CPACK_RPM_PACKAGE_LICENSE "GPL-3.0-or-later")
 set(CPACK_RPM_PACKAGE_GROUP "Applications/Communications")
 set(CPACK_DEBIAN_PACKAGE_DEPENDS "libpurple0 (>= 2.14)")
 set(CPACK_DEBIAN_PACKAGE_SECTION "net")

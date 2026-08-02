@@ -2,18 +2,16 @@
 
 set -euo pipefail
 
-if [ "$#" -lt 2 ]; then
-    echo "Usage: $0 tarball|deb|rpm DISTRO_ID" >&2
+if [ "$#" -lt 1 ]; then
+    echo "Usage: $0 source | $0 tarball|deb|rpm DISTRO_ID" >&2
     exit 2
 fi
 
 asset_type="$1"
-distro_id="$2"
+distro_id="${2:-}"
 
 : "${VERSION:?VERSION must be set}"
 : "${TD_TAG:?TD_TAG must be set}"
-: "${TDLIB_PURPLE_API_ID_FILE:?TDLIB_PURPLE_API_ID_FILE must be set}"
-: "${TDLIB_PURPLE_API_HASH_FILE:?TDLIB_PURPLE_API_HASH_FILE must be set}"
 
 td_mark="${TD_MARK:-release}"
 asset_dir="${ASSET_DIR:-release-assets}"
@@ -22,6 +20,54 @@ repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 cd "$repo_root"
 mkdir -p "$asset_dir"
+
+if [ "$asset_type" = "source" ]; then
+    td_gitlink="$(git ls-tree HEAD td | awk '{print $3}')"
+    if [ -z "$td_gitlink" ] || [ "$td_gitlink" != "$TD_TAG" ]; then
+        echo "The td submodule commit does not match TD_TAG." >&2
+        exit 1
+    fi
+    if ! td_checkout="$(git -C td rev-parse HEAD 2>/dev/null)" || \
+       [ "$td_checkout" != "$td_gitlink" ]; then
+        echo "The exact td submodule commit must be checked out for the source asset." >&2
+        exit 1
+    fi
+
+    source_workdir="$(mktemp -d)"
+    trap 'rm -rf "$source_workdir"' EXIT
+    source_root="tdlib-purple-${VERSION}"
+    git archive --format=tar --prefix="${source_root}/" HEAD |
+        tar -xf - -C "$source_workdir"
+    mkdir -p "$source_workdir/$source_root/td"
+    git -C td archive --format=tar --prefix="${source_root}/td/" "$td_gitlink" |
+        tar -xf - -C "$source_workdir"
+
+    if [ ! -s "$source_workdir/$source_root/td/LICENSE_1_0.txt" ]; then
+        echo "The complete source asset is missing the TDLib license." >&2
+        exit 1
+    fi
+
+    source_date_epoch="$(git show -s --format=%ct HEAD)"
+    asset="$asset_dir/tdlib-purple-${VERSION}-source.tar.xz"
+    tar --sort=name --owner=0 --group=0 --numeric-owner \
+        --mtime="@${source_date_epoch}" -C "$source_workdir" \
+        -cJf "$asset" "$source_root"
+    echo "Created $asset"
+    exit 0
+fi
+
+if [ -z "$distro_id" ]; then
+    echo "DISTRO_ID is required for $asset_type assets." >&2
+    exit 2
+fi
+
+: "${TDLIB_PURPLE_API_ID_FILE:?TDLIB_PURPLE_API_ID_FILE must be set}"
+: "${TDLIB_PURPLE_API_HASH_FILE:?TDLIB_PURPLE_API_HASH_FILE must be set}"
+
+if [ ! -s "$repo_root/td/LICENSE_1_0.txt" ]; then
+    echo "The exact td submodule and its license must be checked out." >&2
+    exit 1
+fi
 
 build_dir="build-release-${asset_type}-${distro_id}"
 staging_dir="$repo_root/package-root-${asset_type}-${distro_id}"
@@ -37,6 +83,7 @@ cmake -S . -B "$build_dir" -GNinja \
     -DNoVoip=TRUE \
     -DTDLIB_PURPLE_API_ID_FILE="$TDLIB_PURPLE_API_ID_FILE" \
     -DTDLIB_PURPLE_API_HASH_FILE="$TDLIB_PURPLE_API_HASH_FILE" \
+    -DTDLIB_PURPLE_TDLIB_LICENSE_FILE="$repo_root/td/LICENSE_1_0.txt" \
     -DTd_DIR="$repo_root/td_destdir/usr/local/lib/cmake/Td"
 
 cmake --build "$build_dir" --target telegram-tdlib
@@ -47,6 +94,26 @@ if ! grep -q '^#define TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE 1$' \
     exit 1
 fi
 DESTDIR="$staging_dir" cmake --build "$build_dir" --target install
+
+license_root="$staging_dir/usr/share/licenses/tdlib-purple"
+required_licenses=(
+    "LICENSE"
+    "fmt/LICENSE.rst"
+    "rlottie/COPYING.rlottie"
+    "rlottie/COPYING.FTL"
+    "rlottie/COPYING.LGPL"
+    "rlottie/COPYING.PIX"
+    "rlottie/COPYING.RPD"
+    "rlottie/COPYING.SKIA"
+    "rlottie/COPYING.STB"
+    "tdlib/LICENSE_1_0.txt"
+)
+for required_license in "${required_licenses[@]}"; do
+    if [ ! -s "$license_root/$required_license" ]; then
+        echo "Release package is missing license notice: $required_license" >&2
+        exit 1
+    fi
+done
 
 case "$asset_type" in
 tarball)
@@ -78,14 +145,16 @@ Standards-Version: 4.6.2
 Package: tdlib-purple
 Architecture: any
 Depends: ${shlibs:Depends}
-Description: Telegram plugin for libpurple using TDLib
- Telegram protocol plugin for libpurple clients such as Pidgin.
+Description: Unofficial Telegram plugin for libpurple using TDLib
+ An unofficial Telegram protocol plugin for Purple clients such as Pidgin.
 CONTROL
 
     depends="$(
         cd "$shlib_workdir"
         dpkg-shlibdeps -O -e "$plugin_so" | sed 's/^shlibs:Depends=//'
     )"
+    install -Dm0644 "$repo_root/LICENSE" \
+        "$staging_dir/usr/share/doc/tdlib-purple/copyright"
     installed_size="$(du -sk "$staging_dir/usr" | awk '{print $1}')"
 
     cat > "$staging_dir/DEBIAN/control" <<CONTROL
@@ -98,8 +167,8 @@ Maintainer: tdlib-purple contributors <noreply@example.invalid>
 Depends: ${depends}
 Installed-Size: ${installed_size}
 Homepage: https://github.com/adrighem/tdlib-purple
-Description: Telegram plugin for libpurple using TDLib
- Telegram protocol plugin for libpurple clients such as Pidgin.
+Description: Unofficial Telegram plugin for libpurple using TDLib
+ An unofficial Telegram protocol plugin for Purple clients such as Pidgin.
  This package was built for ${distro_id}.
 CONTROL
 
@@ -127,13 +196,13 @@ rpm)
 Name: tdlib-purple
 Version: ${VERSION}
 Release: ${package_revision}%{?dist}
-Summary: Telegram plugin for libpurple using TDLib
-License: GPL-2.0-or-later
+Summary: Unofficial Telegram plugin for libpurple using TDLib
+License: GPL-3.0-or-later
 URL: https://github.com/adrighem/tdlib-purple
 Requires: libpurple
 
 %description
-Telegram protocol plugin for libpurple clients such as Pidgin.
+An unofficial Telegram protocol plugin for Purple clients such as Pidgin.
 This package was built for ${distro_id}.
 
 %prep
@@ -143,10 +212,18 @@ This package was built for ${distro_id}.
 %install
 mkdir -p %{buildroot}
 cp -a ${staging_dir}/usr %{buildroot}/
-install -Dm0644 ${repo_root}/LICENSE %{buildroot}%{_licensedir}/%{name}/LICENSE
 
 %files
 %license %{_licensedir}/%{name}/LICENSE
+%license %{_licensedir}/%{name}/fmt/LICENSE.rst
+%license %{_licensedir}/%{name}/rlottie/COPYING.FTL
+%license %{_licensedir}/%{name}/rlottie/COPYING.LGPL
+%license %{_licensedir}/%{name}/rlottie/COPYING.PIX
+%license %{_licensedir}/%{name}/rlottie/COPYING.RPD
+%license %{_licensedir}/%{name}/rlottie/COPYING.SKIA
+%license %{_licensedir}/%{name}/rlottie/COPYING.STB
+%license %{_licensedir}/%{name}/rlottie/COPYING.rlottie
+%license %{_licensedir}/%{name}/tdlib/LICENSE_1_0.txt
 %{_libdir}/purple-2/libtelegram-tdlib.so
 %{_datadir}/pixmaps/pidgin/protocols/*/telegram.png
 %{_datadir}/metainfo/tdlib-purple.metainfo.xml

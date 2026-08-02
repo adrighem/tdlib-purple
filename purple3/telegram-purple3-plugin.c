@@ -1,10 +1,10 @@
 /*
- * tdlib-purple - Telegram protocol plugin for libpurple
+ * tdlib-purple - Unofficial Telegram protocol plugin for libpurple
  * Copyright (C) tdlib-purple contributors
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
- * Software Foundation; either version 2 of the License, or (at your option)
+ * Software Foundation; either version 3 of the License, or (at your option)
  * any later version.
  *
  * This program is distributed in the hope that it will be useful, but WITHOUT
@@ -169,12 +169,12 @@ telegram_tdlib_query(G_GNUC_UNUSED GError **error)
 
     return purple_plugin_info_new(
         "id", TELEGRAM_TDLIB_PLUGIN_ID,
-        "name", "Telegram",
+        "name", "Unofficial Telegram",
         "authors", authors,
         "version", TDLIB_PURPLE_VERSION,
         "category", N_("Protocol"),
-        "summary", N_("Telegram protocol plugin using TDLib"),
-        "description", N_("Telegram protocol support using TDLib"),
+        "summary", N_("Unofficial Telegram protocol plugin using TDLib"),
+        "description", N_("Unofficial Telegram protocol support using TDLib"),
         "website", "https://github.com/adrighem/tdlib-purple",
         "abi-version", PURPLE_ABI_VERSION,
         "flags", flags,

@@ -79,6 +79,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
+          submodules: true
 
       - name: Prepare release credentials
         env:
@@ -124,11 +125,13 @@ jobs:
           path: .ga_cache/linux-x86_64
           key: ${{ runner.os }}-release-td-linux-x86_64-${{ env.TD_TAG }}-${{ env.TD_MARK }}
 
-      - name: Build tarball
+      - name: Build source archive and tarball
         env:
           VERSION: ${{ needs.release-please.outputs.version }}
           TD_CACHE_DIR: .ga_cache/linux-x86_64
-        run: ./.github/scripts/build-release-assets.sh tarball linux-x86_64
+        run: |
+          ./.github/scripts/build-release-assets.sh source
+          ./.github/scripts/build-release-assets.sh tarball linux-x86_64
 
       - name: Remove release credential files
         if: ${{ always() }}
@@ -160,6 +163,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
+          submodules: true
 
       - name: Prepare release credentials
         env:
@@ -290,6 +294,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.release-please.outputs.tag_name }}
+          submodules: true
 
       - name: Prepare release credentials
         env:

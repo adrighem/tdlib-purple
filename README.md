@@ -1,8 +1,7 @@
-# Telegram for Purple
+# Unofficial Telegram for Purple
 
-Telegram is a protocol plugin for Purple clients such as Pidgin and BitlBee.
-It uses [TDLib](https://github.com/tdlib/td) to connect your existing Telegram
-account to a familiar desktop chat client.
+An unofficial libpurple plugin for Telegram chats in Pidgin, Finch, BitlBee,
+and other Purple clients. Uses Telegram's API through TDLib.
 
 [Download the latest release](https://github.com/adrighem/tdlib-purple/releases/latest)
 
@@ -13,9 +12,9 @@ account to a familiar desktop chat client.
 | Purple 2, including Pidgin 2 and BitlBee | The primary, usable plugin. |
 | Purple 3, including Pidgin 3 development builds | Developer preview. QR authorization reaches the ready state, but contacts and messages are not exposed yet. |
 
-The installed plugin and protocol are displayed as **Telegram**. Package,
-library, and internal protocol identifiers retain the `tdlib-purple` and
-`telegram-tdlib` names so upgrades and existing accounts remain compatible.
+The installed plugin and protocol are displayed as **Unofficial Telegram**.
+Package, library, and internal protocol identifiers retain the `tdlib-purple`
+and `telegram-tdlib` names so upgrades and existing accounts remain compatible.
 
 ## Features at a glance
 
@@ -42,7 +41,8 @@ Official packages are built without voice or video calling support.
 
 ## Install
 
-Official releases provide five Linux x86-64 downloads:
+Official releases provide five credentialed Linux x86-64 packages and one
+complete source archive:
 
 | System | Asset |
 | --- | --- |
@@ -51,6 +51,7 @@ Official releases provide five Linux x86-64 downloads:
 | Fedora 44 | `tdlib-purple-*_fedora-44_x86_64.rpm` |
 | Enterprise Linux 9 compatible | `tdlib-purple-*_el9_x86_64.rpm` |
 | Other compatible Linux systems | `tdlib-purple-*-linux-x86_64.tar.xz` |
+| Complete corresponding source | `tdlib-purple-*-source.tar.xz` |
 
 Download the package for your system from the
 [latest release](https://github.com/adrighem/tdlib-purple/releases/latest).
@@ -101,7 +102,7 @@ provider. Users do not need to obtain or enter an API ID or API hash.
 ## Add a Telegram account in Pidgin 2
 
 1. Open **Accounts > Manage Accounts > Add**.
-2. Select **Telegram** as the protocol.
+2. Select **Unofficial Telegram** as the protocol.
 3. Enter your phone number in international form, using digits and an optional
    leading `+`, with no spaces.
 4. Save and enable the account.
@@ -196,9 +197,18 @@ share API credentials, login codes, session files, cookies, or tokens.
 
 ## License and acknowledgments
 
-Telegram for Purple is free software under the terms in [LICENSE](LICENSE). It
-is powered by TDLib and builds on earlier work by the
+Except where a file or directory states otherwise, Unofficial Telegram for
+Purple is free software under the GNU General Public License, version 3 or (at
+your option) any later version. See [LICENSE](LICENSE).
+
+The repository also contains third-party code under compatible licenses. TDLib
+uses the Boost Software License 1.0; fmt and rlottie retain the licenses and
+notices in their source directories. Release packages install those license
+texts, and each release includes the exact TDLib source used to build it.
+
+This project is powered by TDLib and builds on earlier work by the
 [original tdlib-purple project](https://github.com/ars3niy/tdlib-purple) and
 [Ben Wiederhake's continuation](https://github.com/BenWiederhake/tdlib-purple).
 
-This project is independent and is not affiliated with Telegram.
+This is an independent, unofficial project and is not affiliated with or
+endorsed by Telegram.

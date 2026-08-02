@@ -4,7 +4,7 @@
 
 stdenv.mkDerivation {
   pname = "tdlib-purple";
-  version = "0.8.1";
+  version = "1.2.2"; # x-release-please-version
 
   src = ./.;
 
@@ -19,9 +19,9 @@ stdenv.mkDerivation {
   cmakeFlags = [ "-DNoVoip=True" ]; # libtgvoip required
 
   meta = with lib; {
-    homepage = "https://github.com/ars3niy/tdlib-purple";
-    description = "libpurple Telegram plugin using tdlib";
-    license = licenses.gpl2Plus;
+    homepage = "https://github.com/adrighem/tdlib-purple";
+    description = "Unofficial Telegram plugin for libpurple using TDLib";
+    license = licenses.gpl3Plus;
     maintainers = [ ];
     platforms = platforms.unix;
   };
