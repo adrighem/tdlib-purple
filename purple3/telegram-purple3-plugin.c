@@ -169,7 +169,7 @@ telegram_tdlib_query(G_GNUC_UNUSED GError **error)
 
     return purple_plugin_info_new(
         "id", TELEGRAM_TDLIB_PLUGIN_ID,
-        "name", "Telegram (tdlib)",
+        "name", "Telegram",
         "authors", authors,
         "version", TDLIB_PURPLE_VERSION,
         "category", N_("Protocol"),

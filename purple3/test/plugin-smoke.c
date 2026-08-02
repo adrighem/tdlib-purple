@@ -872,7 +872,7 @@ test_plugin_load_and_unload(void)
                                             TELEGRAM_TDLIB_PLUGIN_ID);
     g_assert_true(PURPLE_IS_PROTOCOL(protocol));
     g_assert_cmpstr(purple_protocol_get_name(protocol), ==,
-                    "Telegram (tdlib)");
+                    "Telegram");
     g_assert_cmpstr(purple_protocol_get_icon_name(protocol), ==,
                     "im-telegram");
     g_assert_cmpstr(purple_protocol_get_icon_resource_path(protocol), ==,

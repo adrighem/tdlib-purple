@@ -210,7 +210,7 @@ PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
   --nologin
 ```
 
-Open the account editor and confirm that `Telegram (tdlib)` is available in the
+Open the account editor and confirm that `Telegram` is available in the
 protocol chooser, requires only a local Account Name, and shows no phone-number,
 API-ID, or API-hash setting. The advanced view contains the secret-chat option.
 `--nologin` prevents existing accounts from connecting.
@@ -226,7 +226,7 @@ PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
   --config="$HOME/.local/share/tdlib-purple-pidgin3-profile"
 ```
 
-Create or enable a `Telegram (tdlib)` account. On an already-authorized phone,
+Create or enable a `Telegram` account. On an already-authorized phone,
 open Telegram's **Settings > Devices > Link Desktop Device** screen and scan
 the displayed QR code. Do not use the phone's normal camera or a generic QR
 scanner. Telegram refreshes the short-lived code automatically, so scan the

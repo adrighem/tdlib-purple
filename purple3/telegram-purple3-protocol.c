@@ -117,7 +117,7 @@ telegram_tdlib_protocol_new(void)
     return g_object_new(
         TELEGRAM_TDLIB_TYPE_PROTOCOL,
         "id", "telegram-tdlib",
-        "name", "Telegram (tdlib)",
+        "name", "Telegram",
         "description", _("Telegram protocol support using TDLib"),
         "icon-name", "im-telegram",
         "icon-resource-path", "/im/tdlib-purple/protocols/telegram/icons",
