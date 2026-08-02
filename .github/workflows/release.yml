@@ -238,6 +238,7 @@ jobs:
                 "${credential_dir}/api-hash"
               export TDLIB_PURPLE_API_ID_FILE="${credential_dir}/api-id"
               export TDLIB_PURPLE_API_HASH_FILE="${credential_dir}/api-hash"
+              umask 022
               ./.github/scripts/build-release-assets.sh deb "$ASSET_DISTRO"
             '
 
@@ -369,6 +370,7 @@ jobs:
                 "${credential_dir}/api-hash"
               export TDLIB_PURPLE_API_ID_FILE="${credential_dir}/api-id"
               export TDLIB_PURPLE_API_HASH_FILE="${credential_dir}/api-hash"
+              umask 022
               ./.github/scripts/build-release-assets.sh rpm "$ASSET_DISTRO"
             '
 

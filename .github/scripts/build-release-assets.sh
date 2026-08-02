@@ -63,7 +63,7 @@ deb)
         exit 1
     fi
 
-    mkdir -p "$staging_dir/DEBIAN"
+    install -d -m 0755 "$staging_dir/DEBIAN"
 
     shlib_workdir="$(mktemp -d)"
     trap 'rm -rf "$shlib_workdir"' EXIT
@@ -107,6 +107,7 @@ CONTROL
         cd "$staging_dir"
         find usr -type f -exec md5sum '{}' + | sort -k 2 > DEBIAN/md5sums
     )
+    chmod 0644 "$staging_dir/DEBIAN/control" "$staging_dir/DEBIAN/md5sums"
 
     asset="$asset_dir/tdlib-purple_${VERSION}-${package_revision}_${distro_id}_${arch}.deb"
     fakeroot dpkg-deb --build --root-owner-group "$staging_dir" "$asset"
