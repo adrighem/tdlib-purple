@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.2.1](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v1.2.0...tdlib-purple-v1.2.1) (2026-08-02)
+
+
+### Bug Fixes
+
+* require Telegram credentials for every build ([fb10394](https://github.com/adrighem/tdlib-purple/commit/fb10394f707cec725fad724aaa479b969c3c1c8e)), closes [#9](https://github.com/adrighem/tdlib-purple/issues/9)
+* simplify Telegram plugin name ([4d14778](https://github.com/adrighem/tdlib-purple/commit/4d14778ea1f9cab017406e2b730d5a8edcbcb9fc))
+
 ## [1.2.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v1.1.1...tdlib-purple-v1.2.0) (2026-08-01)
 
 
