@@ -1,5 +1,5 @@
 {
-  description = "libpurple Telegram plugin using tdlib";
+  description = "Unofficial Telegram plugin for libpurple using TDLib";
 
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs?ref=nixos-unstable";

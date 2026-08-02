@@ -10,6 +10,7 @@ This project uses release-please to manage release pull requests, changelog upda
 4. release-please creates a draft GitHub Release and tag.
 5. The release pipeline builds and verifies credentialed assets from encrypted
    repository secrets, then uploads:
+   - `tdlib-purple-<version>-source.tar.xz`
    - `tdlib-purple-<version>-linux-x86_64.tar.xz`
    - `tdlib-purple_<version>-1_debian-stable_amd64.deb`
    - `tdlib-purple_<version>-1_ubuntu-24.04-lts_amd64.deb`
@@ -36,15 +37,19 @@ committed files, command lines, caches, logs, or release notes.
 
 ## Version Source
 
-The current version lives in `CMakeLists.txt`, `purple3/CMakeLists.txt`, and
-`.release-please-manifest.json`. release-please updates all three through
-`release-please-config.json`.
+The current version lives in `CMakeLists.txt`, `purple3/CMakeLists.txt`,
+`package.nix`, and `.release-please-manifest.json`. release-please updates all
+four through `release-please-config.json`.
 
 ## Linux Assets
 
 The Linux tarball is a staged install tree rooted at `usr/`. Configuration fails
 unless both credential files are present and valid, and packaging verifies the
 generated provider state before creating an asset.
+The source archive is not a binary build and contains no application
+credentials. It includes the complete repository source plus the exact TDLib
+submodule source selected by the release commit.
+All binary packages contain the GPL and bundled dependency license notices.
 The `.deb` packages are built in distro-specific environments and use `dpkg-shlibdeps` to derive runtime dependencies from the built plugin.
 The RPM packages target Fedora 44 and Enterprise Linux 9 via AlmaLinux 9. Fedora 44 tracks the current Fedora stable release; EL9 is the conservative Red Hat compatible baseline for broad enterprise users.
 

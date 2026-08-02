@@ -17,6 +17,10 @@
         {
           "type": "generic",
           "path": "purple3/CMakeLists.txt"
+        },
+        {
+          "type": "generic",
+          "path": "package.nix"
         }
       ]
     }

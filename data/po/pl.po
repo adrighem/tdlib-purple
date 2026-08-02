@@ -17,10 +17,10 @@ msgstr ""
 
 #. (itstool) path: component/name
 #: tdlib-purple.metainfo.untranslated.xml:5
-msgid "Telegram plugin"
-msgstr "Wtyczka protokołu Telegram"
+msgid "Unofficial Telegram for Purple"
+msgstr "Unofficial Telegram for Purple"
 
 #. (itstool) path: component/summary
 #: tdlib-purple.metainfo.untranslated.xml:6
-msgid "Telegram protocol plugin for libpurple using tdlib"
+msgid "An unofficial Telegram protocol plugin for libpurple using TDLib"
 msgstr "Wtyczka protokołu Telegram dla biblioteki libpurple używająca tdlib"

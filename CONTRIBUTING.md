@@ -1,8 +1,9 @@
 # Contributing
 
-Thanks for helping with this tdlib-purple upgrade fork.
+Thanks for helping improve this Purple plugin for Telegram.
 
-Please keep changes small and focused. This makes it easier to review behavior changes and keep the TDLib upgrade work moving.
+Please keep changes small and focused. This makes behavior changes easier to
+review and maintain.
 
 Before sending a change, please run:
 
@@ -42,3 +43,14 @@ legacy per-account override for compatibility, then falls back to the provider;
 the override remains in Purple 2's plaintext account settings. Never put
 credential values in CMake options, compiler caches, logs, tests, or bug
 reports.
+
+## Licensing contributions
+
+Except where explicitly agreed otherwise, contributions are accepted under the
+same `GPL-3.0-or-later` terms as the project. By submitting a contribution, you
+confirm that you have the right to license it on those terms. This is an
+inbound-equals-outbound policy, not a copyright assignment.
+
+Keep all existing copyright, attribution, and third-party license notices.
+Identify copied or adapted third-party code in the contribution and make sure
+its license is compatible before submitting it.
