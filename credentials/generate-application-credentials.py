@@ -257,12 +257,10 @@ def generate_provider(
     api_id_path,
     api_hash_path,
     source_root,
-    stub_path,
     output_path,
     state_output_path=None,
 ):
     output_path = Path(output_path)
-    stub_path = Path(stub_path)
     if api_id_path is not None:
         api_id_path = Path(api_id_path)
     if api_hash_path is not None:
@@ -273,7 +271,7 @@ def generate_provider(
     output_paths = [output_path]
     if state_output_path is not None:
         output_paths.append(state_output_path)
-    read_paths = [stub_path]
+    read_paths = []
     if api_id_path is not None:
         read_paths.append(api_id_path)
     if api_hash_path is not None:
@@ -304,35 +302,25 @@ def generate_provider(
         if state_output_path is not None:
             _remove_private_output(state_output_path)
 
-    def write_outputs(provider, available):
+    def write_outputs(provider):
         try:
             _write_private_output(output_path, provider)
             if state_output_path is not None:
                 _write_private_output(
                     state_output_path,
-                    _render_provider_state(available),
+                    _render_provider_state(True),
                 )
         except OSError:
             remove_outputs()
             raise
 
-    try:
-        stub = stub_path.read_bytes()
-    except OSError:
-        remove_outputs()
-        return "CREDENTIAL_OUTPUT_ERROR"
-
     def fail(code):
-        try:
-            write_outputs(stub, False)
-        except OSError:
-            return "CREDENTIAL_OUTPUT_ERROR"
+        remove_outputs()
         return code
 
     try:
         if api_id_path is None and api_hash_path is None:
-            write_outputs(stub, False)
-            return None
+            return fail("CREDENTIAL_PATHS_REQUIRED")
 
         if api_id_path is None or api_hash_path is None:
             return fail("CREDENTIAL_PATHS_INCOMPLETE")
@@ -342,8 +330,7 @@ def generate_provider(
         id_exists = _path_exists(api_id_path)
         hash_exists = _path_exists(api_hash_path)
         if not id_exists and not hash_exists:
-            write_outputs(stub, False)
-            return None
+            return fail("CREDENTIAL_INPUT_MISSING")
         if not id_exists or not hash_exists:
             return fail("CREDENTIAL_INPUT_MISSING")
 
@@ -380,7 +367,7 @@ def generate_provider(
         return fail("CREDENTIAL_API_HASH_INVALID")
 
     try:
-        write_outputs(_render_provider(api_id, api_hash), True)
+        write_outputs(_render_provider(api_id, api_hash))
     except OSError:
         return "CREDENTIAL_OUTPUT_ERROR"
 
@@ -392,7 +379,6 @@ def _parse_arguments():
     parser.add_argument("--api-id-file")
     parser.add_argument("--api-hash-file")
     parser.add_argument("--source-root", required=True)
-    parser.add_argument("--stub", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--state-output")
     return parser.parse_args()
@@ -405,7 +391,6 @@ def main():
             api_id_path=arguments.api_id_file,
             api_hash_path=arguments.api_hash_file,
             source_root=arguments.source_root,
-            stub_path=arguments.stub,
             output_path=arguments.output,
             state_output_path=arguments.state_output,
         )

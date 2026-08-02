@@ -4,24 +4,6 @@ on:
   push:
     branches:
       - master
-  workflow_dispatch:
-    inputs:
-      tag_name:
-        description: Existing release tag to upload rebuilt assets to
-        required: false
-        type: string
-      version:
-        description: Version for rebuilt assets, for example 0.9.1
-        required: false
-        type: string
-      asset_set:
-        description: Asset set to build when tag_name and version are set
-        required: false
-        default: all
-        type: choice
-        options:
-          - all
-          - rpm
 
 permissions:
   contents: write
@@ -34,7 +16,48 @@ env:
   TD_MARK: "m2"
 
 jobs:
+  credential-preflight:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Validate release credentials
+        env:
+          APPLICATION_API_ID: ${{ secrets.TDLIB_PURPLE_API_ID }}
+          APPLICATION_API_HASH: ${{ secrets.TDLIB_PURPLE_API_HASH }}
+        run: |
+          if [ -z "${APPLICATION_API_ID}" ] || \
+             [ -z "${APPLICATION_API_HASH}" ]; then
+            echo "Required Telegram application credential secrets are missing." >&2
+            exit 1
+          fi
+          umask 077
+          credential_dir="${RUNNER_TEMP}/tdlib-purple-release-preflight"
+          mkdir -p "${credential_dir}"
+          printf '%s' "${APPLICATION_API_ID}" > "${credential_dir}/api-id"
+          printf '%s' "${APPLICATION_API_HASH}" > "${credential_dir}/api-hash"
+          python3 credentials/generate-application-credentials.py \
+            --api-id-file "${credential_dir}/api-id" \
+            --api-hash-file "${credential_dir}/api-hash" \
+            --source-root "${GITHUB_WORKSPACE}" \
+            --output "${credential_dir}/provider.c" \
+            --state-output "${credential_dir}/provider-state.h"
+
+      - name: Remove preflight credential files
+        if: ${{ always() }}
+        run: |
+          rm -f \
+            "${RUNNER_TEMP}/tdlib-purple-release-preflight/api-id" \
+            "${RUNNER_TEMP}/tdlib-purple-release-preflight/api-hash" \
+            "${RUNNER_TEMP}/tdlib-purple-release-preflight/provider.c" \
+            "${RUNNER_TEMP}/tdlib-purple-release-preflight/provider-state.h"
+          rmdir "${RUNNER_TEMP}/tdlib-purple-release-preflight" \
+            2>/dev/null || true
+
   release-please:
+    needs: credential-preflight
     runs-on: ubuntu-24.04
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
@@ -50,10 +73,27 @@ jobs:
 
   linux-tarball:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.asset_set == 'all' && github.event.inputs.tag_name != '' && github.event.inputs.version != '') }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Prepare release credentials
+        env:
+          APPLICATION_API_ID: ${{ secrets.TDLIB_PURPLE_API_ID }}
+          APPLICATION_API_HASH: ${{ secrets.TDLIB_PURPLE_API_HASH }}
+        run: |
+          umask 077
+          credential_dir="${RUNNER_TEMP}/tdlib-purple-release-credentials"
+          mkdir -p "${credential_dir}"
+          printf '%s' "${APPLICATION_API_ID}" > "${credential_dir}/api-id"
+          printf '%s' "${APPLICATION_API_HASH}" > "${credential_dir}/api-hash"
+          printf 'TDLIB_PURPLE_API_ID_FILE=%s\n' \
+            "${credential_dir}/api-id" >> "${GITHUB_ENV}"
+          printf 'TDLIB_PURPLE_API_HASH_FILE=%s\n' \
+            "${credential_dir}/api-hash" >> "${GITHUB_ENV}"
 
       - name: Install build dependencies
         run: |
@@ -86,18 +126,27 @@ jobs:
 
       - name: Build tarball
         env:
-          VERSION: ${{ needs.release-please.outputs.version || github.event.inputs.version }}
+          VERSION: ${{ needs.release-please.outputs.version }}
           TD_CACHE_DIR: .ga_cache/linux-x86_64
         run: ./.github/scripts/build-release-assets.sh tarball linux-x86_64
+
+      - name: Remove release credential files
+        if: ${{ always() }}
+        run: |
+          rm -f \
+            "${RUNNER_TEMP}/tdlib-purple-release-credentials/api-id" \
+            "${RUNNER_TEMP}/tdlib-purple-release-credentials/api-hash"
+          rmdir "${RUNNER_TEMP}/tdlib-purple-release-credentials" \
+            2>/dev/null || true
 
       - name: Upload release asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ needs.release-please.outputs.tag_name || github.event.inputs.tag_name }}" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
 
   deb-packages:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && github.event.inputs.asset_set == 'all' && github.event.inputs.tag_name != '' && github.event.inputs.version != '') }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -109,6 +158,23 @@ jobs:
             image: ubuntu:24.04
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Prepare release credentials
+        env:
+          APPLICATION_API_ID: ${{ secrets.TDLIB_PURPLE_API_ID }}
+          APPLICATION_API_HASH: ${{ secrets.TDLIB_PURPLE_API_HASH }}
+        run: |
+          umask 077
+          credential_dir="${RUNNER_TEMP}/tdlib-purple-release-credentials"
+          mkdir -p "${credential_dir}"
+          printf '%s' "${APPLICATION_API_ID}" > "${credential_dir}/api-id"
+          printf '%s' "${APPLICATION_API_HASH}" > "${credential_dir}/api-hash"
+          printf 'TDLIB_PURPLE_API_ID_FILE=%s\n' \
+            "${credential_dir}/api-id" >> "${GITHUB_ENV}"
+          printf 'TDLIB_PURPLE_API_HASH_FILE=%s\n' \
+            "${credential_dir}/api-hash" >> "${GITHUB_ENV}"
 
       - name: Cache TDLib build
         uses: actions/cache@v5
@@ -118,7 +184,7 @@ jobs:
 
       - name: Build Debian package
         env:
-          VERSION: ${{ needs.release-please.outputs.version || github.event.inputs.version }}
+          VERSION: ${{ needs.release-please.outputs.version }}
           ASSET_DISTRO: ${{ matrix.distro_id }}
           IMAGE: ${{ matrix.image }}
           TD_TAG: ${{ env.TD_TAG }}
@@ -127,6 +193,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD:/work" \
+            -v "${RUNNER_TEMP}/tdlib-purple-release-credentials:/run/tdlib-purple-host-credentials:ro" \
             -w /work \
             -e VERSION \
             -e ASSET_DISTRO \
@@ -160,8 +227,28 @@ jobs:
                 tar \
                 xz-utils \
                 zlib1g-dev
+              umask 077
+              credential_dir="$(mktemp -d)"
+              trap '\''rm -rf "${credential_dir}"'\'' EXIT
+              install -m 0600 \
+                /run/tdlib-purple-host-credentials/api-id \
+                "${credential_dir}/api-id"
+              install -m 0600 \
+                /run/tdlib-purple-host-credentials/api-hash \
+                "${credential_dir}/api-hash"
+              export TDLIB_PURPLE_API_ID_FILE="${credential_dir}/api-id"
+              export TDLIB_PURPLE_API_HASH_FILE="${credential_dir}/api-hash"
               ./.github/scripts/build-release-assets.sh deb "$ASSET_DISTRO"
             '
+
+      - name: Remove release credential files
+        if: ${{ always() }}
+        run: |
+          rm -f \
+            "${RUNNER_TEMP}/tdlib-purple-release-credentials/api-id" \
+            "${RUNNER_TEMP}/tdlib-purple-release-credentials/api-hash"
+          rmdir "${RUNNER_TEMP}/tdlib-purple-release-credentials" \
+            2>/dev/null || true
 
       - name: Verify Debian package runtime dependencies
         env:
@@ -184,11 +271,11 @@ jobs:
       - name: Upload release asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ needs.release-please.outputs.tag_name || github.event.inputs.tag_name }}" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
 
   rpm-packages:
     needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.asset_set == 'all' || github.event.inputs.asset_set == 'rpm') && github.event.inputs.tag_name != '' && github.event.inputs.version != '') }}
+    if: ${{ needs.release-please.outputs.release_created == 'true' }}
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
@@ -200,6 +287,23 @@ jobs:
             image: almalinux:9
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Prepare release credentials
+        env:
+          APPLICATION_API_ID: ${{ secrets.TDLIB_PURPLE_API_ID }}
+          APPLICATION_API_HASH: ${{ secrets.TDLIB_PURPLE_API_HASH }}
+        run: |
+          umask 077
+          credential_dir="${RUNNER_TEMP}/tdlib-purple-release-credentials"
+          mkdir -p "${credential_dir}"
+          printf '%s' "${APPLICATION_API_ID}" > "${credential_dir}/api-id"
+          printf '%s' "${APPLICATION_API_HASH}" > "${credential_dir}/api-hash"
+          printf 'TDLIB_PURPLE_API_ID_FILE=%s\n' \
+            "${credential_dir}/api-id" >> "${GITHUB_ENV}"
+          printf 'TDLIB_PURPLE_API_HASH_FILE=%s\n' \
+            "${credential_dir}/api-hash" >> "${GITHUB_ENV}"
 
       - name: Cache TDLib build
         uses: actions/cache@v5
@@ -209,7 +313,7 @@ jobs:
 
       - name: Build RPM package
         env:
-          VERSION: ${{ needs.release-please.outputs.version || github.event.inputs.version }}
+          VERSION: ${{ needs.release-please.outputs.version }}
           ASSET_DISTRO: ${{ matrix.distro_id }}
           IMAGE: ${{ matrix.image }}
           TD_TAG: ${{ env.TD_TAG }}
@@ -218,6 +322,7 @@ jobs:
         run: |
           docker run --rm \
             -v "$PWD:/work" \
+            -v "${RUNNER_TEMP}/tdlib-purple-release-credentials:/run/tdlib-purple-host-credentials:ro" \
             -w /work \
             -e VERSION \
             -e ASSET_DISTRO \
@@ -253,10 +358,60 @@ jobs:
                 tar \
                 xz \
                 zlib-devel
+              umask 077
+              credential_dir="$(mktemp -d)"
+              trap '\''rm -rf "${credential_dir}"'\'' EXIT
+              install -m 0600 \
+                /run/tdlib-purple-host-credentials/api-id \
+                "${credential_dir}/api-id"
+              install -m 0600 \
+                /run/tdlib-purple-host-credentials/api-hash \
+                "${credential_dir}/api-hash"
+              export TDLIB_PURPLE_API_ID_FILE="${credential_dir}/api-id"
+              export TDLIB_PURPLE_API_HASH_FILE="${credential_dir}/api-hash"
               ./.github/scripts/build-release-assets.sh rpm "$ASSET_DISTRO"
             '
+
+      - name: Remove release credential files
+        if: ${{ always() }}
+        run: |
+          rm -f \
+            "${RUNNER_TEMP}/tdlib-purple-release-credentials/api-id" \
+            "${RUNNER_TEMP}/tdlib-purple-release-credentials/api-hash"
+          rmdir "${RUNNER_TEMP}/tdlib-purple-release-credentials" \
+            2>/dev/null || true
 
       - name: Upload release asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ needs.release-please.outputs.tag_name || github.event.inputs.tag_name }}" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" release-assets/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  publish-release:
+    needs:
+      - release-please
+      - linux-tarball
+      - deb-packages
+      - rpm-packages
+    if: ${{ needs.release-please.outputs.release_created == 'true' && needs.linux-tarball.result == 'success' && needs.deb-packages.result == 'success' && needs.rpm-packages.result == 'success' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release edit "${TAG_NAME}" --draft=false --repo "$GITHUB_REPOSITORY"
+
+  cleanup-failed-release:
+    needs:
+      - release-please
+      - linux-tarball
+      - deb-packages
+      - rpm-packages
+    if: ${{ always() && needs.release-please.outputs.release_created == 'true' && (needs.linux-tarball.result != 'success' || needs.deb-packages.result != 'success' || needs.rpm-packages.result != 'success') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Remove incomplete draft release and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
+        run: gh release delete "${TAG_NAME}" --cleanup-tag --yes --repo "$GITHUB_REPOSITORY"

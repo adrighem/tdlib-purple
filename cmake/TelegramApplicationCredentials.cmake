@@ -44,11 +44,6 @@ set(
     _TDLIB_PURPLE_CREDENTIALS_GENERATOR
     "${_TDLIB_PURPLE_CREDENTIALS_ROOT}/credentials/generate-application-credentials.py"
 )
-set(
-    _TDLIB_PURPLE_CREDENTIALS_STUB
-    "${_TDLIB_PURPLE_CREDENTIALS_ROOT}/credentials/telegram-application-credentials-stub.c"
-)
-
 function(_tdlib_purple_credentials_report_failure diagnostic)
     if ("${diagnostic}" MATCHES "^CREDENTIAL_[A-Z_]+$")
         message(FATAL_ERROR "${diagnostic}")
@@ -125,8 +120,6 @@ function(
             ${_generator_arguments}
             "--source-root"
             "${_TDLIB_PURPLE_CREDENTIALS_ROOT}"
-            "--stub"
-            "${_TDLIB_PURPLE_CREDENTIALS_STUB}"
             "--output"
             "${_provider_source}"
             ${_state_arguments}
@@ -154,8 +147,6 @@ function(
             ${_generator_arguments}
             "--source-root"
             "${_TDLIB_PURPLE_CREDENTIALS_ROOT}"
-            "--stub"
-            "${_TDLIB_PURPLE_CREDENTIALS_STUB}"
             "--output"
             "${_provider_source}"
             ${_state_arguments}
@@ -164,7 +155,6 @@ function(
             ${_state_header}
         DEPENDS
             "${_TDLIB_PURPLE_CREDENTIALS_GENERATOR}"
-            "${_TDLIB_PURPLE_CREDENTIALS_STUB}"
         COMMENT
             "Refreshing private Telegram application credentials"
         VERBATIM

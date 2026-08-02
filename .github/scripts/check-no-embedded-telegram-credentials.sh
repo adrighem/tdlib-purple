@@ -30,7 +30,6 @@ git grep -l \
 while IFS= read -r provider_file; do
     case "${provider_file}" in
         credentials/telegram-application-credentials-private.h | \
-        credentials/telegram-application-credentials-stub.c | \
         credentials/telegram-application-credentials.c | \
         purple3/test/application-credentials-test-backend.c | \
         test/application-credentials-test-backend.c)

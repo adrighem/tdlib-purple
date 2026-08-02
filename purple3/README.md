@@ -86,13 +86,19 @@ CMake package compatible with TDLib 1.8.65 or newer. If TDLib is not installed
 in a standard CMake search location, add
 `-DTd_DIR=/path/to/lib/cmake/Td` to the configure command.
 
+Every build requires the application API ID and API hash in separate
+owner-only files outside the source tree. Pass only their paths when
+configuring:
+
 ```sh
 cd "$HOME/src/tdlib-purple"
 
 meson devenv -C "$HOME/src/pidgin/_build" \
   --workdir "$PWD" \
   cmake -S purple3 -B purple3/build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Debug
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
+  -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
 
 meson devenv -C "$HOME/src/pidgin/_build" \
   --workdir "$PWD" \
@@ -101,20 +107,6 @@ meson devenv -C "$HOME/src/pidgin/_build" \
 meson devenv -C "$HOME/src/pidgin/_build" \
   --workdir "$PWD" \
   ctest --test-dir purple3/build --output-on-failure
-```
-
-This creates a credentialless build, which is sufficient for automated tests
-and account-editor inspection. For a private build, store the application API
-ID and API hash in separate files outside the source tree and pass only their
-paths when configuring:
-
-```sh
-meson devenv -C "$HOME/src/pidgin/_build" \
-  --workdir "$PWD" \
-  cmake -S purple3 -B purple3/build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
-  -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
 ```
 
 The two files must be distinct, readable regular files, not symbolic links,
@@ -127,18 +119,17 @@ contain exactly 32 hexadecimal characters.
 
 CMake stores these file paths, but not their contents, in the build
 directory's cache. Omitting the `-D` options during a later reconfiguration
-does not clear the cached paths. To return an existing build to credentialless
-mode, configure both variables as empty:
+does not clear the cached paths. Setting either or both paths to empty fails
+configuration and removes any previously generated provider. Restore valid
+paths to continue building:
 
 ```sh
 meson devenv -C "$HOME/src/pidgin/_build" \
   --workdir "$PWD" \
   cmake -S purple3 -B purple3/build \
-  -DTDLIB_PURPLE_API_ID_FILE= \
-  -DTDLIB_PURPLE_API_HASH_FILE=
+  -DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
+  -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
 ```
-
-Using a fresh build directory has the same effect.
 
 The former raw `API_ID`, `API_HASH`, and `STUFF` CMake cache variables are not
 accepted. If an old build directory still contains one, configuration removes
@@ -147,9 +138,8 @@ option from build automation, configure again with the two file-path options,
 and never move the values themselves onto the command line.
 
 The provider refreshes whenever the plugin is built. Rebuilding after either
-value changes embeds the new pair. Removing both input files replaces the
-provider with the credential-unavailable stub. Removing only one file stops
-the build because a partial pair is never accepted.
+value changes embeds the new pair. Removing either or both inputs stops the
+build and removes the generated provider.
 
 The generated source, object files, and plugin contain extractable application
 credentials. The generated source is protected inside the private build
@@ -166,11 +156,11 @@ build directory. The ownership and mode checks currently provide their full
 guarantees only on POSIX systems; private credentialed Windows builds do not
 have equivalent ACL hardening yet.
 
-The credential tests use only synthetic values and the credential-unavailable
-stub. The production smoke test verifies the generated provider state without
-inspecting or logging credential values, connecting accounts to Telegram, or
-accessing the network. It uses in-memory Purple backends and an isolated
-temporary profile.
+The credential tests use only synthetic values and test backends. The
+production smoke test verifies the generated provider state without inspecting
+or logging credential values, connecting accounts to Telegram, or accessing
+the network. It uses in-memory Purple backends and an isolated temporary
+profile.
 
 ### Credential diagnostics
 
@@ -178,6 +168,7 @@ Credential setup failures report stable, value-free diagnostic codes:
 
 | Diagnostic | Meaning |
 | --- | --- |
+| `CREDENTIAL_PATHS_REQUIRED` | Neither credential file path was configured. |
 | `CREDENTIAL_PATHS_INCOMPLETE` | Only one credential path was configured. |
 | `CREDENTIAL_LEGACY_CACHE_REMOVED` | A legacy raw credential cache entry was removed; migrate the build to the two file-path options and configure again. |
 | `CREDENTIAL_INPUT_MISSING` | The configured file pair is incomplete on disk. |
@@ -189,11 +180,13 @@ Credential setup failures report stable, value-free diagnostic codes:
 | `CREDENTIAL_OUTPUT_ERROR` | The private generated provider could not be written safely. |
 | `CREDENTIAL_GENERATOR_FAILED` | The credential generator failed unexpectedly. |
 
-At runtime, `Telegram application credentials are unavailable in this build`
-means the credentialless stub is active. A configured build starts Telegram
-authorization and presents a QR code. Subsequent connection errors describe an
-authorization, Purple UI, account-storage, or TDLib backend failure without
-including the configured credential values.
+Current production targets cannot create a plugin without an embedded provider.
+A plugin without that provider is a broken build, not a supported credentialless
+variant. The runtime `Telegram application credentials are unavailable in this
+build` message therefore indicates an obsolete or externally modified binary.
+A valid build starts Telegram authorization and presents a QR code. Subsequent
+connection errors describe an authorization, Purple UI, account-storage, or
+TDLib backend failure without including the configured credential values.
 
 ## Inspect and verify in an isolated Pidgin 3 profile
 

@@ -196,29 +196,6 @@ if (BUILD_TESTING)
         purple3-application-credentials-test
     )
 
-    add_executable(purple3-application-credentials-stub-test
-        ${PURPLE3_APPLICATION_CREDENTIALS_CORE}
-        "${CMAKE_CURRENT_SOURCE_DIR}/../credentials/telegram-application-credentials-stub.c"
-        test/application-credentials-stub-test.c
-    )
-    target_include_directories(
-        purple3-application-credentials-stub-test
-        PRIVATE
-            "${CMAKE_CURRENT_SOURCE_DIR}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/../credentials"
-    )
-    target_compile_definitions(
-        purple3-application-credentials-stub-test
-        PRIVATE GETTEXT_PACKAGE="tdlib-purple"
-    )
-    target_link_libraries(
-        purple3-application-credentials-stub-test
-        PRIVATE PkgConfig::Purple3
-    )
-    tdlib_purple3_test_target_defaults(
-        purple3-application-credentials-stub-test
-    )
-
     add_executable(purple3-plugin-smoke
         "${TDLIB_PURPLE3_CREDENTIALS_STATE_HEADER}"
         test/plugin-smoke.c
@@ -292,13 +269,8 @@ if (BUILD_TESTING)
         NAME purple3-application-credentials
         COMMAND purple3-application-credentials-test
     )
-    add_test(
-        NAME purple3-application-credentials-stub
-        COMMAND purple3-application-credentials-stub-test
-    )
     set_tests_properties(
         purple3-application-credentials
-        purple3-application-credentials-stub
         PROPERTIES
             TIMEOUT 10
             ENVIRONMENT

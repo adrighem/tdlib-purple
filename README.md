@@ -47,10 +47,13 @@ https://github.com/adrighem/tdlib-purple/releases/latest
 
 ## Building Locally
 
-For a default local build and install:
+Every build requires Telegram application credentials in two owner-only files.
+Pass their paths to the convenience script through environment variables:
 
 ```sh
-./build_and_install.sh
+TDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
+TDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash \
+  ./build_and_install.sh
 ```
 
 That script builds the pinned TDLib submodule, builds tdlib-purple without VoIP support, and installs the plugin system-wide.
@@ -65,7 +68,7 @@ For manual CMake builds, use `sudo cmake --build build --target uninstall` from 
 
 Manual CMake builds need CMake 3.16 or newer, Python 3.8 or newer, and TDLib 1.8.65 or an API-compatible newer release. CMake prefers system `fmt` and `rlottie` when available, with bundled fallbacks for local builds. The pinned TDLib submodule is the supported and tested schema.
 
-For a private build that supplies the Telegram application credentials to every account, keep the API ID and API hash in separate owner-only files and pass only their paths to CMake:
+For a manual build, pass only the two file paths to CMake:
 
 ```sh
 cmake -S . -B /path/to/private-build \
@@ -80,14 +83,14 @@ be a canonical positive decimal integer no greater than `2147483647`; the API
 hash must contain exactly 32 hexadecimal characters.
 
 CMake caches the file paths, but not their contents. Omitting the `-D` options
-during a later reconfiguration does not clear them. Use a fresh build
-directory, or set both variables to empty, to return a build to credentialless
-mode:
+during a later reconfiguration does not clear them. Setting either or both
+paths to empty fails configuration with a value-free diagnostic and removes any
+previously generated provider.
 
 ```sh
 cmake -S . -B /path/to/private-build \
-  -DTDLIB_PURPLE_API_ID_FILE= \
-  -DTDLIB_PURPLE_API_HASH_FILE=
+  -DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
+  -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
 ```
 
 Legacy raw `API_ID`, `API_HASH`, and `STUFF` cache entries are removed and make
@@ -95,11 +98,11 @@ configuration fail with `CREDENTIAL_LEGACY_CACHE_REMOVED`. Remove those raw
 options from build automation, then configure again with the file-path options.
 
 The generator refreshes the private source on every build. Rebuilding after
-rotating either value embeds the new pair. Removing both files switches to the
-credentialless provider; removing only one stops the build. Generated source,
-object files, and the final plugin contain extractable application
-credentials. Protect the build directory and binary, and remember that older
-objects or binaries can retain an earlier pair.
+rotating either value embeds the new pair. Removing either or both files stops
+the build and removes the generated provider. Generated source, object files,
+and the final plugin contain extractable application credentials. Protect the
+build directory and binary, and remember that older objects or binaries can
+retain an earlier pair.
 
 For private builds, also disable compiler caches, distributed or remote
 compilation, and automatic compiler-crash uploads. They can copy
@@ -107,14 +110,17 @@ credential-bearing compiler inputs or objects outside the protected build
 directory. The private-file permission hardening currently provides its full
 guarantees on POSIX systems, not Windows ACLs.
 
-The repository and release packages intentionally use a credentialless
-provider. Such builds still load normally. On Purple 2, existing accounts can
-continue to use a complete API ID and API hash pair from the Advanced settings
-as a compatibility override. That compatibility value remains visible in the
-account editor and is stored in Purple 2's plaintext account settings. A
-partial or malformed override fails before any TDLib request is sent. Do not
-put credential values in source files, CMake command lines, logs, or bug
-reports.
+Configuration and rebuilds fail closed unless a complete valid pair is
+available. Release builds receive the pair from encrypted repository secrets
+and are published only after every package verifies an embedded provider. A
+build without that provider is broken and unsupported; this project has no
+credentialless build mode. On Purple 2, existing accounts can still use a
+complete API ID and API hash pair from the Advanced settings as a compatibility
+override. That value remains
+visible in the account editor and is stored in Purple 2's plaintext account
+settings. A partial or malformed override fails before any TDLib request is
+sent. Do not put credential values in source files, CMake command lines, logs,
+or bug reports.
 
 ## Purple 3 Development
 

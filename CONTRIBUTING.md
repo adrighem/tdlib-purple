@@ -12,7 +12,9 @@ cmake --build build --target tests
 cmake --build build --target run-tests
 ```
 
-If you use a different build directory, adjust the commands accordingly.
+Configure that build directory first with the two owner-only credential file
+paths documented in the README. If you use a different build directory, adjust
+the commands accordingly.
 
 For a focused check of Telegram forum-topic behavior:
 
@@ -32,10 +34,11 @@ When reporting bugs or proposing fixes, include:
 Debug logs may contain private names, phone numbers, chat titles, and message text. Remove sensitive data before posting logs publicly.
 
 Never commit Telegram API credentials, login codes, authorization data, or
-session files. Public builds use the credential-unavailable provider. Private
-builds take only paths to two owner-only files outside the source tree, as
-documented in the README. Purple 3 uses only that application provider. Purple
-2 first accepts a complete legacy per-account override for compatibility, then
-falls back to the provider; the override remains in Purple 2's plaintext
-account settings. Never put credential values in CMake options, compiler
-caches, logs, tests, or bug reports.
+session files. Every production build takes only paths to two owner-only files
+outside the source tree and fails if either input is unavailable or invalid.
+CI uses synthetic values; releases use encrypted repository secrets. Purple 3
+uses only the generated application provider. Purple 2 first accepts a complete
+legacy per-account override for compatibility, then falls back to the provider;
+the override remains in Purple 2's plaintext account settings. Never put
+credential values in CMake options, compiler caches, logs, tests, or bug
+reports.

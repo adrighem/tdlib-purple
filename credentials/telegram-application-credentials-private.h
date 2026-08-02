@@ -1,6 +1,6 @@
 /*
- * Internal provider boundary. Production builds supply either a generated
- * implementation or the credential-unavailable stub.
+ * Internal provider boundary. Production builds supply a generated
+ * implementation from validated application credential inputs.
  */
 
 #ifndef TDLIB_PURPLE_APPLICATION_CREDENTIALS_PRIVATE_H

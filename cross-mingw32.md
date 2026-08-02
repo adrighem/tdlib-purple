@@ -133,6 +133,9 @@ make install DESTDIR=../install
 
 Building the plugin:
 
+Keep the application API ID and API hash in separate files outside the source
+tree and add their paths to the configure command.
+
 ```
 cmake -DCMAKE_SYSTEM_NAME=Windows \
     -DCMAKE_C_COMPILER=i686-w64-mingw32-gcc -DCMAKE_CXX_COMPILER=i686-w64-mingw32-g++ \
@@ -140,6 +143,8 @@ cmake -DCMAKE_SYSTEM_NAME=Windows \
     -DCMAKE_SHARED_LINKER_FLAGS="-static-libgcc -static-libstdc++" \
     -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++" \
     -DNoPkgConfig=True \
+    -DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
+    -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash \
     -DPurple_INCLUDE_DIRS="$PWD/../../deps/pidgin-2.13.0/libpurple;$PWD/../../deps/win32-dev/gtk_2_0-2.14/include/glib-2.0;$PWD/../../deps/win32-dev/gtk_2_0-2.14/lib/glib-2.0/include" \
     -DPurple_LIBRARIES="$PWD/../../deps/pidgin-2.13.0/libpurple/libpurple.dll.a;$PWD/../../deps/win32-dev/gtk_2_0-2.14/lib/libglib-2.0.dll.a;$PWD/../../deps/win32-dev/gtk_2_0-2.14/lib/libgthread-2.0.dll.a" \
     -Dlibpng_INCLUDE_DIRS=$PWD/../../deps/win32-dev/libpng-1.6.37/install/usr/local/include \

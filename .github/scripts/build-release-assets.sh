@@ -12,6 +12,8 @@ distro_id="$2"
 
 : "${VERSION:?VERSION must be set}"
 : "${TD_TAG:?TD_TAG must be set}"
+: "${TDLIB_PURPLE_API_ID_FILE:?TDLIB_PURPLE_API_ID_FILE must be set}"
+: "${TDLIB_PURPLE_API_HASH_FILE:?TDLIB_PURPLE_API_HASH_FILE must be set}"
 
 td_mark="${TD_MARK:-release}"
 asset_dir="${ASSET_DIR:-release-assets}"
@@ -33,9 +35,17 @@ cmake -S . -B "$build_dir" -GNinja \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DCMAKE_DISABLE_FIND_PACKAGE_fmt=TRUE \
     -DNoVoip=TRUE \
+    -DTDLIB_PURPLE_API_ID_FILE="$TDLIB_PURPLE_API_ID_FILE" \
+    -DTDLIB_PURPLE_API_HASH_FILE="$TDLIB_PURPLE_API_HASH_FILE" \
     -DTd_DIR="$repo_root/td_destdir/usr/local/lib/cmake/Td"
 
 cmake --build "$build_dir" --target telegram-tdlib
+credential_state_header="$build_dir/.private/telegram-application-credentials-state.h"
+if ! grep -q '^#define TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE 1$' \
+    "$credential_state_header"; then
+    echo "Release build did not produce an embedded credential provider." >&2
+    exit 1
+fi
 DESTDIR="$staging_dir" cmake --build "$build_dir" --target install
 
 case "$asset_type" in
