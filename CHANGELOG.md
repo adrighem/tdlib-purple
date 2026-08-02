@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v1.2.1...tdlib-purple-v1.2.2) (2026-08-02)
+
+
+### Bug Fixes
+
+* preserve release package permissions ([b7ea34b](https://github.com/adrighem/tdlib-purple/commit/b7ea34b0b34662fbc82246515305dc9e26516a6a)), closes [#9](https://github.com/adrighem/tdlib-purple/issues/9)
+
 ## [1.2.1](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v1.2.0...tdlib-purple-v1.2.1) (2026-08-02)
 
 
