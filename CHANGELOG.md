@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v2.0.0...tdlib-purple-v2.0.1) (2026-08-03)
+
+
+### Bug Fixes
+
+* restore default Telegram application credentials ([685cbc9](https://github.com/adrighem/tdlib-purple/commit/685cbc9d2c16d0a6ab6a03dcbc2cb85de6ecfc3b)), closes [#8](https://github.com/adrighem/tdlib-purple/issues/8)
+
 ## [2.0.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v1.2.2...tdlib-purple-v2.0.0) (2026-08-02)
 
 

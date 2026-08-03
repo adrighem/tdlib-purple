@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16 FATAL_ERROR)
 
-set(VERSION 2.0.0) # x-release-please-version
+set(VERSION 2.0.1) # x-release-please-version
 project(tdlib-purple VERSION ${VERSION} LANGUAGES C CXX)
 
 find_package(Td REQUIRED)
