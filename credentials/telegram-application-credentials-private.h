@@ -1,6 +1,6 @@
 /*
- * Internal provider boundary. Production builds supply a generated
- * implementation from validated application credential inputs.
+ * Internal provider boundary. Builds supply a generated implementation from
+ * the maintained defaults or a validated custom application credential pair.
  */
 
 #ifndef TDLIB_PURPLE_APPLICATION_CREDENTIALS_PRIVATE_H

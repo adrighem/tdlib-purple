@@ -12,6 +12,13 @@ import tempfile
 API_ID_PATTERN = re.compile(r"[1-9][0-9]{0,9}\Z", re.ASCII)
 API_HASH_PATTERN = re.compile(r"[0-9a-fA-F]{32}\Z", re.ASCII)
 MAX_INPUT_SIZE = 64
+DEFAULT_API_ID = 32769927
+DEFAULT_API_HASH_BYTES = (
+    97, 48, 100, 54, 100, 48, 102, 56,
+    97, 54, 49, 48, 102, 98, 48, 53,
+    53, 57, 48, 51, 102, 100, 48, 101,
+    57, 52, 100, 56, 101, 101, 98, 48,
+)
 
 
 class CredentialInputError(Exception):
@@ -136,7 +143,7 @@ def _read_private_ascii_file(path, invalid_value_code):
 def _render_provider(api_id, api_hash):
     encoded_hash = ", ".join(str(ord(character)) for character in api_hash)
     return (
-        "/* Generated in a private build tree. Do not copy into source. */\n"
+        "/* Generated in the build tree. Do not edit. */\n"
         '#include "telegram-application-credentials-private.h"\n'
         "\n"
         "static const TdlibPurpleApplicationCredentials credentials = {\n"
@@ -320,7 +327,24 @@ def generate_provider(
 
     try:
         if api_id_path is None and api_hash_path is None:
-            return fail("CREDENTIAL_PATHS_REQUIRED")
+            try:
+                api_id = str(DEFAULT_API_ID)
+                api_hash = bytes(DEFAULT_API_HASH_BYTES).decode("ascii")
+            except (TypeError, ValueError, UnicodeDecodeError):
+                return fail("CREDENTIAL_DEFAULT_INVALID")
+
+            if (not isinstance(DEFAULT_API_ID, int) or
+                    API_ID_PATTERN.fullmatch(api_id) is None or
+                    DEFAULT_API_ID > 2147483647 or
+                    API_HASH_PATTERN.fullmatch(api_hash) is None):
+                return fail("CREDENTIAL_DEFAULT_INVALID")
+
+            try:
+                write_outputs(_render_provider(api_id, api_hash))
+            except OSError:
+                return "CREDENTIAL_OUTPUT_ERROR"
+
+            return None
 
         if api_id_path is None or api_hash_path is None:
             return fail("CREDENTIAL_PATHS_INCOMPLETE")

@@ -33,14 +33,6 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Prepare synthetic application credentials
-        run: |
-          umask 077
-          credential_dir="${RUNNER_TEMP}/tdlib-purple-ci-credentials"
-          mkdir -p "${credential_dir}"
-          printf '%s\n' 1 > "${credential_dir}/api-id"
-          printf '%032d\n' 0 > "${credential_dir}/api-hash"
-
       - name: Verify TDLib pin
         run: |
           submodule_commit="$(git ls-tree HEAD td | awk '{print $3}')"
@@ -51,7 +43,7 @@ jobs:
             exit 1
           fi
 
-      - name: Check credential defaults
+      - name: Check application credential provider
         run: sh ./.github/scripts/check-no-embedded-telegram-credentials.sh
 
       - name: Install dependencies
@@ -104,8 +96,6 @@ jobs:
           cmake -S . -B build -GNinja \
             -DCMAKE_CXX_FLAGS="-DGLIB_DISABLE_DEPRECATION_WARNINGS -Werror -Wall -Wextra -Wformat=2 -Wformat-signedness -Wno-unused-parameter -Wno-parentheses" \
             -DTd_DIR=td_destdir/usr/local/lib/cmake/Td \
-            -DTDLIB_PURPLE_API_ID_FILE="${RUNNER_TEMP}/tdlib-purple-ci-credentials/api-id" \
-            -DTDLIB_PURPLE_API_HASH_FILE="${RUNNER_TEMP}/tdlib-purple-ci-credentials/api-hash" \
             ${{ matrix.CMAKE_FLAGS }}
 
       - name: Build plugin
@@ -283,18 +273,11 @@ jobs:
             HOME=/github/home USER=root LANG=C LC_ALL=C \
             GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             sh -eu <<'EOF'
-          umask 077
-          test_credential_dir=/tmp/tdlib-purple3-debug-credentials
-          mkdir -p "${test_credential_dir}"
-          printf '%s\n' 1 > "${test_credential_dir}/api-id"
-          printf '%032d\n' 0 > "${test_credential_dir}/api-hash"
           meson devenv -C /tmp/pidgin-build \
             --workdir "${GITHUB_WORKSPACE}" \
             cmake -S purple3 -B /tmp/tdlib-purple3-debug -G Ninja \
               -DCMAKE_BUILD_TYPE=Debug \
-              -DTd_DIR="${GITHUB_WORKSPACE}/td_destdir/usr/local/lib/cmake/Td" \
-              -DTDLIB_PURPLE_API_ID_FILE="${test_credential_dir}/api-id" \
-              -DTDLIB_PURPLE_API_HASH_FILE="${test_credential_dir}/api-hash"
+              -DTd_DIR="${GITHUB_WORKSPACE}/td_destdir/usr/local/lib/cmake/Td"
           meson devenv -C /tmp/pidgin-build \
             --workdir "${GITHUB_WORKSPACE}" \
             cmake --build /tmp/tdlib-purple3-debug
@@ -305,28 +288,19 @@ jobs:
               --no-tests=error
           EOF
 
-      - name: Test configured Purple 3 adapter without GLib assertions
+      - name: Test Purple 3 adapter without GLib assertions
         run: |
           env -i \
             PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
             HOME=/github/home USER=root LANG=C LC_ALL=C \
             GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             sh -eu <<'EOF'
-          umask 077
-          test_credential_dir=/tmp/tdlib-purple3-test-credentials
-          mkdir "${test_credential_dir}"
-          printf '%s\n' 1 \
-            > "${test_credential_dir}/api-id"
-          printf '%032d\n' 0 \
-            > "${test_credential_dir}/api-hash"
           meson devenv -C /tmp/pidgin-build \
             --workdir "${GITHUB_WORKSPACE}" \
             cmake -S purple3 -B /tmp/tdlib-purple3-release -G Ninja \
               -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_C_FLAGS=-DG_DISABLE_ASSERT \
-              -DTd_DIR="${GITHUB_WORKSPACE}/td_destdir/usr/local/lib/cmake/Td" \
-              -DTDLIB_PURPLE_API_ID_FILE="${test_credential_dir}/api-id" \
-              -DTDLIB_PURPLE_API_HASH_FILE="${test_credential_dir}/api-hash"
+              -DTd_DIR="${GITHUB_WORKSPACE}/td_destdir/usr/local/lib/cmake/Td"
           meson devenv -C /tmp/pidgin-build \
             --workdir "${GITHUB_WORKSPACE}" \
             cmake --build /tmp/tdlib-purple3-release

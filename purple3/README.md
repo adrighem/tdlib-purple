@@ -19,9 +19,9 @@ The current milestone:
   two-step-verification password prompt
 - stores each TDLib session under the stable Purple account UUID
 
-A private build with configured application credentials can now connect an
-existing Telegram account through QR-only authorization. Phone-number and SMS
-login and new-account registration are not offered, so another
+A default build can now connect an existing Telegram account through QR-only
+authorization. Phone-number and SMS login and new-account registration are not
+offered, so another
 already-authorized Telegram client is required to scan the code. Telegram's
 API ID and API hash identify the application even during QR login. They are
 deliberately not Purple account settings, environment variables, or raw CMake
@@ -86,9 +86,7 @@ CMake package compatible with TDLib 1.8.65 or newer. If TDLib is not installed
 in a standard CMake search location, add
 `-DTd_DIR=/path/to/lib/cmake/Td` to the configure command.
 
-Every build requires the application API ID and API hash in separate
-owner-only files outside the source tree. Pass only their paths when
-configuring:
+The maintained default application provider needs no extra configuration:
 
 ```sh
 cd "$HOME/src/tdlib-purple"
@@ -96,9 +94,7 @@ cd "$HOME/src/tdlib-purple"
 meson devenv -C "$HOME/src/pidgin/_build" \
   --workdir "$PWD" \
   cmake -S purple3 -B purple3/build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
-  -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
+  -DCMAKE_BUILD_TYPE=Debug
 
 meson devenv -C "$HOME/src/pidgin/_build" \
   --workdir "$PWD" \
@@ -109,26 +105,25 @@ meson devenv -C "$HOME/src/pidgin/_build" \
   ctest --test-dir purple3/build --output-on-failure
 ```
 
-The two files must be distinct, readable regular files, not symbolic links,
-and owned by the user running the build. On Unix, they must have no group or
-other permission bits; mode `0600` is recommended. Each file may contain one
-ASCII value followed by an optional LF or CRLF and must not exceed 64 bytes.
-The API ID must be a canonical positive decimal integer no greater than
-`2147483647`, with no sign, whitespace, or leading zero. The API hash must
-contain exactly 32 hexadecimal characters.
+To use a different Telegram application, set
+`TDLIB_PURPLE_API_ID_FILE` and `TDLIB_PURPLE_API_HASH_FILE` to two distinct,
+owner-only files outside the source tree. They must be readable regular files,
+not symbolic links, and owned by the build user. On Unix, they must have no
+group or other permission bits; mode `0600` is recommended. Each file may
+contain one ASCII value followed by an optional LF or CRLF and must not exceed
+64 bytes. The API ID must be a canonical positive decimal integer no greater
+than `2147483647`; the API hash must contain exactly 32 hexadecimal characters.
 
-CMake stores these file paths, but not their contents, in the build
-directory's cache. Omitting the `-D` options during a later reconfiguration
-does not clear the cached paths. Setting either or both paths to empty fails
-configuration and removes any previously generated provider. Restore valid
-paths to continue building:
+CMake stores custom file paths, but not their contents, in the build directory's
+cache. Omitting the `-D` options during a later reconfiguration does not clear
+them. Set both paths to empty to return to the maintained defaults:
 
 ```sh
 meson devenv -C "$HOME/src/pidgin/_build" \
   --workdir "$PWD" \
   cmake -S purple3 -B purple3/build \
-  -DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
-  -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
+  -DTDLIB_PURPLE_API_ID_FILE= \
+  -DTDLIB_PURPLE_API_HASH_FILE=
 ```
 
 The former raw `API_ID`, `API_HASH`, and `STUFF` CMake cache variables are not
@@ -138,29 +133,28 @@ option from build automation, configure again with the two file-path options,
 and never move the values themselves onto the command line.
 
 The provider refreshes whenever the plugin is built. Rebuilding after either
-value changes embeds the new pair. Removing either or both inputs stops the
-build and removes the generated provider.
+custom value changes embeds the new pair. A single configured path, a missing
+custom file, or an invalid custom value stops the build and removes the
+generated provider.
 
-The generated source, object files, and plugin contain extractable application
-credentials. The generated source is protected inside the private build
-directory, but compilation does not make the values secret. Keep the entire
-build directory and resulting binary private, and do not publish them unless
-you intend to distribute these application credentials. Previously built
-objects or binaries may retain an older pair even after the input files are
-removed.
+Generated source, object files, and the plugin contain extractable application
+credentials. The maintained defaults are intentionally distributed. If you
+use a private override, protect the build directory and resulting binary and do
+not publish them unless you intend to distribute that pair. Previously built
+objects or binaries may retain an older override after returning to defaults.
 
 Use a local compiler without ccache, sccache, distcc, remote execution, or
-automatic compiler-crash uploads for a private credentialed build. Those tools
+automatic compiler-crash uploads for a private override build. Those tools
 can copy credential-bearing preprocessed input or objects outside the protected
 build directory. The ownership and mode checks currently provide their full
 guarantees only on POSIX systems; private credentialed Windows builds do not
 have equivalent ACL hardening yet.
 
-The credential tests use only synthetic values and test backends. The
-production smoke test verifies the generated provider state without inspecting
-or logging credential values, connecting accounts to Telegram, or accessing
-the network. It uses in-memory Purple backends and an isolated temporary
-profile.
+The credential tests use synthetic overrides and test backends, while CI build
+coverage exercises the maintained default. The production smoke test verifies
+the generated provider state without inspecting or logging credential values,
+connecting accounts to Telegram, or accessing the network. It uses in-memory
+Purple backends and an isolated temporary profile.
 
 ### Credential diagnostics
 
@@ -168,8 +162,8 @@ Credential setup failures report stable, value-free diagnostic codes:
 
 | Diagnostic | Meaning |
 | --- | --- |
-| `CREDENTIAL_PATHS_REQUIRED` | Neither credential file path was configured. |
 | `CREDENTIAL_PATHS_INCOMPLETE` | Only one credential path was configured. |
+| `CREDENTIAL_DEFAULT_INVALID` | The maintained default pair is malformed. |
 | `CREDENTIAL_LEGACY_CACHE_REMOVED` | A legacy raw credential cache entry was removed; migrate the build to the two file-path options and configure again. |
 | `CREDENTIAL_INPUT_MISSING` | The configured file pair is incomplete on disk. |
 | `CREDENTIAL_INPUT_DUPLICATE` | Both paths resolve to the same file. |
@@ -215,8 +209,8 @@ the protocol chooser, requires only a local Account Name, and shows no
 phone-number, API-ID, or API-hash setting. The advanced view contains the
 secret-chat option. `--nologin` prevents existing accounts from connecting.
 
-To verify authorization, first configure and build with the private credential
-files described above, then launch without `--nologin`:
+To verify authorization, build with the maintained defaults or the optional
+private override described above, then launch without `--nologin`:
 
 ```sh
 PURPLE_PLUGIN_PATH="$PWD/purple3/build" \

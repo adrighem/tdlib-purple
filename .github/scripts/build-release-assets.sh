@@ -47,6 +47,22 @@ if [ "$asset_type" = "source" ]; then
         exit 1
     fi
 
+    provider_check_dir="$source_workdir/provider-check"
+    env -i PATH="$PATH" python3 \
+        "$source_workdir/$source_root/credentials/generate-application-credentials.py" \
+        --source-root "$source_workdir/$source_root" \
+        --output "$provider_check_dir/provider.c" \
+        --state-output "$provider_check_dir/provider-state.h"
+    if ! grep -q \
+        '^#define TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE 1$' \
+        "$provider_check_dir/provider-state.h"; then
+        echo "The source asset does not provide default application credentials." >&2
+        exit 1
+    fi
+    rm -f "$provider_check_dir/provider.c" \
+        "$provider_check_dir/provider-state.h"
+    rmdir "$provider_check_dir"
+
     source_date_epoch="$(git show -s --format=%ct HEAD)"
     asset="$asset_dir/tdlib-purple-${VERSION}-source.tar.xz"
     tar --sort=name --owner=0 --group=0 --numeric-owner \
@@ -60,9 +76,6 @@ if [ -z "$distro_id" ]; then
     echo "DISTRO_ID is required for $asset_type assets." >&2
     exit 2
 fi
-
-: "${TDLIB_PURPLE_API_ID_FILE:?TDLIB_PURPLE_API_ID_FILE must be set}"
-: "${TDLIB_PURPLE_API_HASH_FILE:?TDLIB_PURPLE_API_HASH_FILE must be set}"
 
 if [ ! -s "$repo_root/td/LICENSE_1_0.txt" ]; then
     echo "The exact td submodule and its license must be checked out." >&2
@@ -81,8 +94,6 @@ cmake -S . -B "$build_dir" -GNinja \
     -DCMAKE_INSTALL_PREFIX=/usr \
     -DCMAKE_DISABLE_FIND_PACKAGE_fmt=TRUE \
     -DNoVoip=TRUE \
-    -DTDLIB_PURPLE_API_ID_FILE="$TDLIB_PURPLE_API_ID_FILE" \
-    -DTDLIB_PURPLE_API_HASH_FILE="$TDLIB_PURPLE_API_HASH_FILE" \
     -DTDLIB_PURPLE_TDLIB_LICENSE_FILE="$repo_root/td/LICENSE_1_0.txt" \
     -DTd_DIR="$repo_root/td_destdir/usr/local/lib/cmake/Td"
 

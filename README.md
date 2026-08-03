@@ -96,8 +96,9 @@ Fully quit and restart the Purple client after installing or upgrading the
 plugin. A client that was already running may continue using the old library
 until it exits.
 
-Official release packages already contain the required Telegram application
-provider. Users do not need to obtain or enter an API ID or API hash.
+Official release packages and source releases use the maintained default
+Telegram application provider. Users and downstream packagers do not need to
+obtain or enter an API ID or API hash.
 
 ## Add a Telegram account in Pidgin 2
 
@@ -153,10 +154,16 @@ Source builds require CMake 3.16 or newer, Python 3.8 or newer, and TDLib 1.8.65
 or an API-compatible newer version. The pinned TDLib submodule is the supported
 and tested schema.
 
-Every build requires a valid Telegram application API ID and API hash in two
-separate owner-only files outside the source tree. A build without an embedded
-provider is broken, so configuration and rebuilds fail closed when either input
-is missing or invalid.
+The maintained Telegram application provider is enabled by default for direct
+checkouts, source releases, Nix builds, and both Purple adapters. A normal build
+therefore needs no credential arguments:
+
+```sh
+./build_and_install.sh
+```
+
+Packagers that intentionally use a different Telegram application may override
+the defaults with two separate owner-only files outside the source tree:
 
 ```sh
 TDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
@@ -169,11 +176,12 @@ The API ID file must contain a positive decimal integer no greater than
 On Unix, both files must be regular files owned by the build user, with no group
 or other permission bits. Mode `0600` is recommended.
 
-Only file paths enter CMake. Do not place credential values in source files,
-CMake arguments, logs, caches, test output, or bug reports. Generated source,
-objects, and plugin binaries contain extractable credentials, so protect build
-directories and disable compiler caches, remote compilation, and automatic
-compiler-crash uploads.
+Both override paths must be supplied together. Only file paths enter CMake, and
+the private values must not appear in CMake arguments, logs, caches, test
+output, or bug reports. Generated source, objects, and plugin binaries contain
+extractable application credentials. Use a separate build directory and avoid
+compiler caches, remote compilation, and automatic compiler-crash uploads when
+building with a private override.
 
 To uninstall a build installed by the convenience script:
 

@@ -15,8 +15,17 @@ if [ "${1:-}" = "uninstall" ]; then
   exit 0
 fi
 
-: "${TDLIB_PURPLE_API_ID_FILE:?set this to the owner-only API ID file path}"
-: "${TDLIB_PURPLE_API_HASH_FILE:?set this to the owner-only API hash file path}"
+if [ -n "${TDLIB_PURPLE_API_ID_FILE:-}" ] || \
+   [ -n "${TDLIB_PURPLE_API_HASH_FILE:-}" ]; then
+  : "${TDLIB_PURPLE_API_ID_FILE:?set both credential file paths or neither}"
+  : "${TDLIB_PURPLE_API_HASH_FILE:?set both credential file paths or neither}"
+  CREDENTIAL_FLAGS=(
+    "-DTDLIB_PURPLE_API_ID_FILE=$TDLIB_PURPLE_API_ID_FILE"
+    "-DTDLIB_PURPLE_API_HASH_FILE=$TDLIB_PURPLE_API_HASH_FILE"
+  )
+else
+  CREDENTIAL_FLAGS=()
+fi
 
 git submodule update --init --recursive
 pushd td
@@ -35,8 +44,7 @@ pushd build
   cmake \
     -DTd_DIR="$(realpath ../td)"/build/destdir/usr/local/lib/cmake/Td/ \
     -DNoVoip=True \
-    -DTDLIB_PURPLE_API_ID_FILE="$TDLIB_PURPLE_API_ID_FILE" \
-    -DTDLIB_PURPLE_API_HASH_FILE="$TDLIB_PURPLE_API_HASH_FILE" \
+    "${CREDENTIAL_FLAGS[@]}" \
     ..
   make -j "${JOBS}"
   echo "Now calling sudo cmake --install ."

@@ -6,13 +6,13 @@ set(
     TDLIB_PURPLE_API_ID_FILE
     ""
     CACHE FILEPATH
-    "Path to the owner-only Telegram application API ID file"
+    "Optional owner-only Telegram application API ID override file"
 )
 set(
     TDLIB_PURPLE_API_HASH_FILE
     ""
     CACHE FILEPATH
-    "Path to the owner-only Telegram application API hash file"
+    "Optional owner-only Telegram application API hash override file"
 )
 
 set(_tdlib_purple_removed_legacy_credential_cache FALSE)
@@ -156,7 +156,7 @@ function(
         DEPENDS
             "${_TDLIB_PURPLE_CREDENTIALS_GENERATOR}"
         COMMENT
-            "Refreshing private Telegram application credentials"
+            "Refreshing Telegram application credentials"
         VERBATIM
     )
 

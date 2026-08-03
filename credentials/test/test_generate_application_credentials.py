@@ -92,9 +92,11 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
         self.assertFalse(self.output.exists())
         self.assertFalse(self.state_output.exists())
 
-    def test_neither_path_is_rejected(self):
-        self.assertEqual(self.generate(), "CREDENTIAL_PATHS_REQUIRED")
-        self.assert_outputs_removed()
+    def test_neither_path_generates_default_provider(self):
+        self.assertIsNone(self.generate())
+        output = self.output.read_text(encoding="ascii")
+        self.assertIn("tdlib_purple_application_credentials_embedded", output)
+        self.assert_state(True)
 
     def test_valid_pair_generates_private_provider_without_plaintext_hash(self):
         self.write_private(self.api_id, self.synthetic_id + "\n")
@@ -528,6 +530,9 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
                 "!= 1) {\n"
                 "        return 4;\n"
                 "    }\n"
+                "    if (argc == 1) {\n"
+                "        return 0;\n"
+                "    }\n"
                 "    if (argc != 2) {\n"
                 "        return 2;\n"
                 "    }\n"
@@ -601,9 +606,12 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
             text=True,
         )
 
-    def run_probe(self, expected):
+    def run_probe(self, expected=None):
+        arguments = [str(self.build / "probe")]
+        if expected is not None:
+            arguments.append(str(expected))
         subprocess.run(
-            (str(self.build / "probe"), str(expected)),
+            arguments,
             check=True,
             capture_output=True,
             env=SUBPROCESS_ENV,
@@ -619,19 +627,16 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
             (private / "telegram-application-credentials-state.h").exists()
         )
 
-    def test_unconfigured_build_is_rejected(self):
+    def test_unconfigured_build_uses_default_provider(self):
         for generator in BUILD_GENERATORS:
             with self.subTest(generator=generator):
                 self.select_generator(generator)
-                failed_configure = self.configure(
+                self.configure(
                     with_paths=False,
                     generator=generator,
-                    check=False,
                 )
-                self.assertNotEqual(failed_configure.returncode, 0)
-                diagnostics = failed_configure.stdout + failed_configure.stderr
-                self.assertIn("CREDENTIAL_PATHS_REQUIRED", diagnostics)
-                self.assert_provider_outputs_removed()
+                self.build_target()
+                self.run_probe()
 
     def test_rotation_and_removal_rebuild_the_consumer(self):
         for generator in BUILD_GENERATORS:

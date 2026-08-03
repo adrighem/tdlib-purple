@@ -8,8 +8,8 @@ This project uses release-please to manage release pull requests, changelog upda
 2. The Release workflow opens or updates a release PR.
 3. Review and merge the release PR when ready to ship.
 4. release-please creates a draft GitHub Release and tag.
-5. The release pipeline builds and verifies credentialed assets from encrypted
-   repository secrets, then uploads:
+5. The release pipeline builds and verifies assets with the maintained default
+   application provider, then uploads:
    - `tdlib-purple-<version>-source.tar.xz`
    - `tdlib-purple-<version>-linux-x86_64.tar.xz`
    - `tdlib-purple_<version>-1_debian-stable_amd64.deb`
@@ -21,19 +21,18 @@ This project uses release-please to manage release pull requests, changelog upda
 
 `fix:` commits produce patch releases, `feat:` commits produce minor releases, and commits with `!` produce major releases.
 
-## Required Release Credentials
+## Application Provider
 
-The repository Actions secrets `TDLIB_PURPLE_API_ID` and
-`TDLIB_PURPLE_API_HASH` must contain the release application credential pair.
-The workflow checks that both secrets exist before release-please can create a
-tag or draft. Each asset job writes them without logging to owner-only temporary
-files, and removes those files after the build.
+The maintained default application provider is part of the tracked source and
+does not depend on repository secrets. CI exercises the default path for both
+Purple adapters. The release workflow verifies the generated provider before
+packaging every binary and before creating the source archive.
 
 A package without an embedded provider is a broken build and must never be
 published as a release asset.
 
-Never place credential values in workflow inputs, repository variables,
-committed files, command lines, caches, logs, or release notes.
+Never place private override values in workflow inputs, repository variables,
+command lines, caches, logs, or release notes.
 
 ## Version Source
 
@@ -43,12 +42,12 @@ four through `release-please-config.json`.
 
 ## Linux Assets
 
-The Linux tarball is a staged install tree rooted at `usr/`. Configuration fails
-unless both credential files are present and valid, and packaging verifies the
-generated provider state before creating an asset.
-The source archive is not a binary build and contains no application
-credentials. It includes the complete repository source plus the exact TDLib
-submodule source selected by the release commit.
+The Linux tarball is a staged install tree rooted at `usr/`, and packaging
+verifies the generated provider state before creating an asset.
+The source archive includes the maintained default application provider, the
+complete repository source, and the exact TDLib submodule source selected by
+the release commit. Its provider is generated and validated before the archive
+is created, so downstream package builds need no extra credential setup.
 All binary packages contain the GPL and bundled dependency license notices.
 The `.deb` packages are built in distro-specific environments and use `dpkg-shlibdeps` to derive runtime dependencies from the built plugin.
 The RPM packages target Fedora 44 and Enterprise Linux 9 via AlmaLinux 9. Fedora 44 tracks the current Fedora stable release; EL9 is the conservative Red Hat compatible baseline for broad enterprise users.
