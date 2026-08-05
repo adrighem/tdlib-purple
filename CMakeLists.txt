@@ -25,9 +25,10 @@ if (NOT NoPkgConfig)
     include(FindPkgConfig)
     pkg_check_modules(Purple REQUIRED purple)
     pkg_check_modules(GLIB REQUIRED glib-2.0)
+    pkg_check_modules(libpng QUIET libpng)
+    pkg_check_modules(libqrencode QUIET libqrencode)
     if (NOT NoWebp)
         pkg_check_modules(libwebp libwebp)
-        pkg_check_modules(libpng libpng)
     endif (NOT NoWebp)
     if (NOT NoVoip)
         pkg_check_modules(tgvoip tgvoip)
@@ -54,6 +55,11 @@ if (NOT NoWebp)
     endif ("${libpng_LIBRARIES}" STREQUAL "")
 endif (NOT NoWebp)
 
+if (NOT "${libpng_LIBRARIES}" STREQUAL "" AND
+    NOT "${libqrencode_LIBRARIES}" STREQUAL "")
+    set(TDLIB_PURPLE_HAVE_PURPLE2_QR TRUE)
+endif()
+
 configure_file(buildopt.h.in buildopt.h)
 configure_file(config.cpp.in config.cpp)
 
@@ -69,6 +75,7 @@ set(TDLIB_PURPLE_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/td-client.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-client-auth.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-auth-controller.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/purple2-qr-presenter.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-transport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-polling-backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/module-activity.cpp
@@ -139,6 +146,26 @@ if (NOT NoWebp)
     endif (libwebp_LIBRARY_DIRS OR libpng_LIBRARY_DIRS)
     target_link_libraries(telegram-tdlib PRIVATE ${libwebp_LIBRARIES} ${libpng_LIBRARIES})
 endif (NOT NoWebp)
+
+if (TDLIB_PURPLE_HAVE_PURPLE2_QR)
+    target_include_directories(
+        telegram-tdlib SYSTEM PRIVATE
+        ${libpng_INCLUDE_DIRS}
+        ${libqrencode_INCLUDE_DIRS}
+    )
+    if (libpng_LIBRARY_DIRS OR libqrencode_LIBRARY_DIRS)
+        target_link_directories(
+            telegram-tdlib PRIVATE
+            ${libpng_LIBRARY_DIRS}
+            ${libqrencode_LIBRARY_DIRS}
+        )
+    endif()
+    target_link_libraries(
+        telegram-tdlib PRIVATE
+        ${libpng_LIBRARIES}
+        ${libqrencode_LIBRARIES}
+    )
+endif()
 
 target_compile_features(telegram-tdlib PRIVATE c_std_11 cxx_std_14)
 
@@ -329,7 +356,7 @@ set(CPACK_PACKAGE_NAME "tdlib-purple")
 set(CPACK_PACKAGE_VERSION "\${PROJECT_VERSION}")
 set(CPACK_PACKAGE_RELEASE "1")
 set(CPACK_PACKAGE_CONTACT "tdlib-purple contributors <noreply@example.invalid>")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Unofficial Telegram plugin for libpurple using TDLib")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Telegram client for libpurple using TDLib")
 set(CPACK_PACKAGE_VENDOR "tdlib-purple contributors")
 set(CPACK_PACKAGE_LICENSE "GPL-3.0-or-later")
 set(CPACK_RPM_PACKAGE_REQUIRES "libpurple")

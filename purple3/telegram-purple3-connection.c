@@ -1,5 +1,5 @@
 /*
- * tdlib-purple - Unofficial Telegram protocol plugin for libpurple
+ * tdlib-purple - Telegram client for libpurple using TDLib
  * Copyright (C) tdlib-purple contributors
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -34,11 +34,52 @@ struct _TelegramTdlibConnection {
     TelegramTdlibSessionFactory session_factory;
     gpointer session_factory_data;
     GDestroyNotify session_factory_destroy;
+    TelegramTdlibReauthorizationConnect reauthorization_connect;
+    TelegramTdlibReauthorizationReady reauthorization_ready;
+    gpointer reauthorization_connect_data;
+    GDestroyNotify reauthorization_connect_destroy;
     gboolean preserve_runtime_error_for_disconnect;
+    gboolean recovery_disconnect;
+    gboolean wait_for_connect_completion;
+    GSource *reauthorization_source;
+    gint64 reauthorization_deadline;
+    GMainContext *owner_context;
 };
 
 static int telegram_tdlib_connection_connect_tag;
 static int telegram_tdlib_connection_disconnect_tag;
+static const guint telegram_tdlib_reauthorization_poll_milliseconds = 5;
+static const gint64 telegram_tdlib_reauthorization_timeout =
+    5 * G_TIME_SPAN_SECOND;
+
+static GQuark
+telegram_tdlib_reauthorization_quark(void)
+{
+    return g_quark_from_static_string(
+        "telegram-tdlib-reauthorization-probe");
+}
+
+static gboolean
+telegram_tdlib_account_has_reauthorization_probe(PurpleAccount *account)
+{
+    return PURPLE_IS_ACCOUNT(account) &&
+           g_object_get_qdata(
+               G_OBJECT(account),
+               telegram_tdlib_reauthorization_quark()) != NULL;
+}
+
+static void
+telegram_tdlib_account_set_reauthorization_probe(PurpleAccount *account,
+                                                  gboolean active)
+{
+    if (!PURPLE_IS_ACCOUNT(account)) {
+        return;
+    }
+    g_object_set_qdata(
+        G_OBJECT(account),
+        telegram_tdlib_reauthorization_quark(),
+        active ? GINT_TO_POINTER(TRUE) : NULL);
+}
 
 G_DEFINE_DYNAMIC_TYPE_EXTENDED(
     TelegramTdlibConnection,
@@ -88,6 +129,99 @@ telegram_tdlib_connection_complete_connect_error(
 }
 
 static void
+telegram_tdlib_connection_abort_reauthorization(
+    TelegramTdlibConnection *self,
+    PurpleAccount *account,
+    GIOErrorEnum code,
+    const char *message,
+    gboolean report_account_error)
+{
+    GError *error = g_error_new_literal(G_IO_ERROR, code, message);
+
+    telegram_tdlib_account_set_reauthorization_probe(account, FALSE);
+    g_clear_pointer(&self->reauthorization_source, g_source_unref);
+    if (self->connect_task != NULL) {
+        telegram_tdlib_connection_complete_connect_error(self, error);
+        error = NULL;
+    } else if (report_account_error && PURPLE_IS_ACCOUNT(account)) {
+        purple_account_set_error(account, error);
+    }
+    g_clear_error(&error);
+
+    if (PURPLE_IS_ACCOUNT(account) &&
+        purple_account_get_connection(account) == PURPLE_CONNECTION(self) &&
+        !purple_account_get_disconnecting(account) &&
+        !purple_account_get_disconnected(account)) {
+        purple_account_disconnect(account, NULL);
+    }
+}
+
+static gboolean
+telegram_tdlib_connection_finish_reauthorization(gpointer data)
+{
+    TelegramTdlibConnection *self = TELEGRAM_TDLIB_CONNECTION(data);
+    PurpleConnection *connection = PURPLE_CONNECTION(self);
+    PurpleAccount *account = purple_connection_get_account(connection);
+
+    if (!PURPLE_IS_ACCOUNT(account) ||
+        !telegram_tdlib_account_has_reauthorization_probe(account) ||
+        !purple_account_get_enabled(account))
+    {
+        telegram_tdlib_connection_abort_reauthorization(
+            self,
+            account,
+            G_IO_ERROR_CANCELLED,
+            _("Telegram authorization restart was cancelled."),
+            FALSE);
+        return G_SOURCE_REMOVE;
+    }
+
+    if (g_get_monotonic_time() >= self->reauthorization_deadline) {
+        telegram_tdlib_connection_abort_reauthorization(
+            self,
+            account,
+            G_IO_ERROR_TIMED_OUT,
+            _("Telegram authorization restart timed out."),
+            TRUE);
+        return G_SOURCE_REMOVE;
+    }
+
+    const gboolean ready = self->reauthorization_ready != NULL
+        ? self->reauthorization_ready(
+              account, self->reauthorization_connect_data)
+        : purple_account_get_disconnected(account) &&
+              purple_account_get_connection(account) == NULL;
+    if (!ready) {
+        return G_SOURCE_CONTINUE;
+    }
+
+    if (self->connect_task != NULL) {
+        telegram_tdlib_connection_complete_connect_error(
+            self,
+            g_error_new_literal(
+                G_IO_ERROR,
+                G_IO_ERROR_CANCELLED,
+                _("Telegram authorization is restarting.")));
+        self->wait_for_connect_completion = TRUE;
+        return G_SOURCE_CONTINUE;
+    }
+
+    if (self->wait_for_connect_completion) {
+        self->wait_for_connect_completion = FALSE;
+        return G_SOURCE_CONTINUE;
+    }
+
+    g_clear_pointer(&self->reauthorization_source, g_source_unref);
+    if (self->reauthorization_connect != NULL) {
+        self->reauthorization_connect(
+            account, self->reauthorization_connect_data);
+    } else {
+        purple_account_connect(account);
+    }
+    return G_SOURCE_REMOVE;
+}
+
+static void
 telegram_tdlib_connection_session_ready(PurpleConnection *connection)
 {
     TelegramTdlibConnection *self =
@@ -110,6 +244,7 @@ telegram_tdlib_connection_session_ready(PurpleConnection *connection)
             G_IO_ERROR_CANCELLED,
             _("Telegram connection was cancelled."));
     } else {
+        telegram_tdlib_account_set_reauthorization_probe(account, FALSE);
         purple_account_ready(account);
         g_task_return_boolean(task, TRUE);
     }
@@ -185,6 +320,82 @@ telegram_tdlib_connection_session_runtime_failed(
         "%s",
         _("The Telegram connection stopped unexpectedly."));
     self->preserve_runtime_error_for_disconnect = FALSE;
+}
+
+static void
+telegram_tdlib_connection_session_reauthorization_required(
+    PurpleConnection *connection)
+{
+    TelegramTdlibConnection *self =
+        TELEGRAM_TDLIB_CONNECTION(connection);
+    PurpleAccount *account = purple_connection_get_account(connection);
+
+    if (!PURPLE_IS_ACCOUNT(account) ||
+        purple_account_get_connection(account) != connection) {
+        telegram_tdlib_connection_abort_reauthorization(
+            self,
+            account,
+            G_IO_ERROR_CANCELLED,
+            _("Telegram authorization restart was cancelled."),
+            FALSE);
+        return;
+    }
+    if (!purple_account_get_enabled(account) ||
+        purple_account_get_disconnecting(account) ||
+        purple_account_get_disconnected(account)) {
+        telegram_tdlib_connection_abort_reauthorization(
+            self,
+            account,
+            G_IO_ERROR_CANCELLED,
+            _("Telegram authorization restart was cancelled."),
+            FALSE);
+        return;
+    }
+
+    if (telegram_tdlib_account_has_reauthorization_probe(account)) {
+        telegram_tdlib_account_set_reauthorization_probe(account, FALSE);
+        if (self->connect_task != NULL) {
+            telegram_tdlib_connection_complete_connect_error(
+                self,
+                g_error_new_literal(
+                    G_IO_ERROR,
+                    G_IO_ERROR_PERMISSION_DENIED,
+                    _("Telegram requested authorization again repeatedly.")));
+        } else {
+            telegram_tdlib_connection_session_runtime_failed(connection);
+        }
+        return;
+    }
+
+    telegram_tdlib_account_set_reauthorization_probe(account, TRUE);
+    self->recovery_disconnect = TRUE;
+    self->reauthorization_deadline =
+        g_get_monotonic_time() + telegram_tdlib_reauthorization_timeout;
+    self->wait_for_connect_completion = FALSE;
+    self->reauthorization_source = g_timeout_source_new(
+        telegram_tdlib_reauthorization_poll_milliseconds);
+    g_source_set_priority(
+        self->reauthorization_source, G_PRIORITY_DEFAULT_IDLE);
+    g_source_set_callback(
+        self->reauthorization_source,
+        telegram_tdlib_connection_finish_reauthorization,
+        g_object_ref(self),
+        g_object_unref);
+    if (g_source_attach(
+            self->reauthorization_source,
+            self->owner_context) == 0) {
+        g_source_destroy(self->reauthorization_source);
+        g_clear_pointer(&self->reauthorization_source, g_source_unref);
+        telegram_tdlib_connection_abort_reauthorization(
+            self,
+            account,
+            G_IO_ERROR_FAILED,
+            _("Telegram authorization could not be restarted."),
+            TRUE);
+        return;
+    }
+
+    purple_account_disconnect(account, NULL);
 }
 
 static void
@@ -264,8 +475,32 @@ telegram_tdlib_connection_connect_async(PurpleConnection *connection,
         telegram_tdlib_connection_session_ready,
         telegram_tdlib_connection_session_connect_failed,
         telegram_tdlib_connection_session_runtime_failed,
+        telegram_tdlib_connection_session_reauthorization_required,
         telegram_tdlib_connection_session_closed,
     };
+    PurpleAccount *account = purple_connection_get_account(connection);
+
+    /*
+     * Purple checks enabled before its asynchronous protocol capability check,
+     * but it does not repeat that check before creating the connection. Close
+     * that race, and reject connections superseded by account removal or a
+     * newer connection instance, before creating any TDLib state.
+     */
+    if (!PURPLE_IS_ACCOUNT(account) ||
+        !purple_account_get_enabled(account) ||
+        purple_account_get_connection(account) != connection)
+    {
+        g_task_report_new_error(
+            G_OBJECT(connection),
+            callback,
+            data,
+            &telegram_tdlib_connection_connect_tag,
+            G_IO_ERROR,
+            G_IO_ERROR_CANCELLED,
+            "%s",
+            _("Telegram connection was cancelled."));
+        return;
+    }
 
     if (self->connect_task != NULL || self->session != NULL) {
         g_task_report_new_error(
@@ -343,6 +578,8 @@ telegram_tdlib_connection_connect_finish(PurpleConnection *connection,
                                          GError **error)
 {
     PurpleAccount *account = NULL;
+    TelegramTdlibConnection *self =
+        TELEGRAM_TDLIB_CONNECTION(connection);
     gboolean success = FALSE;
 
     g_return_val_if_fail(
@@ -363,6 +600,10 @@ telegram_tdlib_connection_connect_finish(PurpleConnection *connection,
          * keeps this connection alive. Do not clear a newer connection.
          */
         account = purple_connection_get_account(connection);
+        if (!self->recovery_disconnect) {
+            telegram_tdlib_account_set_reauthorization_probe(
+                account, FALSE);
+        }
         if (PURPLE_IS_ACCOUNT(account) &&
             purple_account_get_connection(account) == connection)
         {
@@ -384,6 +625,11 @@ telegram_tdlib_connection_disconnect_async(
     TelegramTdlibConnection *self =
         TELEGRAM_TDLIB_CONNECTION(connection);
     GTask *task = NULL;
+
+    if (!self->recovery_disconnect) {
+        telegram_tdlib_account_set_reauthorization_probe(
+            purple_connection_get_account(connection), FALSE);
+    }
 
     task = g_task_new(connection, cancellable, callback, data);
     g_task_set_source_tag(
@@ -454,6 +700,7 @@ telegram_tdlib_connection_init(
 {
     connection->disconnect_tasks =
         g_ptr_array_new_with_free_func(g_object_unref);
+    connection->owner_context = g_main_context_ref_thread_default();
 }
 
 static void
@@ -461,6 +708,11 @@ telegram_tdlib_connection_dispose(GObject *object)
 {
     TelegramTdlibConnection *self =
         TELEGRAM_TDLIB_CONNECTION(object);
+
+    if (self->reauthorization_source != NULL) {
+        g_source_destroy(self->reauthorization_source);
+        g_clear_pointer(&self->reauthorization_source, g_source_unref);
+    }
 
     if (self->session != NULL) {
         telegram_tdlib_session_cancel(self->session);
@@ -485,6 +737,15 @@ telegram_tdlib_connection_finalize(GObject *object)
     self->session_factory = NULL;
     self->session_factory_data = NULL;
     self->session_factory_destroy = NULL;
+    if (self->reauthorization_connect_destroy != NULL) {
+        self->reauthorization_connect_destroy(
+            self->reauthorization_connect_data);
+    }
+    self->reauthorization_connect = NULL;
+    self->reauthorization_ready = NULL;
+    self->reauthorization_connect_data = NULL;
+    self->reauthorization_connect_destroy = NULL;
+    g_clear_pointer(&self->owner_context, g_main_context_unref);
 
     G_OBJECT_CLASS(telegram_tdlib_connection_parent_class)->finalize(object);
 }
@@ -540,6 +801,47 @@ telegram_tdlib_connection_set_session_factory_for_test(
     connection->session_factory = factory;
     connection->session_factory_data = data;
     connection->session_factory_destroy = destroy;
+    return TRUE;
+}
+
+gboolean
+telegram_tdlib_connection_set_reauthorization_connect_for_test(
+    TelegramTdlibConnection *connection,
+    TelegramTdlibReauthorizationConnect connect,
+    gpointer data,
+    GDestroyNotify destroy)
+{
+    g_return_val_if_fail(
+        TELEGRAM_TDLIB_IS_CONNECTION(connection), FALSE);
+    g_return_val_if_fail(connect != NULL, FALSE);
+
+    if (connection->session != NULL || connection->connect_task != NULL ||
+        connection->reauthorization_connect != NULL) {
+        return FALSE;
+    }
+
+    connection->reauthorization_connect = connect;
+    connection->reauthorization_connect_data = data;
+    connection->reauthorization_connect_destroy = destroy;
+    return TRUE;
+}
+
+gboolean
+telegram_tdlib_connection_set_reauthorization_ready_for_test(
+    TelegramTdlibConnection *connection,
+    TelegramTdlibReauthorizationReady ready)
+{
+    g_return_val_if_fail(
+        TELEGRAM_TDLIB_IS_CONNECTION(connection), FALSE);
+    g_return_val_if_fail(ready != NULL, FALSE);
+
+    if (connection->session != NULL || connection->connect_task != NULL ||
+        connection->reauthorization_ready != NULL ||
+        connection->reauthorization_connect_data == NULL) {
+        return FALSE;
+    }
+
+    connection->reauthorization_ready = ready;
     return TRUE;
 }
 

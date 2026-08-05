@@ -1,5 +1,5 @@
 /*
- * tdlib-purple - Unofficial Telegram protocol plugin for libpurple
+ * tdlib-purple - Telegram client for libpurple using TDLib
  * Copyright (C) tdlib-purple contributors
  *
  * This program is free software; you can redistribute it and/or modify it

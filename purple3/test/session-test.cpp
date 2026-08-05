@@ -1,5 +1,5 @@
 /*
- * tdlib-purple - Unofficial Telegram protocol plugin for libpurple
+ * tdlib-purple - Telegram client for libpurple using TDLib
  * Copyright (C) tdlib-purple contributors
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -50,6 +50,7 @@ namespace {
 
 constexpr double pollTimeoutSeconds = 0.05;
 constexpr unsigned closeTimeoutSeconds = 7;
+constexpr unsigned reauthorizationCleanupTimeoutSeconds = 30;
 constexpr char upperAccountId[] =
     "123E4567-E89B-12D3-A456-426614174000";
 constexpr char lowerAccountId[] =
@@ -603,6 +604,7 @@ struct CallbackRecord {
     guint ready = 0;
     guint connectFailed = 0;
     guint runtimeFailed = 0;
+    guint reauthorizationRequired = 0;
     guint closed = 0;
     TelegramTdlibSessionFailure failure =
         TELEGRAM_TDLIB_SESSION_FAILURE_BACKEND;
@@ -649,6 +651,13 @@ static void sessionRuntimeFailed(PurpleConnection *connection)
     }
 }
 
+static void sessionReauthorizationRequired(PurpleConnection *connection)
+{
+    CallbackRecord *record = callbackRecord(connection);
+    if (record)
+        ++record->reauthorizationRequired;
+}
+
 static void sessionClosed(
     PurpleConnection *connection,
     TelegramTdlibSessionCloseResult result)
@@ -666,6 +675,8 @@ static TelegramTdlibSessionCallbacks sessionCallbacks()
     callbacks.ready = sessionReady;
     callbacks.connect_failed = sessionConnectFailed;
     callbacks.runtime_failed = sessionRuntimeFailed;
+    callbacks.reauthorization_required =
+        sessionReauthorizationRequired;
     callbacks.closed = sessionClosed;
     return callbacks;
 }
@@ -860,6 +871,46 @@ struct ConnectionFactoryObservation {
     guint calls = 0;
 };
 
+struct ReauthorizationConnectObservation {
+    guint calls = 0;
+    guint readyChecks = 0;
+    guint readyAfterChecks = 0;
+    PurpleAccount *account = nullptr;
+};
+
+static gboolean reauthorizationReady(
+    PurpleAccount *account,
+    gpointer data)
+{
+    std::shared_ptr<ReauthorizationConnectObservation> *observation =
+        static_cast<
+            std::shared_ptr<ReauthorizationConnectObservation> *>(data);
+    g_assert_nonnull(observation);
+    ++(*observation)->readyChecks;
+    return (*observation)->readyChecks >
+               (*observation)->readyAfterChecks &&
+           purple_account_get_disconnected(account) &&
+           purple_account_get_connection(account) == nullptr;
+}
+
+static void recordReauthorizationConnect(
+    PurpleAccount *account,
+    gpointer data)
+{
+    std::shared_ptr<ReauthorizationConnectObservation> *observation =
+        static_cast<
+            std::shared_ptr<ReauthorizationConnectObservation> *>(data);
+    g_assert_nonnull(observation);
+    ++(*observation)->calls;
+    (*observation)->account = account;
+}
+
+static void destroyReauthorizationConnectObservation(gpointer data)
+{
+    delete static_cast<
+        std::shared_ptr<ReauthorizationConnectObservation> *>(data);
+}
+
 struct ConnectionFactoryData {
     SessionEnvironment *environment = nullptr;
     std::shared_ptr<ClientControl> control;
@@ -918,7 +969,9 @@ public:
         const char *accountId)
         : control(std::make_shared<ClientControl>()),
           deadline(std::make_shared<ManualDeadlineControl>()),
-          observation(std::make_shared<ConnectionFactoryObservation>())
+          observation(std::make_shared<ConnectionFactoryObservation>()),
+          reauthorizationConnect(
+              std::make_shared<ReauthorizationConnectObservation>())
     {
         TdlibPurpleApplicationCredentials credentials =
             syntheticCredentials();
@@ -956,7 +1009,19 @@ public:
                 connectionSessionFactory,
                 factory,
                 destroyConnectionFactoryData));
+        g_assert_true(
+            telegram_tdlib_connection_set_reauthorization_connect_for_test(
+                TELEGRAM_TDLIB_CONNECTION(connection),
+                recordReauthorizationConnect,
+                new std::shared_ptr<ReauthorizationConnectObservation>(
+                    reauthorizationConnect),
+                destroyReauthorizationConnectObservation));
+        g_assert_true(
+            telegram_tdlib_connection_set_reauthorization_ready_for_test(
+                TELEGRAM_TDLIB_CONNECTION(connection),
+                reauthorizationReady));
         purple_account_set_connection(account, connection);
+        purple_account_set_enabled(account, TRUE);
     }
 
     ~ConnectionHarness()
@@ -999,6 +1064,8 @@ public:
     std::shared_ptr<ClientControl> control;
     std::shared_ptr<ManualDeadlineControl> deadline;
     std::shared_ptr<ConnectionFactoryObservation> observation;
+    std::shared_ptr<ReauthorizationConnectObservation>
+        reauthorizationConnect;
     PurpleAccount *account = nullptr;
     PurpleConnection *connection = nullptr;
 };
@@ -1421,6 +1488,76 @@ static void testExplicitCloseWaitsForClosedUpdate()
         TELEGRAM_TDLIB_SESSION_CLOSE_CLOSED);
 }
 
+static void testLoggingOutRequestsReauthorizationAfterPhysicalClose()
+{
+    SessionEnvironment environment;
+    SessionHarness harness(environment, lowerAccountId);
+    startAndWaitForActivation(harness);
+
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateLoggingOut>()));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+    g_assert_true(harness.deadline->hasInterval(
+        reauthorizationCleanupTimeoutSeconds));
+    g_assert_cmpuint(harness.callbacks.connectFailed, ==, 0);
+    g_assert_cmpuint(harness.callbacks.runtimeFailed, ==, 0);
+    g_assert_cmpuint(harness.callbacks.reauthorizationRequired, ==, 0);
+
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateClosing>()));
+    harness.control->push(closedUpdate());
+    g_assert_true(harness.control->waitForDestroyed());
+    g_assert_true(environment.iterateUntil([&harness]() {
+        return harness.callbacks.reauthorizationRequired == 1;
+    }));
+
+    g_assert_cmpuint(harness.callbacks.reauthorizationRequired, ==, 1);
+    g_assert_cmpuint(harness.callbacks.connectFailed, ==, 0);
+    g_assert_cmpuint(harness.callbacks.runtimeFailed, ==, 0);
+    g_assert_cmpuint(harness.callbacks.closed, ==, 0);
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+}
+
+static void testLoggingOutCleanupTimeoutFailsClosed()
+{
+    SessionEnvironment environment;
+    SessionHarness harness(environment, lowerAccountId);
+    startAndWaitForActivation(harness);
+
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateLoggingOut>()));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+    g_assert_true(harness.deadline->hasInterval(
+        reauthorizationCleanupTimeoutSeconds));
+    g_assert_true(harness.deadline->fireNext());
+    g_assert_true(environment.iterateUntil([&harness]() {
+        return harness.callbacks.connectFailed == 1;
+    }));
+    g_assert_cmpint(
+        harness.callbacks.failure,
+        ==,
+        TELEGRAM_TDLIB_SESSION_FAILURE_AUTHORIZATION);
+    g_assert_cmpuint(harness.callbacks.reauthorizationRequired, ==, 0);
+    g_assert_true(harness.control->waitForFunction(close::ID));
+
+    const std::uint64_t closeRequest =
+        harness.control->requestIdForFunction(close::ID);
+    pushAndWait(
+        environment,
+        harness.control,
+        {closeRequest, make_object<ok>()});
+    harness.control->push(closedUpdate());
+    g_assert_true(harness.control->waitForDestroyed());
+    environment.drain();
+    g_assert_cmpuint(harness.callbacks.reauthorizationRequired, ==, 0);
+}
+
 static void testQrUserCancellationIsPreReadyFailure()
 {
     SessionEnvironment environment;
@@ -1685,6 +1822,58 @@ static void testConnectionPreCancelledSkipsSessionFactory()
     g_assert_null(weakConnection);
 }
 
+static void testConnectionInvalidAccountStateSkipsSessionFactory()
+{
+    SessionEnvironment environment;
+    ConnectionHarness harness(environment, lowerAccountId);
+    AsyncWait disabledWait;
+
+    purple_account_set_enabled(harness.account, FALSE);
+    harness.connect(disabledWait);
+    g_assert_true(disabledWait.wait(environment));
+    disabledWait.assertSingle(environment);
+
+    GError *error = nullptr;
+    g_assert_false(purple_connection_connect_finish(
+        harness.connection, disabledWait.result, &error));
+    g_assert_error(error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+    g_clear_error(&error);
+    g_assert_cmpuint(harness.observation->calls, ==, 0);
+    g_assert_null(purple_account_get_connection(harness.account));
+    disabledWait.clear();
+
+    PurpleConnection *replacement = PURPLE_CONNECTION(g_object_new(
+        TELEGRAM_TDLIB_TYPE_CONNECTION,
+        "account",
+        harness.account,
+        nullptr));
+    g_assert_nonnull(replacement);
+    purple_account_set_enabled(harness.account, TRUE);
+    purple_account_set_connection(harness.account, replacement);
+
+    AsyncWait staleWait;
+    harness.connect(staleWait);
+    g_assert_true(staleWait.wait(environment));
+    staleWait.assertSingle(environment);
+    g_assert_false(purple_connection_connect_finish(
+        harness.connection, staleWait.result, &error));
+    g_assert_error(error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+    g_clear_error(&error);
+    g_assert_cmpuint(harness.observation->calls, ==, 0);
+    g_assert_true(
+        purple_account_get_connection(harness.account) == replacement);
+
+    staleWait.clear();
+    purple_account_set_connection(harness.account, nullptr);
+    g_object_unref(replacement);
+
+    gpointer weakConnection = harness.connection;
+    g_object_add_weak_pointer(
+        G_OBJECT(harness.connection), &weakConnection);
+    harness.releaseConnection();
+    g_assert_null(weakConnection);
+}
+
 static void testConnectionReadyAndJoinedDisconnectTasks()
 {
     SessionEnvironment environment;
@@ -1845,6 +2034,159 @@ static void testConnectionAuthorizationFailureDisconnectsAccount()
     }));
 }
 
+static void testConnectionLoggingOutBeforeReadyReconnectsOnce()
+{
+    SessionEnvironment environment;
+    ConnectionHarness harness(environment, lowerAccountId);
+    purple_account_set_enabled(harness.account, TRUE);
+    purple_account_ready(harness.account);
+    AsyncWait connectWait;
+
+    harness.connect(connectWait);
+    g_assert_true(harness.control->waitForFunction(getOption::ID));
+    g_assert_null(connectWait.result);
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateLoggingOut>()));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+    g_assert_cmpuint(harness.reauthorizationConnect->calls, ==, 0);
+
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateClosing>()));
+    harness.control->push(closedUpdate());
+    g_assert_true(harness.control->waitForDestroyed());
+    g_assert_true(environment.iterateUntil([&harness]() {
+        return harness.reauthorizationConnect->calls == 1;
+    }));
+
+    g_assert_true(connectWait.wait(environment));
+    connectWait.assertSingle(environment);
+    GError *error = nullptr;
+    g_assert_false(purple_connection_connect_finish(
+        harness.connection, connectWait.result, &error));
+    g_assert_error(error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+    g_clear_error(&error);
+    g_assert_cmpuint(harness.reauthorizationConnect->calls, ==, 1);
+    g_assert_true(
+        harness.reauthorizationConnect->account == harness.account);
+    g_assert_true(purple_account_get_enabled(harness.account));
+    g_assert_true(purple_account_get_disconnected(harness.account));
+    g_assert_null(purple_account_get_connection(harness.account));
+    g_assert_null(purple_account_get_error(harness.account));
+
+    connectWait.clear();
+    gpointer weakConnection = harness.connection;
+    g_object_add_weak_pointer(
+        G_OBJECT(harness.connection), &weakConnection);
+    harness.releaseConnection();
+    g_assert_null(weakConnection);
+    g_assert_true(environment.iterateUntil([]() {
+        return !telegram_tdlib_session_module_busy();
+    }));
+}
+
+static void testConnectionPreReadyRecoveryDisableCompletesConnect()
+{
+    SessionEnvironment environment;
+    ConnectionHarness harness(environment, lowerAccountId);
+    harness.reauthorizationConnect->readyAfterChecks = 1000;
+    purple_account_set_enabled(harness.account, TRUE);
+    purple_account_ready(harness.account);
+    AsyncWait connectWait;
+
+    harness.connect(connectWait);
+    g_assert_true(harness.control->waitForFunction(getOption::ID));
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateLoggingOut>()));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateClosing>()));
+    harness.control->push(closedUpdate());
+    g_assert_true(harness.control->waitForDestroyed());
+    environment.drain();
+    purple_account_set_enabled(harness.account, FALSE);
+
+    g_assert_true(connectWait.wait(environment));
+    connectWait.assertSingle(environment);
+    GError *error = nullptr;
+    g_assert_false(purple_connection_connect_finish(
+        harness.connection, connectWait.result, &error));
+    g_assert_error(error, G_IO_ERROR, G_IO_ERROR_CANCELLED);
+    g_clear_error(&error);
+    g_assert_cmpuint(harness.reauthorizationConnect->calls, ==, 0);
+    g_assert_false(purple_account_get_enabled(harness.account));
+    g_assert_true(environment.iterateUntil([&harness]() {
+        return purple_account_get_disconnected(harness.account) &&
+               purple_account_get_connection(harness.account) == nullptr;
+    }));
+
+    connectWait.clear();
+    gpointer weakConnection = harness.connection;
+    g_object_add_weak_pointer(
+        G_OBJECT(harness.connection), &weakConnection);
+    harness.releaseConnection();
+    g_assert_null(weakConnection);
+    g_assert_true(environment.iterateUntil([]() {
+        return !telegram_tdlib_session_module_busy();
+    }));
+}
+
+static void testConnectionLoggingOutReconnectsAfterPhysicalClose()
+{
+    SessionEnvironment environment;
+    ConnectionHarness harness(environment, lowerAccountId);
+    harness.reauthorizationConnect->readyAfterChecks = 160;
+    purple_account_set_enabled(harness.account, TRUE);
+    AsyncWait connectWait;
+    connectAndReachReady(environment, harness, connectWait);
+    connectWait.clear();
+
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateLoggingOut>()));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+    g_assert_cmpuint(harness.reauthorizationConnect->calls, ==, 0);
+    g_assert_true(purple_account_get_connected(harness.account));
+
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateClosing>()));
+    harness.control->push(closedUpdate());
+    g_assert_true(harness.control->waitForDestroyed());
+    g_assert_true(environment.iterateUntil([&harness]() {
+        return harness.reauthorizationConnect->calls == 1;
+    }));
+
+    g_assert_cmpuint(harness.reauthorizationConnect->calls, ==, 1);
+    g_assert_cmpuint(
+        harness.reauthorizationConnect->readyChecks, >, 128);
+    g_assert_true(
+        harness.reauthorizationConnect->account == harness.account);
+    g_assert_true(purple_account_get_disconnected(harness.account));
+    g_assert_null(purple_account_get_connection(harness.account));
+    g_assert_null(purple_account_get_error(harness.account));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+
+    gpointer weakConnection = harness.connection;
+    g_object_add_weak_pointer(
+        G_OBJECT(harness.connection), &weakConnection);
+    harness.releaseConnection();
+    g_assert_null(weakConnection);
+    g_assert_true(environment.iterateUntil([]() {
+        return !telegram_tdlib_session_module_busy();
+    }));
+}
+
 static void testConnectionDisconnectTimeoutAndLateReap()
 {
     SessionEnvironment environment;
@@ -1963,6 +2305,12 @@ int main(int argc, char **argv)
         "/purple3/session/close-awaits-closed",
         testExplicitCloseWaitsForClosedUpdate);
     g_test_add_func(
+        "/purple3/session/logging-out-reauthorizes",
+        testLoggingOutRequestsReauthorizationAfterPhysicalClose);
+    g_test_add_func(
+        "/purple3/session/logging-out-cleanup-timeout",
+        testLoggingOutCleanupTimeoutFailsClosed);
+    g_test_add_func(
         "/purple3/session/qr-user-cancel",
         testQrUserCancellationIsPreReadyFailure);
     g_test_add_func(
@@ -1984,6 +2332,9 @@ int main(int argc, char **argv)
         "/purple3/connection/pre-cancel-skips-session",
         testConnectionPreCancelledSkipsSessionFactory);
     g_test_add_func(
+        "/purple3/connection/invalid-account-state-skips-session",
+        testConnectionInvalidAccountStateSkipsSessionFactory);
+    g_test_add_func(
         "/purple3/connection/ready-joined-disconnect",
         testConnectionReadyAndJoinedDisconnectTasks);
     g_test_add_func(
@@ -1992,6 +2343,15 @@ int main(int argc, char **argv)
     g_test_add_func(
         "/purple3/connection/auth-failure-disconnects-account",
         testConnectionAuthorizationFailureDisconnectsAccount);
+    g_test_add_func(
+        "/purple3/connection/logging-out-reconnects",
+        testConnectionLoggingOutReconnectsAfterPhysicalClose);
+    g_test_add_func(
+        "/purple3/connection/logging-out-before-ready-reconnects",
+        testConnectionLoggingOutBeforeReadyReconnectsOnce);
+    g_test_add_func(
+        "/purple3/connection/pre-ready-recovery-disable-completes",
+        testConnectionPreReadyRecoveryDisableCompletesConnect);
     g_test_add_func(
         "/purple3/connection/disconnect-timeout-late-reap",
         testConnectionDisconnectTimeoutAndLateReap);

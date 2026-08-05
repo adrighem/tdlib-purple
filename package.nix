@@ -1,6 +1,6 @@
 /* Originally taken from Nixpkgs */
 
-{ lib, stdenv, cmake, libwebp, pidgin, tdlib, openssl } :
+{ lib, stdenv, cmake, libwebp, pidgin, qrencode, tdlib, openssl } :
 
 stdenv.mkDerivation {
   pname = "tdlib-purple";
@@ -14,13 +14,13 @@ stdenv.mkDerivation {
   '';
 
   nativeBuildInputs = [ cmake ];
-  buildInputs = [ libwebp pidgin tdlib openssl ];
+  buildInputs = [ libwebp pidgin qrencode tdlib openssl ];
 
   cmakeFlags = [ "-DNoVoip=True" ]; # libtgvoip required
 
   meta = with lib; {
     homepage = "https://github.com/adrighem/tdlib-purple";
-    description = "Unofficial Telegram plugin for libpurple using TDLib";
+    description = "Telegram client for libpurple using TDLib";
     license = licenses.gpl3Plus;
     maintainers = [ ];
     platforms = platforms.unix;

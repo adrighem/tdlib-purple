@@ -33,16 +33,22 @@ When reporting bugs or proposing fixes, include:
 
 Debug logs may contain private names, phone numbers, chat titles, and message text. Remove sensitive data before posting logs publicly.
 
-Never commit private Telegram API credentials, login codes, authorization data,
-or session files. The maintained public application defaults are the only
-credential pair intentionally distributed in the repository and source
-releases. Custom builds take paths to two owner-only files outside the source
-tree and fail if only one input is configured or either value is invalid.
+Never commit login codes, authorization data, or session files. The maintained
+API ID and hash are public application identifiers intentionally distributed in
+the repository and source releases. Custom API IDs and hashes are public too.
+Custom builds take paths to two owner-only files outside the source tree and
+fail if only one input is configured or either value is invalid.
+
+Downstream pipelines that must always use their own application identity should
+set `TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS=ON` with both file paths. The flag
+makes a missing custom pair fail instead of falling back to the maintained
+project identity. It enforces identity selection; it does not provide secrecy.
+
 Purple 3 uses only the generated application provider. Purple 2 first accepts a
 complete legacy per-account override for compatibility, then falls back to the
-provider; the override remains in Purple 2's plaintext account settings. Never
-put private override values in CMake options, compiler caches, logs, tests, or
-bug reports.
+provider; the override remains in Purple 2's plaintext account settings. Pass
+custom identifiers through the validated file-path options, not raw CMake
+values.
 
 ## Licensing contributions
 

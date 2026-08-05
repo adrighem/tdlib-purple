@@ -32,6 +32,7 @@ add_executable(tests EXCLUDE_FROM_ALL
     fixture.cpp
     application-credentials-test.cpp
     application-credentials-test-backend.c
+    purple2-qr-presenter-test.cpp
 
     ${TDLIB_PURPLE_COMMON_SOURCES}
 )
@@ -57,6 +58,26 @@ if (NOT NoWebp)
     endif (libwebp_LIBRARY_DIRS OR libpng_LIBRARY_DIRS)
     target_link_libraries(tests PRIVATE ${libwebp_LIBRARIES} ${libpng_LIBRARIES})
 endif (NOT NoWebp)
+
+if (TDLIB_PURPLE_HAVE_PURPLE2_QR)
+    target_include_directories(
+        tests SYSTEM PRIVATE
+        ${libpng_INCLUDE_DIRS}
+        ${libqrencode_INCLUDE_DIRS}
+    )
+    if (libpng_LIBRARY_DIRS OR libqrencode_LIBRARY_DIRS)
+        target_link_directories(
+            tests PRIVATE
+            ${libpng_LIBRARY_DIRS}
+            ${libqrencode_LIBRARY_DIRS}
+        )
+    endif()
+    target_link_libraries(
+        tests PRIVATE
+        ${libpng_LIBRARIES}
+        ${libqrencode_LIBRARIES}
+    )
+endif()
 
 if (NOT NoLottie)
     if (TDLIB_PURPLE_USE_BUNDLED_RLOTTIE)

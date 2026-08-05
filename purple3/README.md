@@ -114,6 +114,22 @@ contain one ASCII value followed by an optional LF or CRLF and must not exceed
 64 bytes. The API ID must be a canonical positive decimal integer no greater
 than `2147483647`; the API hash must contain exactly 32 hexadecimal characters.
 
+Downstream pipelines that must always use their own application identity should
+add all three options to the configure command:
+
+```sh
+-DTDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS=ON \
+-DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
+-DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
+```
+
+`TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS` defaults to `OFF`. When enabled,
+configuration fails unless both custom files are supplied and valid. This
+prevents an incomplete downstream configuration from silently using the
+maintained project identity. It is a build-policy flag for identity enforcement,
+not a secrecy control. Telegram API IDs and hashes are public identifiers and
+remain extractable from the built plugin.
+
 CMake stores custom file paths, but not their contents, in the build directory's
 cache. Omitting the `-D` options during a later reconfiguration does not clear
 them. Set both paths to empty to return to the maintained defaults:
@@ -122,6 +138,7 @@ them. Set both paths to empty to return to the maintained defaults:
 meson devenv -C "$HOME/src/pidgin/_build" \
   --workdir "$PWD" \
   cmake -S purple3 -B purple3/build \
+  -DTDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS=OFF \
   -DTDLIB_PURPLE_API_ID_FILE= \
   -DTDLIB_PURPLE_API_HASH_FILE=
 ```
@@ -135,26 +152,23 @@ and never move the values themselves onto the command line.
 The provider refreshes whenever the plugin is built. Rebuilding after either
 custom value changes embeds the new pair. A single configured path, a missing
 custom file, or an invalid custom value stops the build and removes the
-generated provider.
+generated provider. With fail-closed custom mode enabled, omitting both paths
+also stops configuration.
 
 Generated source, object files, and the plugin contain extractable application
-credentials. The maintained defaults are intentionally distributed. If you
-use a private override, protect the build directory and resulting binary and do
-not publish them unless you intend to distribute that pair. Previously built
-objects or binaries may retain an older override after returning to defaults.
+identifiers. The maintained defaults are intentionally distributed, and custom
+API IDs and hashes are public too. Previously built objects or binaries may
+retain an older identity after returning to defaults. Use a clean build directory
+when switching identities. File ownership and mode checks protect build input
+integrity; they do not make the identifiers secret. POSIX ownership guarantees
+do not have an equivalent ACL check on Windows.
 
-Use a local compiler without ccache, sccache, distcc, remote execution, or
-automatic compiler-crash uploads for a private override build. Those tools
-can copy credential-bearing preprocessed input or objects outside the protected
-build directory. The ownership and mode checks currently provide their full
-guarantees only on POSIX systems; private credentialed Windows builds do not
-have equivalent ACL hardening yet.
-
-The credential tests use synthetic overrides and test backends, while CI build
-coverage exercises the maintained default. The production smoke test verifies
-the generated provider state without inspecting or logging credential values,
-connecting accounts to Telegram, or accessing the network. It uses in-memory
-Purple backends and an isolated temporary profile.
+Credential tests cover the maintained identity, synthetic overrides,
+fail-closed custom mode, and test backends. CI build coverage exercises both the
+maintained default and synthetic custom identities. The production smoke test
+verifies generated provider state without connecting accounts to Telegram or
+accessing the network. It uses in-memory Purple backends and an isolated
+temporary profile.
 
 ### Credential diagnostics
 
@@ -163,6 +177,7 @@ Credential setup failures report stable, value-free diagnostic codes:
 | Diagnostic | Meaning |
 | --- | --- |
 | `CREDENTIAL_PATHS_INCOMPLETE` | Only one credential path was configured. |
+| `CREDENTIAL_PATHS_REQUIRED` | Fail-closed custom mode was enabled without either credential path. |
 | `CREDENTIAL_DEFAULT_INVALID` | The maintained default pair is malformed. |
 | `CREDENTIAL_LEGACY_CACHE_REMOVED` | A legacy raw credential cache entry was removed; migrate the build to the two file-path options and configure again. |
 | `CREDENTIAL_INPUT_MISSING` | The configured file pair is incomplete on disk. |
@@ -204,13 +219,13 @@ PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
   --nologin
 ```
 
-Open the account editor and confirm that `Unofficial Telegram` is available in
+Open the account editor and confirm that `Telegram` is available in
 the protocol chooser, requires only a local Account Name, and shows no
 phone-number, API-ID, or API-hash setting. The advanced view contains the
 secret-chat option. `--nologin` prevents existing accounts from connecting.
 
 To verify authorization, build with the maintained defaults or the optional
-private override described above, then launch without `--nologin`:
+custom override described above, then launch without `--nologin`:
 
 ```sh
 PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
@@ -220,7 +235,7 @@ PURPLE_PLUGIN_PATH="$PWD/purple3/build" \
   --config="$HOME/.local/share/tdlib-purple-pidgin3-profile"
 ```
 
-Create or enable an `Unofficial Telegram` account. On an already-authorized phone,
+Create or enable a `Telegram` account. On an already-authorized phone,
 open Telegram's **Settings > Devices > Link Desktop Device** screen and scan
 the displayed QR code. Do not use the phone's normal camera or a generic QR
 scanner. Telegram refreshes the short-lived code automatically, so scan the

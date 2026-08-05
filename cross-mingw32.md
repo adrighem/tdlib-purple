@@ -165,6 +165,10 @@ To use a different Telegram application, add both
 `-DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id` and
 `-DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash`. The files must satisfy the
 ownership, permissions, and validation rules documented in the main README.
+For a downstream build that must never fall back to the maintained project
+identity, also add `-DTDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS=ON`. This
+build-policy flag makes missing custom inputs fail configuration. It enforces
+application identity; it does not make the public API ID or hash secret.
 
 Verifying run-time dependencies:
 

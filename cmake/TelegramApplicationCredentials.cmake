@@ -2,6 +2,11 @@ include_guard(GLOBAL)
 
 find_package(Python3 3.8 REQUIRED COMPONENTS Interpreter)
 
+option(
+    TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS
+    "Require custom Telegram application credential override files"
+    OFF
+)
 set(
     TDLIB_PURPLE_API_ID_FILE
     ""
@@ -88,6 +93,9 @@ function(
     endif()
 
     set(_generator_arguments)
+    if (TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS)
+        list(APPEND _generator_arguments "--require-custom")
+    endif()
     if (_id_configured)
         get_filename_component(
             _api_id_path

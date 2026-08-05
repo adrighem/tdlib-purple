@@ -5,6 +5,8 @@
 
 #cmakedefine NoWebp
 
+#cmakedefine TDLIB_PURPLE_HAVE_PURPLE2_QR
+
 #define TEST_SOURCE_DIR "${CMAKE_SOURCE_DIR}/test"
 
 #cmakedefine NoLottie

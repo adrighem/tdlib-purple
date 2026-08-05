@@ -14,6 +14,13 @@ typedef TelegramTdlibSession *(*TelegramTdlibSessionFactory)(
     gpointer data,
     GError **error);
 
+typedef void (*TelegramTdlibReauthorizationConnect)(
+    PurpleAccount *account,
+    gpointer data);
+typedef gboolean (*TelegramTdlibReauthorizationReady)(
+    PurpleAccount *account,
+    gpointer data);
+
 /* Test-only instance seam. Must be installed before connect_async(). */
 G_GNUC_INTERNAL gboolean
 telegram_tdlib_connection_set_session_factory_for_test(
@@ -21,6 +28,18 @@ telegram_tdlib_connection_set_session_factory_for_test(
     TelegramTdlibSessionFactory factory,
     gpointer data,
     GDestroyNotify destroy);
+
+G_GNUC_INTERNAL gboolean
+telegram_tdlib_connection_set_reauthorization_connect_for_test(
+    TelegramTdlibConnection *connection,
+    TelegramTdlibReauthorizationConnect connect,
+    gpointer data,
+    GDestroyNotify destroy);
+
+G_GNUC_INTERNAL gboolean
+telegram_tdlib_connection_set_reauthorization_ready_for_test(
+    TelegramTdlibConnection *connection,
+    TelegramTdlibReauthorizationReady ready);
 
 /* Test-only registration seam for a controlled GTypeModule. */
 G_GNUC_INTERNAL void telegram_tdlib_connection_register_module_for_test(

@@ -984,6 +984,82 @@ TEST_F(TdAuthControllerTest, QrRequestIsOnceAndUpdatePrecedesAcknowledgement)
     EXPECT_EQ(observer.events[1].prompt, qrPrompt);
 }
 
+TEST_F(TdAuthControllerTest, QrRejectionCanCommitPhoneFallbackOnce)
+{
+    start(TdAuthMode::QrCodeWithPhoneFallback);
+    update(authState(
+        make_object<authorizationStateWaitPhoneNumber>()));
+    ASSERT_EQ(requests.size(), 1u);
+    RecordedRequest qrRequest = takeRequest();
+    ASSERT_EQ(
+        qrRequest.function->get_id(),
+        requestQrCodeAuthentication::ID);
+
+    reply(
+        std::move(qrRequest),
+        make_object<error>(400, "synthetic QR rejection"));
+    ASSERT_EQ(observer.events.size(), 1u);
+    ASSERT_EQ(observer.events[0].type, ObservedEventType::Phone);
+    const TdAuthPromptId phonePrompt = observer.events[0].prompt;
+
+    EXPECT_EQ(
+        controller->submitPhoneNumber(phonePrompt, "+1234567"),
+        TdAuthSubmissionResult::Accepted);
+    ASSERT_EQ(requests.size(), 1u);
+    EXPECT_EQ(
+        requests.front().function->get_id(),
+        setAuthenticationPhoneNumber::ID);
+
+    update(authState(
+        make_object<authorizationStateWaitPhoneNumber>()));
+    EXPECT_EQ(requests.size(), 1u);
+}
+
+TEST_F(TdAuthControllerTest, QrStateWinsRaceAgainstFallback)
+{
+    start(TdAuthMode::QrCodeWithPhoneFallback);
+    update(authState(
+        make_object<authorizationStateWaitPhoneNumber>()));
+    RecordedRequest qrRequest = takeRequest();
+
+    update(authState(make_object<
+        authorizationStateWaitOtherDeviceConfirmation>(
+        "tg://login?token=synthetic-race-winner")));
+    ASSERT_EQ(observer.events.size(), 1u);
+    EXPECT_EQ(observer.events[0].type, ObservedEventType::QrLink);
+
+    reply(
+        std::move(qrRequest),
+        make_object<error>(400, "late QR rejection"));
+    ASSERT_EQ(observer.events.size(), 1u);
+    EXPECT_TRUE(requests.empty());
+}
+
+TEST_F(TdAuthControllerTest, LateQrStateAfterPhoneFallbackFailsClosed)
+{
+    start(TdAuthMode::QrCodeWithPhoneFallback);
+    update(authState(
+        make_object<authorizationStateWaitPhoneNumber>()));
+    RecordedRequest qrRequest = takeRequest();
+    reply(
+        std::move(qrRequest),
+        make_object<error>(400, "synthetic QR rejection"));
+    ASSERT_EQ(observer.events.size(), 1u);
+    EXPECT_EQ(observer.events[0].type, ObservedEventType::Phone);
+
+    update(authState(make_object<
+        authorizationStateWaitOtherDeviceConfirmation>(
+        "tg://login?token=synthetic-late-state")));
+
+    ASSERT_EQ(observer.events.size(), 3u);
+    EXPECT_EQ(observer.events[1].type, ObservedEventType::PromptClosed);
+    EXPECT_EQ(observer.events[2].type, ObservedEventType::Failed);
+    EXPECT_EQ(
+        observer.events[2].failure.type,
+        TdAuthFailureType::UnsupportedState);
+    EXPECT_TRUE(requests.empty());
+}
+
 TEST_F(TdAuthControllerTest, QrTransitionClosesPresentationBeforeNextPrompt)
 {
     start(TdAuthMode::QrCode);

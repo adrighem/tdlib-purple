@@ -1,5 +1,5 @@
 /*
- * tdlib-purple - Unofficial Telegram protocol plugin for libpurple
+ * tdlib-purple - Telegram client for libpurple using TDLib
  * Copyright (C) tdlib-purple contributors
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -117,8 +117,8 @@ telegram_tdlib_protocol_new(void)
     return g_object_new(
         TELEGRAM_TDLIB_TYPE_PROTOCOL,
         "id", "telegram-tdlib",
-        "name", "Unofficial Telegram",
-        "description", _("Unofficial Telegram protocol support using TDLib"),
+        "name", "Telegram",
+        "description", _("Telegram client for libpurple using TDLib"),
         "icon-name", "im-telegram",
         "icon-resource-path", "/im/tdlib-purple/protocols/telegram/icons",
         NULL);

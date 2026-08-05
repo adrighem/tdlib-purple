@@ -4,6 +4,7 @@
 #include "account-data.h"
 #include "client-utils.h"
 #include "forum-topics.h"
+#include "purple2-qr-presenter.h"
 #include "td-auth-controller.h"
 #include "telegram-application-credentials.h"
 #include <td/telegram/Log.h>
@@ -25,6 +26,11 @@ public:
         ITransceiverBackend *testBackend,
         const TdlibPurpleApplicationCredentials &applicationCredentials);
     ~PurpleTdClient();
+    void accountConnectionClosing() noexcept;
+    static void cancelPendingReauthorization(PurpleAccount *account) noexcept;
+    static bool failPendingReauthorization(
+        PurpleAccount *account,
+        const char *message) noexcept;
 
     static bool disableTdlibLogging() noexcept;
     static void setTdlibFatalErrorCallback(td::Log::FatalErrorCallbackPtr callback);
@@ -74,6 +80,12 @@ public:
 
     void createSecretChat(const char *buddyName);
 private:
+    enum class ReauthorizationPhase : uint8_t {
+        None,
+        WaitingForLogoutCleanup,
+        ClosingBackend,
+    };
+
     using TdObjectPtr   = td::td_api::object_ptr<td::td_api::Object>;
     using ResponseCb    = void (PurpleTdClient::*)(uint64_t requestId, TdObjectPtr object);
     enum class ForumTopicJoinIntent : uint8_t {
@@ -102,6 +114,15 @@ private:
         std::weak_ptr<LifetimeState> lifetime;
         TdAuthPromptId prompt;
         TdAuthPromptType type;
+    };
+    struct ReauthorizationContext {
+        PurpleTdClient *client;
+        std::weak_ptr<LifetimeState> lifetime;
+        PurpleAccount *account;
+        PurpleConnection *connection;
+        std::string accountName;
+        std::string protocolId;
+        bool disconnectStarted = false;
     };
 
     void       processUpdate(td::td_api::Object &object);
@@ -150,6 +171,15 @@ private:
     void onClosing() override;
     void onClosed() override;
     void reportAuthorizationEnded();
+    void failReauthorization(const char *message) noexcept;
+    void beginReauthorization();
+    void completeReauthorizationAfterLogout();
+    void cancelReauthorizationCleanupTimeout() noexcept;
+    static gboolean reauthorizationCleanupTimedOut(gpointer data);
+    void reauthorizationBackendClosed(
+        TdPollingBackend::CloseResult result);
+    static gboolean reconnectForReauthorization(gpointer data);
+    static bool hasPendingReauthorization(PurpleAccount *account) noexcept;
     void       setPurpleConnectionInProgress();
     void       onLoggedIn();
     void       getContactsResponse(uint64_t requestId, td::td_api::object_ptr<td::td_api::Object> object);
@@ -255,6 +285,7 @@ private:
     TdTransceiver         m_transceiver;
     TdAccountData         m_data;
     std::shared_ptr<LifetimeState> m_lifetime;
+    std::unique_ptr<Purple2QrPresenter> m_qrPresenter;
     std::unique_ptr<TdAuthController> m_authController;
     std::vector<std::unique_ptr<AuthPromptContext>> m_authPromptContexts;
     std::unique_ptr<ForumTopicsAdapter> m_forumTopics;
@@ -263,6 +294,11 @@ private:
     bool                  m_authParameterSetupStarted = false;
     bool                  m_registrationAliasRejected = false;
     bool                  m_authLifecycleErrorReported = false;
+    ReauthorizationPhase  m_reauthorizationPhase =
+        ReauthorizationPhase::None;
+    bool                  m_reauthorizationProbe = false;
+    bool                  m_preserveReauthorizationProbe = false;
+    guint                 m_reauthorizationCleanupTimeout = 0;
     std::vector<UserId>   m_usersForNewPrivateChats;
     std::set<ChatId>      m_deferredGroupChats;
     std::set<int32_t>     m_deferredUploadCancels;

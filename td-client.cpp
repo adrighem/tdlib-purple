@@ -495,6 +495,17 @@ PurpleTdClient::PurpleTdClient(
             projectForumTopic(target);
         }))
 {
+    m_reauthorizationProbe = hasPendingReauthorization(m_account);
+    const bool qrAvailable = Purple2QrPresenter::available();
+    if (qrAvailable) {
+        m_qrPresenter.reset(new Purple2QrPresenter(
+            purple_account_get_connection(m_account),
+            m_account,
+            [this](TdAuthPromptId prompt) {
+                if (m_authController)
+                    (void)m_authController->cancelPrompt(prompt);
+            }));
+    }
     TdAuthConfiguration authConfiguration(
         applicationCredentials.api_id,
         applicationCredentials.api_hash,
@@ -503,7 +514,9 @@ PurpleTdClient::PurpleTdClient(
             m_account,
             AccountOptions::EnableSecretChats,
             AccountOptions::EnableSecretChatsDefault) != FALSE,
-        TdAuthMode::PhoneNumber);
+        qrAvailable
+            ? TdAuthMode::QrCodeWithPhoneFallback
+            : TdAuthMode::PhoneNumber);
     m_authController.reset(new TdAuthController(
         std::move(authConfiguration),
         [this](
@@ -518,9 +531,12 @@ PurpleTdClient::PurpleTdClient(
 
 PurpleTdClient::~PurpleTdClient()
 {
+    cancelReauthorizationCleanupTimeout();
     m_lifetime->alive = false;
     if (m_authController)
         m_authController->shutdown();
+    if (m_qrPresenter)
+        m_qrPresenter->closeAll();
     closeAuthPrompt();
     m_forumTopics->shutdown();
 

@@ -4,7 +4,7 @@ SetCompressor /SOLID /FINAL lzma
 
 ; todo: SetBrandingImage
 ; HM NIS Edit Wizard helper defines
-!define PRODUCT_NAME "Unofficial Telegram for Purple"
+!define PRODUCT_NAME "Telegram for Purple"
 !define PRODUCT_ID "tdlib-purple"
 !define PRPL_INSTALL_TARGET "libtelegram-tdlib.dll"
 !define PRODUCT_VERSION "${PLUGIN_VERSION}"

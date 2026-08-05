@@ -18,6 +18,41 @@ asset_dir="${ASSET_DIR:-release-assets}"
 package_revision="${PACKAGE_REVISION:-1}"
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
+verify_maintained_application_provider() (
+    generator="$1"
+    source_root="$2"
+    provider_source="$3"
+    state_header="$4"
+
+    if ! grep -q \
+        '^#define TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE 1$' \
+        "$state_header"; then
+        echo "Application credential provider is unavailable." >&2
+        exit 1
+    fi
+
+    verification_dir="$(env -i PATH="$PATH" mktemp -d)"
+    chmod 700 "$verification_dir"
+    trap 'rm -f "$verification_dir/expected-api-id" \
+        "$verification_dir/expected-api-hash" \
+        "$verification_dir/expected-provider.c"; \
+        rmdir "$verification_dir" 2>/dev/null || true' EXIT
+    umask 077
+    printf '%s\n' '32769927' > "$verification_dir/expected-api-id"
+    printf '%s\n' 'a0d6d0f8a610fb055903fd0e94d8eeb0' \
+        > "$verification_dir/expected-api-hash"
+    env -i PATH="$PATH" python3 "$generator" \
+        --api-id-file "$verification_dir/expected-api-id" \
+        --api-hash-file "$verification_dir/expected-api-hash" \
+        --source-root "$source_root" \
+        --output "$verification_dir/expected-provider.c"
+    if ! cmp -s "$provider_source" \
+        "$verification_dir/expected-provider.c"; then
+        echo "Provider does not use the maintained application identity." >&2
+        exit 1
+    fi
+)
+
 cd "$repo_root"
 mkdir -p "$asset_dir"
 
@@ -53,12 +88,11 @@ if [ "$asset_type" = "source" ]; then
         --source-root "$source_workdir/$source_root" \
         --output "$provider_check_dir/provider.c" \
         --state-output "$provider_check_dir/provider-state.h"
-    if ! grep -q \
-        '^#define TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE 1$' \
-        "$provider_check_dir/provider-state.h"; then
-        echo "The source asset does not provide default application credentials." >&2
-        exit 1
-    fi
+    verify_maintained_application_provider \
+        "$source_workdir/$source_root/credentials/generate-application-credentials.py" \
+        "$source_workdir/$source_root" \
+        "$provider_check_dir/provider.c" \
+        "$provider_check_dir/provider-state.h"
     rm -f "$provider_check_dir/provider.c" \
         "$provider_check_dir/provider-state.h"
     rmdir "$provider_check_dir"
@@ -98,12 +132,13 @@ cmake -S . -B "$build_dir" -GNinja \
     -DTd_DIR="$repo_root/td_destdir/usr/local/lib/cmake/Td"
 
 cmake --build "$build_dir" --target telegram-tdlib
+credential_provider_source="$build_dir/.private/telegram-application-credentials-embedded.c"
 credential_state_header="$build_dir/.private/telegram-application-credentials-state.h"
-if ! grep -q '^#define TDLIB_PURPLE_APPLICATION_CREDENTIALS_AVAILABLE 1$' \
-    "$credential_state_header"; then
-    echo "Release build did not produce an embedded credential provider." >&2
-    exit 1
-fi
+verify_maintained_application_provider \
+    "$repo_root/credentials/generate-application-credentials.py" \
+    "$repo_root" \
+    "$credential_provider_source" \
+    "$credential_state_header"
 DESTDIR="$staging_dir" cmake --build "$build_dir" --target install
 
 license_root="$staging_dir/usr/share/licenses/tdlib-purple"
@@ -156,8 +191,8 @@ Standards-Version: 4.6.2
 Package: tdlib-purple
 Architecture: any
 Depends: ${shlibs:Depends}
-Description: Unofficial Telegram plugin for libpurple using TDLib
- An unofficial Telegram protocol plugin for Purple clients such as Pidgin.
+Description: Telegram client for libpurple using TDLib
+ A Telegram client for libpurple applications such as Pidgin, powered by TDLib.
 CONTROL
 
     depends="$(
@@ -178,8 +213,8 @@ Maintainer: tdlib-purple contributors <noreply@example.invalid>
 Depends: ${depends}
 Installed-Size: ${installed_size}
 Homepage: https://github.com/adrighem/tdlib-purple
-Description: Unofficial Telegram plugin for libpurple using TDLib
- An unofficial Telegram protocol plugin for Purple clients such as Pidgin.
+Description: Telegram client for libpurple using TDLib
+ A Telegram client for libpurple applications such as Pidgin, powered by TDLib.
  This package was built for ${distro_id}.
 CONTROL
 
@@ -207,13 +242,13 @@ rpm)
 Name: tdlib-purple
 Version: ${VERSION}
 Release: ${package_revision}%{?dist}
-Summary: Unofficial Telegram plugin for libpurple using TDLib
+Summary: Telegram client for libpurple using TDLib
 License: GPL-3.0-or-later
 URL: https://github.com/adrighem/tdlib-purple
 Requires: libpurple
 
 %description
-An unofficial Telegram protocol plugin for Purple clients such as Pidgin.
+A Telegram client for libpurple applications such as Pidgin, powered by TDLib.
 This package was built for ${distro_id}.
 
 %prep

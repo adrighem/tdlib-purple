@@ -32,6 +32,7 @@ public:
     virtual GMainContext *transportContext() = 0;
     // Transfers one reference to a fresh, unattached, non-destroyed source.
     virtual GSource *createTimeoutSource(unsigned timeoutSeconds) = 0;
+    virtual void close(TdPollingBackend::CloseCallback callback);
 
     // Test fakes must call receive() serially on the transport's owner
     // thread. The compatibility facade deliberately preserves the legacy
@@ -90,7 +91,9 @@ public:
         unsigned timeoutSeconds,
         bool cancelNormalResponse);
     const std::string &databasePath() const;
-    void shutdown();
+    void shutdown(
+        TdPollingBackend::CloseCallback callback =
+            TdPollingBackend::CloseCallback());
 
 private:
     PurpleTdClient *m_owner = nullptr;
