@@ -9,6 +9,8 @@
 
 namespace {
 
+constexpr guint REAUTHORIZATION_CLEANUP_TIMEOUT_MILLISECONDS = 30000;
+
 struct ReconnectContext {
     std::string accountName;
     std::string protocolId;
@@ -134,6 +136,12 @@ void PurpleTdClient::processAuthorizationState(
     }
 
     m_authController->onAuthorizationState(&authState);
+    if (authState.get_id() ==
+            td::td_api::authorizationStateClosed::ID &&
+        m_reauthorizationPhase ==
+            ReauthorizationPhase::WaitingForLogoutCleanup) {
+        completeReauthorizationAfterLogout();
+    }
 }
 
 bool PurpleTdClient::addProxy()
@@ -710,6 +718,8 @@ void PurpleTdClient::onRequestFailed(
 
 void PurpleTdClient::onAuthorizationReady()
 {
+    cancelReauthorizationCleanupTimeout();
+    m_reauthorizationPhase = ReauthorizationPhase::None;
     cancelPendingReauthorization(m_account);
     m_reauthorizationProbe = false;
     purple_debug_misc(
@@ -851,7 +861,7 @@ void PurpleTdClient::onLoggingOut()
 
 void PurpleTdClient::onClosing()
 {
-    if (m_reauthorizationPending)
+    if (m_reauthorizationPhase != ReauthorizationPhase::None)
         return;
     if (m_reauthorizationProbe) {
         failReauthorization(
@@ -863,7 +873,12 @@ void PurpleTdClient::onClosing()
 
 void PurpleTdClient::onClosed()
 {
-    if (m_reauthorizationPending)
+    if (m_reauthorizationPhase ==
+        ReauthorizationPhase::WaitingForLogoutCleanup) {
+        completeReauthorizationAfterLogout();
+        return;
+    }
+    if (m_reauthorizationPhase == ReauthorizationPhase::ClosingBackend)
         return;
     if (m_reauthorizationProbe) {
         failReauthorization(
@@ -902,6 +917,7 @@ bool PurpleTdClient::failPendingReauthorization(
 
 void PurpleTdClient::accountConnectionClosing() noexcept
 {
+    cancelReauthorizationCleanupTimeout();
     if (!m_preserveReauthorizationProbe)
         cancelPendingReauthorization(m_account);
 }
@@ -911,7 +927,8 @@ void PurpleTdClient::failReauthorization(const char *message) noexcept
     if (m_authLifecycleErrorReported)
         return;
     m_authLifecycleErrorReported = true;
-    m_reauthorizationPending = false;
+    cancelReauthorizationCleanupTimeout();
+    m_reauthorizationPhase = ReauthorizationPhase::None;
     m_reauthorizationProbe = false;
     m_preserveReauthorizationProbe = false;
     cancelPendingReauthorization(m_account);
@@ -923,16 +940,14 @@ void PurpleTdClient::failReauthorization(const char *message) noexcept
 
 void PurpleTdClient::beginReauthorization()
 {
-    if (m_reauthorizationPending)
+    if (m_reauthorizationPhase != ReauthorizationPhase::None)
         return;
-    m_reauthorizationPending = true;
 
     if (!m_reauthorizationProbe) {
         bool inserted = false;
         try {
             inserted = reauthorizationProbes().insert(m_account).second;
         } catch (...) {
-            m_reauthorizationPending = false;
             failReauthorization(
                 _("Telegram authorization could not be restarted safely"));
             return;
@@ -943,6 +958,31 @@ void PurpleTdClient::beginReauthorization()
             return;
         }
     }
+    m_reauthorizationPhase =
+        ReauthorizationPhase::WaitingForLogoutCleanup;
+
+    if (m_qrPresenter)
+        m_qrPresenter->closeAll();
+    closeAuthPrompt();
+
+    m_reauthorizationCleanupTimeout = moduleActivityAddTimeout(
+        REAUTHORIZATION_CLEANUP_TIMEOUT_MILLISECONDS,
+        reauthorizationCleanupTimedOut,
+        this);
+    if (m_reauthorizationCleanupTimeout == 0) {
+        failReauthorization(
+            _("Telegram authorization could not be restarted safely"));
+    }
+}
+
+void PurpleTdClient::completeReauthorizationAfterLogout()
+{
+    if (m_reauthorizationPhase !=
+        ReauthorizationPhase::WaitingForLogoutCleanup) {
+        return;
+    }
+    cancelReauthorizationCleanupTimeout();
+    m_reauthorizationPhase = ReauthorizationPhase::ClosingBackend;
 
     if (m_authController)
         m_authController->shutdown();
@@ -960,17 +1000,41 @@ void PurpleTdClient::beginReauthorization()
         });
 }
 
+void PurpleTdClient::cancelReauthorizationCleanupTimeout() noexcept
+{
+    if (m_reauthorizationCleanupTimeout == 0)
+        return;
+    g_source_remove(m_reauthorizationCleanupTimeout);
+    m_reauthorizationCleanupTimeout = 0;
+}
+
+gboolean PurpleTdClient::reauthorizationCleanupTimedOut(gpointer data)
+{
+    PurpleTdClient *client = static_cast<PurpleTdClient *>(data);
+    if (!client)
+        return FALSE;
+    client->m_reauthorizationCleanupTimeout = 0;
+    if (client->m_reauthorizationPhase ==
+        ReauthorizationPhase::WaitingForLogoutCleanup) {
+        client->failReauthorization(
+            _("Telegram authorization could not be restarted safely"));
+    }
+    return FALSE;
+}
+
 void PurpleTdClient::reauthorizationBackendClosed(
     TdPollingBackend::CloseResult result)
 {
-    if (!m_reauthorizationPending)
+    if (m_reauthorizationPhase != ReauthorizationPhase::ClosingBackend)
         return;
-    if (result != TdPollingBackend::CloseResult::Closed ||
-        m_reauthorizationProbe) {
+    if (result != TdPollingBackend::CloseResult::Closed) {
         failReauthorization(
-            result == TdPollingBackend::CloseResult::Closed
-                ? _("Telegram requested authorization again repeatedly")
-                : _("Telegram authorization could not be restarted safely"));
+            _("Telegram authorization could not be restarted safely"));
+        return;
+    }
+    if (m_reauthorizationProbe) {
+        failReauthorization(
+            _("Telegram requested authorization again repeatedly"));
         return;
     }
 

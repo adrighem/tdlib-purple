@@ -80,6 +80,12 @@ public:
 
     void createSecretChat(const char *buddyName);
 private:
+    enum class ReauthorizationPhase : uint8_t {
+        None,
+        WaitingForLogoutCleanup,
+        ClosingBackend,
+    };
+
     using TdObjectPtr   = td::td_api::object_ptr<td::td_api::Object>;
     using ResponseCb    = void (PurpleTdClient::*)(uint64_t requestId, TdObjectPtr object);
     enum class ForumTopicJoinIntent : uint8_t {
@@ -167,6 +173,9 @@ private:
     void reportAuthorizationEnded();
     void failReauthorization(const char *message) noexcept;
     void beginReauthorization();
+    void completeReauthorizationAfterLogout();
+    void cancelReauthorizationCleanupTimeout() noexcept;
+    static gboolean reauthorizationCleanupTimedOut(gpointer data);
     void reauthorizationBackendClosed(
         TdPollingBackend::CloseResult result);
     static gboolean reconnectForReauthorization(gpointer data);
@@ -285,9 +294,11 @@ private:
     bool                  m_authParameterSetupStarted = false;
     bool                  m_registrationAliasRejected = false;
     bool                  m_authLifecycleErrorReported = false;
-    bool                  m_reauthorizationPending = false;
+    ReauthorizationPhase  m_reauthorizationPhase =
+        ReauthorizationPhase::None;
     bool                  m_reauthorizationProbe = false;
     bool                  m_preserveReauthorizationProbe = false;
+    guint                 m_reauthorizationCleanupTimeout = 0;
     std::vector<UserId>   m_usersForNewPrivateChats;
     std::set<ChatId>      m_deferredGroupChats;
     std::set<int32_t>     m_deferredUploadCancels;

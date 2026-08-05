@@ -36,6 +36,7 @@
 namespace {
 
 constexpr const char *secretChatsSetting = "enable-secret-chats";
+constexpr unsigned reauthorizationCleanupTimeoutSeconds = 30;
 
 void wipeSensitiveString(std::string &value) noexcept
 {
@@ -285,6 +286,7 @@ public:
 
     ~SessionState() override
     {
+        cancelReauthorizationCleanupTimeout();
         if (m_connectionCancellable && m_cancellationHandler != 0) {
             g_cancellable_disconnect(
                 m_connectionCancellable, m_cancellationHandler);
@@ -327,7 +329,7 @@ public:
                 m_dependencies.closeTimeoutSeconds,
                 m_dependencies.pollTimeoutSeconds,
                 std::move(m_dependencies.clientFactory),
-                std::move(m_dependencies.closeTimeoutSourceFactory)));
+                m_dependencies.closeTimeoutSourceFactory));
 
             std::weak_ptr<SessionState> weak(shared_from_this());
             m_transport.reset(new TdTransport(
@@ -501,6 +503,8 @@ public:
     {
         if (m_phase == Phase::Settled || m_phase == Phase::Closing)
             return;
+        m_reauthorizationRequested = false;
+        cancelReauthorizationCleanupTimeout();
         if (m_phase == Phase::New) {
             notifyConnectFailure(
                 TELEGRAM_TDLIB_SESSION_FAILURE_CANCELLED);
@@ -535,6 +539,8 @@ public:
     void close() noexcept
     {
         m_explicitClose = true;
+        m_reauthorizationRequested = false;
+        cancelReauthorizationCleanupTimeout();
         if (m_phase == Phase::Settled)
             return;
         if (m_phase == Phase::Connecting) {
@@ -562,6 +568,17 @@ public:
 private:
     struct DeferredCancel {
         explicit DeferredCancel(
+            std::weak_ptr<SessionState> weakState) noexcept
+            : state(std::move(weakState))
+        {
+        }
+
+        ModuleActivityGuard activity;
+        std::weak_ptr<SessionState> state;
+    };
+
+    struct ReauthorizationCleanupTimeout {
+        explicit ReauthorizationCleanupTimeout(
             std::weak_ptr<SessionState> weakState) noexcept
             : state(std::move(weakState))
         {
@@ -617,6 +634,83 @@ private:
     static void destroyWeakState(gpointer data) noexcept
     {
         delete static_cast<std::weak_ptr<SessionState> *>(data);
+    }
+
+    static gboolean reauthorizationCleanupTimedOut(gpointer data) noexcept
+    {
+        ReauthorizationCleanupTimeout *context =
+            static_cast<ReauthorizationCleanupTimeout *>(data);
+        try {
+            std::shared_ptr<SessionState> self =
+                context ? context->state.lock() : nullptr;
+            if (self) {
+                self->releaseReauthorizationCleanupTimeout();
+                self->m_reauthorizationRequested = false;
+                self->authorizationFailed();
+            }
+        } catch (...) {
+        }
+        return G_SOURCE_REMOVE;
+    }
+
+    static void destroyReauthorizationCleanupTimeout(gpointer data) noexcept
+    {
+        delete static_cast<ReauthorizationCleanupTimeout *>(data);
+    }
+
+    bool startReauthorizationCleanupTimeout() noexcept
+    {
+        if (m_reauthorizationCleanupSource)
+            return true;
+
+        GSource *source = nullptr;
+        try {
+            source = m_dependencies.closeTimeoutSourceFactory
+                         ? m_dependencies.closeTimeoutSourceFactory(
+                               reauthorizationCleanupTimeoutSeconds)
+                         : g_timeout_source_new_seconds(
+                               reauthorizationCleanupTimeoutSeconds);
+        } catch (...) {
+        }
+        if (!source)
+            return false;
+
+        ReauthorizationCleanupTimeout *context =
+            new (std::nothrow) ReauthorizationCleanupTimeout(
+                std::weak_ptr<SessionState>(shared_from_this()));
+        if (!context) {
+            g_source_unref(source);
+            return false;
+        }
+        g_source_set_callback(
+            source,
+            reauthorizationCleanupTimedOut,
+            context,
+            destroyReauthorizationCleanupTimeout);
+        if (g_source_attach(source, m_ownerContext) == 0) {
+            g_source_destroy(source);
+            g_source_unref(source);
+            return false;
+        }
+        m_reauthorizationCleanupSource = source;
+        return true;
+    }
+
+    void cancelReauthorizationCleanupTimeout() noexcept
+    {
+        if (!m_reauthorizationCleanupSource)
+            return;
+        g_source_destroy(m_reauthorizationCleanupSource);
+        g_source_unref(m_reauthorizationCleanupSource);
+        m_reauthorizationCleanupSource = nullptr;
+    }
+
+    void releaseReauthorizationCleanupTimeout() noexcept
+    {
+        if (!m_reauthorizationCleanupSource)
+            return;
+        g_source_unref(m_reauthorizationCleanupSource);
+        m_reauthorizationCleanupSource = nullptr;
     }
 
     static void connectionCancelled(
@@ -715,8 +809,20 @@ private:
             td::td_api::object_ptr<td::td_api::updateAuthorizationState>
                 update = td::move_tl_object_as<
                     td::td_api::updateAuthorizationState>(object);
+            const std::int32_t stateId =
+                update && update->authorization_state_
+                    ? update->authorization_state_->get_id()
+                    : 0;
             m_controller->onAuthorizationState(
                 update ? update->authorization_state_.get() : nullptr);
+            if (m_reauthorizationRequested &&
+                stateId ==
+                    td::td_api::authorizationStateClosed::ID &&
+                m_phase != Phase::Closing &&
+                m_phase != Phase::Settled) {
+                cancelReauthorizationCleanupTimeout();
+                beginClose();
+            }
         } catch (...) {
             authorizationFailed();
         }
@@ -762,6 +868,8 @@ private:
 
     void authorizationFailed()
     {
+        m_reauthorizationRequested = false;
+        cancelReauthorizationCleanupTimeout();
         if (m_phase == Phase::Connecting) {
             notifyConnectFailure(
                 TELEGRAM_TDLIB_SESSION_FAILURE_AUTHORIZATION);
@@ -779,17 +887,24 @@ private:
             return;
         }
         m_reauthorizationRequested = true;
-        if (m_controller)
-            m_controller->shutdown();
-        beginClose();
+        if (m_presenter)
+            m_presenter->closeAll();
+        if (!startReauthorizationCleanupTimeout()) {
+            m_reauthorizationRequested = false;
+            authorizationFailed();
+        }
     }
 
     void backendFailed()
     {
         if (m_phase == Phase::Connecting) {
+            m_reauthorizationRequested = false;
+            cancelReauthorizationCleanupTimeout();
             notifyConnectFailure(
                 TELEGRAM_TDLIB_SESSION_FAILURE_BACKEND);
         } else if (m_phase == Phase::Ready) {
+            m_reauthorizationRequested = false;
+            cancelReauthorizationCleanupTimeout();
             notifyRuntimeFailure();
         }
         beginClose();
@@ -799,6 +914,7 @@ private:
     {
         if (m_phase == Phase::Settled)
             return;
+        cancelReauthorizationCleanupTimeout();
         if (m_phase != Phase::Closing) {
             m_phase = Phase::Closing;
             try {
@@ -969,6 +1085,8 @@ private:
 
     void onAuthorizationCancelled() override
     {
+        m_reauthorizationRequested = false;
+        cancelReauthorizationCleanupTimeout();
         if (m_phase == Phase::Connecting) {
             notifyConnectFailure(
                 TELEGRAM_TDLIB_SESSION_FAILURE_CANCELLED);
@@ -993,11 +1111,18 @@ private:
 
     void onClosing() override
     {
+        if (m_reauthorizationRequested)
+            return;
         authorizationFailed();
     }
 
     void onClosed() override
     {
+        if (m_reauthorizationRequested) {
+            cancelReauthorizationCleanupTimeout();
+            beginClose();
+            return;
+        }
         authorizationFailed();
     }
 
@@ -1023,6 +1148,7 @@ private:
     bool m_runtimeFailureNotified = false;
     bool m_reauthorizationRequested = false;
     bool m_reauthorizationNotified = false;
+    GSource *m_reauthorizationCleanupSource = nullptr;
     bool m_explicitClose = false;
     bool m_closeStarted = false;
     bool m_closeNotified = false;

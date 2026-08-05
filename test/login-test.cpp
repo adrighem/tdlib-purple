@@ -778,7 +778,7 @@ TEST_F(LoginTest, TerminalAuthorizationStateFailsBeforeReady)
     prpl.verifyNoEvents();
 }
 
-TEST_F(LoginTest, LoggingOutReconnectsOnceAfterPhysicalClose)
+TEST_F(LoginTest, LoggingOutWaitsForNaturalCloseBeforeReconnect)
 {
     startAuthorization();
     setPurpleAccountLifecycleSimulation(true);
@@ -794,8 +794,19 @@ TEST_F(LoginTest, LoggingOutReconnectsOnceAfterPhysicalClose)
     EXPECT_EQ(purpleAccountConnectCount(), 0U);
     prpl.verifyNoEvents();
 
+    // Completing a backend close before TDLib reports Closed must do nothing:
+    // remote logout still needs this client alive to finish key cleanup.
     tgl.completeClose();
+    g_main_context_iteration(nullptr, FALSE);
     EXPECT_EQ(purpleAccountDisconnectCount(), 0U);
+    EXPECT_EQ(purpleAccountConnectCount(), 0U);
+    prpl.verifyNoEvents();
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosing>()));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosed>()));
+    tgl.completeClose();
     g_main_context_iteration(nullptr, FALSE);
 
     EXPECT_EQ(purpleAccountDisconnectCount(), 1U);
@@ -823,6 +834,10 @@ TEST_F(LoginTest, ReauthorizationProbeDoesNotLoop)
     tgl.update(make_object<updateAuthorizationState>(
         make_object<authorizationStateLoggingOut>()));
     prpl.verifyNoEvents();
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosing>()));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosed>()));
     tgl.completeClose();
     g_main_context_iteration(nullptr, FALSE);
     prpl.verifyEvents(
@@ -833,10 +848,14 @@ TEST_F(LoginTest, ReauthorizationProbeDoesNotLoop)
         ConnectionUpdateProgressEvent(connection, 1, 2));
     ASSERT_EQ(purpleAccountConnectCount(), 1U);
 
+    prpl.captureNotifyEvents();
     tgl.update(make_object<updateAuthorizationState>(
         make_object<authorizationStateLoggingOut>()));
     prpl.verifyNoEvents();
-    prpl.captureNotifyEvents();
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosing>()));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosed>()));
     tgl.completeClose();
 
     prpl.verifyEvents(NotifyMessageEvent(
@@ -864,6 +883,10 @@ TEST_F(LoginTest, ReauthorizationCloseFailureDisconnectsWithoutReconnect)
 
     tgl.update(make_object<updateAuthorizationState>(
         make_object<authorizationStateLoggingOut>()));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosing>()));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosed>()));
     tgl.completeClose(TdPollingBackend::CloseResult::Failed);
     prpl.verifyEvents(NotifyMessageEvent(
         account,
@@ -888,6 +911,10 @@ TEST_F(LoginTest, DisabledAccountCancelsPendingReauthorization)
     tgl.update(make_object<updateAuthorizationState>(
         make_object<authorizationStateLoggingOut>()));
     setPurpleAccountEnabled(account, false);
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosing>()));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosed>()));
     tgl.completeClose();
     g_main_context_iteration(nullptr, FALSE);
 
@@ -904,6 +931,10 @@ TEST_F(LoginTest, DisableDuringDisconnectCancelsReauthorization)
 
     tgl.update(make_object<updateAuthorizationState>(
         make_object<authorizationStateLoggingOut>()));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosing>()));
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosed>()));
     tgl.completeClose();
     g_main_context_iteration(nullptr, FALSE);
     prpl.verifyEvents(

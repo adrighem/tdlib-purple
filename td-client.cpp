@@ -531,6 +531,7 @@ PurpleTdClient::PurpleTdClient(
 
 PurpleTdClient::~PurpleTdClient()
 {
+    cancelReauthorizationCleanupTimeout();
     m_lifetime->alive = false;
     if (m_authController)
         m_authController->shutdown();

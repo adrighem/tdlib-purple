@@ -50,6 +50,7 @@ namespace {
 
 constexpr double pollTimeoutSeconds = 0.05;
 constexpr unsigned closeTimeoutSeconds = 7;
+constexpr unsigned reauthorizationCleanupTimeoutSeconds = 30;
 constexpr char upperAccountId[] =
     "123E4567-E89B-12D3-A456-426614174000";
 constexpr char lowerAccountId[] =
@@ -1497,17 +1498,17 @@ static void testLoggingOutRequestsReauthorizationAfterPhysicalClose()
         environment,
         harness.control,
         authorizationUpdate(make_object<authorizationStateLoggingOut>()));
-    g_assert_true(harness.control->waitForFunction(close::ID));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+    g_assert_true(harness.deadline->hasInterval(
+        reauthorizationCleanupTimeoutSeconds));
     g_assert_cmpuint(harness.callbacks.connectFailed, ==, 0);
     g_assert_cmpuint(harness.callbacks.runtimeFailed, ==, 0);
     g_assert_cmpuint(harness.callbacks.reauthorizationRequired, ==, 0);
 
-    const std::uint64_t closeRequest =
-        harness.control->requestIdForFunction(close::ID);
     pushAndWait(
         environment,
         harness.control,
-        {closeRequest, make_object<ok>()});
+        authorizationUpdate(make_object<authorizationStateClosing>()));
     harness.control->push(closedUpdate());
     g_assert_true(harness.control->waitForDestroyed());
     g_assert_true(environment.iterateUntil([&harness]() {
@@ -1518,6 +1519,43 @@ static void testLoggingOutRequestsReauthorizationAfterPhysicalClose()
     g_assert_cmpuint(harness.callbacks.connectFailed, ==, 0);
     g_assert_cmpuint(harness.callbacks.runtimeFailed, ==, 0);
     g_assert_cmpuint(harness.callbacks.closed, ==, 0);
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+}
+
+static void testLoggingOutCleanupTimeoutFailsClosed()
+{
+    SessionEnvironment environment;
+    SessionHarness harness(environment, lowerAccountId);
+    startAndWaitForActivation(harness);
+
+    pushAndWait(
+        environment,
+        harness.control,
+        authorizationUpdate(make_object<authorizationStateLoggingOut>()));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
+    g_assert_true(harness.deadline->hasInterval(
+        reauthorizationCleanupTimeoutSeconds));
+    g_assert_true(harness.deadline->fireNext());
+    g_assert_true(environment.iterateUntil([&harness]() {
+        return harness.callbacks.connectFailed == 1;
+    }));
+    g_assert_cmpint(
+        harness.callbacks.failure,
+        ==,
+        TELEGRAM_TDLIB_SESSION_FAILURE_AUTHORIZATION);
+    g_assert_cmpuint(harness.callbacks.reauthorizationRequired, ==, 0);
+    g_assert_true(harness.control->waitForFunction(close::ID));
+
+    const std::uint64_t closeRequest =
+        harness.control->requestIdForFunction(close::ID);
+    pushAndWait(
+        environment,
+        harness.control,
+        {closeRequest, make_object<ok>()});
+    harness.control->push(closedUpdate());
+    g_assert_true(harness.control->waitForDestroyed());
+    environment.drain();
+    g_assert_cmpuint(harness.callbacks.reauthorizationRequired, ==, 0);
 }
 
 static void testQrUserCancellationIsPreReadyFailure()
@@ -2011,15 +2049,13 @@ static void testConnectionLoggingOutBeforeReadyReconnectsOnce()
         environment,
         harness.control,
         authorizationUpdate(make_object<authorizationStateLoggingOut>()));
-    g_assert_true(harness.control->waitForFunction(close::ID));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
     g_assert_cmpuint(harness.reauthorizationConnect->calls, ==, 0);
 
-    const std::uint64_t closeRequest =
-        harness.control->requestIdForFunction(close::ID);
     pushAndWait(
         environment,
         harness.control,
-        {closeRequest, make_object<ok>()});
+        authorizationUpdate(make_object<authorizationStateClosing>()));
     harness.control->push(closedUpdate());
     g_assert_true(harness.control->waitForDestroyed());
     g_assert_true(environment.iterateUntil([&harness]() {
@@ -2067,14 +2103,12 @@ static void testConnectionPreReadyRecoveryDisableCompletesConnect()
         environment,
         harness.control,
         authorizationUpdate(make_object<authorizationStateLoggingOut>()));
-    g_assert_true(harness.control->waitForFunction(close::ID));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
 
-    const std::uint64_t closeRequest =
-        harness.control->requestIdForFunction(close::ID);
     pushAndWait(
         environment,
         harness.control,
-        {closeRequest, make_object<ok>()});
+        authorizationUpdate(make_object<authorizationStateClosing>()));
     harness.control->push(closedUpdate());
     g_assert_true(harness.control->waitForDestroyed());
     environment.drain();
@@ -2119,16 +2153,14 @@ static void testConnectionLoggingOutReconnectsAfterPhysicalClose()
         environment,
         harness.control,
         authorizationUpdate(make_object<authorizationStateLoggingOut>()));
-    g_assert_true(harness.control->waitForFunction(close::ID));
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
     g_assert_cmpuint(harness.reauthorizationConnect->calls, ==, 0);
     g_assert_true(purple_account_get_connected(harness.account));
 
-    const std::uint64_t closeRequest =
-        harness.control->requestIdForFunction(close::ID);
     pushAndWait(
         environment,
         harness.control,
-        {closeRequest, make_object<ok>()});
+        authorizationUpdate(make_object<authorizationStateClosing>()));
     harness.control->push(closedUpdate());
     g_assert_true(harness.control->waitForDestroyed());
     g_assert_true(environment.iterateUntil([&harness]() {
@@ -2143,7 +2175,7 @@ static void testConnectionLoggingOutReconnectsAfterPhysicalClose()
     g_assert_true(purple_account_get_disconnected(harness.account));
     g_assert_null(purple_account_get_connection(harness.account));
     g_assert_null(purple_account_get_error(harness.account));
-    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 1);
+    g_assert_cmpuint(harness.control->countFunction(close::ID), ==, 0);
 
     gpointer weakConnection = harness.connection;
     g_object_add_weak_pointer(
@@ -2275,6 +2307,9 @@ int main(int argc, char **argv)
     g_test_add_func(
         "/purple3/session/logging-out-reauthorizes",
         testLoggingOutRequestsReauthorizationAfterPhysicalClose);
+    g_test_add_func(
+        "/purple3/session/logging-out-cleanup-timeout",
+        testLoggingOutCleanupTimeoutFailsClosed);
     g_test_add_func(
         "/purple3/session/qr-user-cancel",
         testQrUserCancellationIsPreReadyFailure);
