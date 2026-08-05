@@ -5,11 +5,11 @@
 
 ### ⚠ BREAKING CHANGES
 
-* The distributed project is now GPL-3.0-or-later and the displayed plugin name is Unofficial Telegram.
+* The distributed project is now GPL-3.0-or-later and the displayed plugin name is Telegram.
 
 ### Features
 
-* relaunch as Unofficial Telegram for Purple ([e66c92d](https://github.com/adrighem/tdlib-purple/commit/e66c92dfd0baff43392281d041ee35122db32238))
+* relaunch as Telegram for Purple ([e66c92d](https://github.com/adrighem/tdlib-purple/commit/e66c92dfd0baff43392281d041ee35122db32238))
 
 ## [1.2.2](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v1.2.1...tdlib-purple-v1.2.2) (2026-08-02)
 

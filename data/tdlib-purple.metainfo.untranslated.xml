@@ -2,8 +2,8 @@
 <component type="addon">
     <id>tdlib_purple</id>
     <extends>pidgin.desktop</extends>
-    <name>Unofficial Telegram for Purple</name>
-    <summary>An unofficial Telegram protocol plugin for libpurple using TDLib</summary>
+    <name>Telegram for Purple</name>
+    <summary>Telegram client for libpurple using TDLib</summary>
     <url type="homepage">https://github.com/adrighem/tdlib-purple</url>
     <metadata_license>FSFAP</metadata_license>
     <project_license>GPL-3.0-or-later</project_license>

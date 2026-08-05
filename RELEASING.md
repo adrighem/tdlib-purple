@@ -25,14 +25,22 @@ This project uses release-please to manage release pull requests, changelog upda
 
 The maintained default application provider is part of the tracked source and
 does not depend on repository secrets. CI exercises the default path for both
-Purple adapters. The release workflow verifies the generated provider before
-packaging every binary and before creating the source archive.
+Purple adapters. The release workflow verifies the exact maintained identity
+before packaging every binary and before creating the source archive.
 
 A package without an embedded provider is a broken build and must never be
 published as a release asset.
 
-Never place private override values in workflow inputs, repository variables,
-command lines, caches, logs, or release notes.
+Project release jobs leave `TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS` at its
+default `OFF` value and use the maintained identity. A downstream release
+pipeline that owns a different identity should set the flag to `ON` and provide
+both custom file paths. Configuration then fails instead of silently falling
+back to the maintained project identity.
+
+This is identity enforcement, not secret handling. Telegram API IDs and hashes
+are public application identifiers embedded in release binaries. Pass custom
+values through the validated file-path options so pipeline configuration is
+unambiguous.
 
 ## Version Source
 

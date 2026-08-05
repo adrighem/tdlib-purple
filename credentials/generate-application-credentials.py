@@ -266,6 +266,7 @@ def generate_provider(
     source_root,
     output_path,
     state_output_path=None,
+    require_custom=False,
 ):
     output_path = Path(output_path)
     if api_id_path is not None:
@@ -327,6 +328,9 @@ def generate_provider(
 
     try:
         if api_id_path is None and api_hash_path is None:
+            if require_custom:
+                return fail("CREDENTIAL_PATHS_REQUIRED")
+
             try:
                 api_id = str(DEFAULT_API_ID)
                 api_hash = bytes(DEFAULT_API_HASH_BYTES).decode("ascii")
@@ -405,6 +409,7 @@ def _parse_arguments():
     parser.add_argument("--source-root", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--state-output")
+    parser.add_argument("--require-custom", action="store_true")
     return parser.parse_args()
 
 
@@ -417,6 +422,7 @@ def main():
             source_root=arguments.source_root,
             output_path=arguments.output,
             state_output_path=arguments.state_output,
+            require_custom=arguments.require_custom,
         )
     except Exception:
         error = "CREDENTIAL_OUTPUT_ERROR"

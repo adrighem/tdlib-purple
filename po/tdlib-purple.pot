@@ -304,12 +304,12 @@ msgid "Protocol"
 msgstr ""
 
 #: ../purple3/telegram-purple3-plugin.c:176
-msgid "Unofficial Telegram protocol plugin using TDLib"
+msgid "Telegram for Purple"
 msgstr ""
 
 #: ../purple3/telegram-purple3-plugin.c:177
 #: ../purple3/telegram-purple3-protocol.c:121
-msgid "Unofficial Telegram protocol support using TDLib"
+msgid "Telegram client for libpurple using TDLib"
 msgstr ""
 
 #. TRANSLATOR: Account settings, key (boolean)

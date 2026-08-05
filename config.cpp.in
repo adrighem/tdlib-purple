@@ -3,10 +3,10 @@ namespace config {
 #define PACKAGE_VERSION "${VERSION}"
 
 char pluginId[]      = "telegram-tdlib";
-char pluginName[]    = "Unofficial Telegram";
+char pluginName[]    = "Telegram";
 char versionString[] = PACKAGE_VERSION ", tdlib ${Td_VERSION}";
-char pluginSummary[] = "Unofficial Telegram for Purple";
-char pluginDesc[]    = "Unofficial Telegram protocol support using TDLib";
+char pluginSummary[] = "Telegram for Purple";
+char pluginDesc[]    = "Telegram client for libpurple using TDLib";
 char pluginAuthor[]  = "tdlib-purple contributors";
 char projectUrl[]    = "https://github.com/adrighem/tdlib-purple";
 

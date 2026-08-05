@@ -2,14 +2,14 @@
 <component type="addon">
     <id>tdlib_purple</id>
     <extends>pidgin.desktop</extends>
-    <name>Unofficial Telegram for Purple</name>
-    <name xml:lang="cs">Unofficial Telegram for Purple</name>
-    <name xml:lang="de">Unofficial Telegram for Purple</name>
-    <name xml:lang="fur">Unofficial Telegram for Purple</name>
-    <name xml:lang="ms">Unofficial Telegram for Purple</name>
-    <name xml:lang="pl">Unofficial Telegram for Purple</name>
-    <name xml:lang="sq">Unofficial Telegram for Purple</name>
-    <summary>An unofficial Telegram protocol plugin for libpurple using TDLib</summary>
+    <name>Telegram for Purple</name>
+    <name xml:lang="cs">Telegram for Purple</name>
+    <name xml:lang="de">Telegram for Purple</name>
+    <name xml:lang="fur">Telegram for Purple</name>
+    <name xml:lang="ms">Telegram for Purple</name>
+    <name xml:lang="pl">Telegram for Purple</name>
+    <name xml:lang="sq">Telegram for Purple</name>
+    <summary>Telegram client for libpurple using TDLib</summary>
     <summary xml:lang="cs">Zásuvný modul Telegram protokol pro libpurple používající tdlib</summary>
     <summary xml:lang="de">Telegram Protokoll-Plugin für libpurple, benutzt tdlib</summary>
     <summary xml:lang="fur">Plugin dal protocol Telegram par libpurple che al dopre tdlib</summary>

@@ -19,6 +19,8 @@ SOURCE_ROOT = CREDENTIALS_DIR.parent
 CMAKE_MODULE_PATH = (
     SOURCE_ROOT / "cmake" / "TelegramApplicationCredentials.cmake"
 )
+MAINTAINED_API_ID = 32769927
+MAINTAINED_API_HASH = "a0d6d0f8a610fb055903fd0e94d8eeb0"
 SUBPROCESS_ENV = {
     name: os.environ[name]
     for name in (
@@ -68,13 +70,16 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
         path.write_text(value, encoding="ascii")
         path.chmod(0o600)
 
-    def generate(self, api_id=None, api_hash=None, source_root=None):
+    def generate(
+            self, api_id=None, api_hash=None, source_root=None,
+            require_custom=False):
         return GENERATOR.generate_provider(
             api_id_path=api_id,
             api_hash_path=api_hash,
             source_root=source_root or self.root / "source",
             output_path=self.output,
             state_output_path=self.state_output,
+            require_custom=require_custom,
         )
 
     def assert_state(self, available):
@@ -96,7 +101,21 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
         self.assertIsNone(self.generate())
         output = self.output.read_text(encoding="ascii")
         self.assertIn("tdlib_purple_application_credentials_embedded", output)
+        encoded_hash = ", ".join(
+            str(byte) for byte in MAINTAINED_API_HASH.encode("ascii")
+        )
+        self.assertIn(f"\n    {MAINTAINED_API_ID},\n", output)
+        self.assertIn(f"\n    {{{encoded_hash}, 0}},\n", output)
         self.assert_state(True)
+
+    def test_required_custom_mode_rejects_missing_paths_and_scrubs_default(self):
+        self.assertIsNone(self.generate())
+
+        self.assertEqual(
+            self.generate(require_custom=True),
+            "CREDENTIAL_PATHS_REQUIRED",
+        )
+        self.assert_outputs_removed()
 
     def test_valid_pair_generates_private_provider_without_plaintext_hash(self):
         self.write_private(self.api_id, self.synthetic_id + "\n")
@@ -477,6 +496,52 @@ class ApplicationCredentialGeneratorTest(unittest.TestCase):
         self.assertNotIn(str(self.api_hash), result.stderr)
 
 
+@unittest.skipUnless(shutil.which("bash"), "Bash is required")
+class BuildAndInstallCredentialGuardTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_directory = tempfile.TemporaryDirectory()
+        self.root = Path(self.temp_directory.name)
+        self.script = self.root / "build_and_install.sh"
+        shutil.copy2(SOURCE_ROOT / "build_and_install.sh", self.script)
+        self.script.chmod(0o700)
+        self.sentinel = self.root / "td" / "build" / "sentinel"
+        self.sentinel.parent.mkdir(parents=True)
+        self.sentinel.write_text("preserve\n", encoding="ascii")
+
+    def tearDown(self):
+        self.temp_directory.cleanup()
+
+    def run_script(self, require_custom):
+        environment = dict(SUBPROCESS_ENV)
+        environment["TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS"] = (
+            require_custom
+        )
+        return subprocess.run(
+            (shutil.which("bash"), str(self.script)),
+            check=False,
+            capture_output=True,
+            env=environment,
+            text=True,
+        )
+
+    def test_required_custom_mode_fails_before_build_cleanup(self):
+        result = self.run_script("ON")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("TDLIB_PURPLE_API_ID_FILE", result.stderr)
+        self.assertTrue(self.sentinel.exists())
+
+    def test_invalid_custom_mode_fails_before_build_cleanup(self):
+        result = self.run_script("sometimes")
+
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(
+            "TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS must be ON or OFF.",
+            result.stderr,
+        )
+        self.assertTrue(self.sentinel.exists())
+
+
 @unittest.skipUnless(
     shutil.which("cmake") and BUILD_GENERATORS,
     "CMake and a supported build tool are required for build-graph tests",
@@ -636,7 +701,70 @@ class ApplicationCredentialCMakeGraphTest(unittest.TestCase):
                     generator=generator,
                 )
                 self.build_target()
-                self.run_probe()
+                self.run_probe(MAINTAINED_API_ID)
+
+    def test_required_custom_mode_fails_closed_and_cache_can_reset(self):
+        for generator in BUILD_GENERATORS:
+            with self.subTest(generator=generator):
+                self.select_generator(generator, "required-custom")
+                self.configure(with_paths=False, generator=generator)
+                self.build_target()
+                self.run_probe(MAINTAINED_API_ID)
+
+                failed_configure = self.configure(
+                    with_paths=False,
+                    generator=generator,
+                    extra_arguments=(
+                        "-DTDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS:BOOL=ON",
+                    ),
+                    check=False,
+                )
+                self.assertNotEqual(failed_configure.returncode, 0)
+                diagnostics = (
+                    failed_configure.stdout + failed_configure.stderr
+                )
+                self.assertIn("CREDENTIAL_PATHS_REQUIRED", diagnostics)
+                self.assert_provider_outputs_removed()
+
+                self.write_private(self.api_id, "123456")
+                self.write_private(self.api_hash, self.synthetic_hash)
+                self.configure(with_paths=True, generator=generator)
+                self.build_target()
+                self.run_probe("123456")
+
+                clear_paths = (
+                    "-DTDLIB_PURPLE_API_ID_FILE:FILEPATH=",
+                    "-DTDLIB_PURPLE_API_HASH_FILE:FILEPATH=",
+                )
+                failed_configure = self.configure(
+                    with_paths=False,
+                    generator=generator,
+                    extra_arguments=clear_paths,
+                    check=False,
+                )
+                self.assertNotEqual(failed_configure.returncode, 0)
+                diagnostics = (
+                    failed_configure.stdout + failed_configure.stderr
+                )
+                self.assertIn("CREDENTIAL_PATHS_REQUIRED", diagnostics)
+                self.assert_provider_outputs_removed()
+
+                self.configure(
+                    with_paths=False,
+                    generator=generator,
+                    extra_arguments=clear_paths + (
+                        "-DTDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS:BOOL=OFF",
+                    ),
+                )
+                self.build_target()
+                self.run_probe(MAINTAINED_API_ID)
+                entries = self.cache_entries()
+                self.assertEqual(entries["TDLIB_PURPLE_API_ID_FILE"], "")
+                self.assertEqual(entries["TDLIB_PURPLE_API_HASH_FILE"], "")
+                self.assertEqual(
+                    entries["TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS"],
+                    "OFF",
+                )
 
     def test_rotation_and_removal_rebuild_the_consumer(self):
         for generator in BUILD_GENERATORS:

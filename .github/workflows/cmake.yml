@@ -23,12 +23,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { CMAKE_FLAGS: "-DNoVoip=1", INSTALL_LOTTIE: "n", RUN_TESTS: "y" }
-          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoWebp=1", INSTALL_LOTTIE: "n", RUN_TESTS: "n" }
-          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoTranslations=1", INSTALL_LOTTIE: "n", RUN_TESTS: "y" }
-          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoLottie=1", INSTALL_LOTTIE: "n", RUN_TESTS: "n" }
-          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoBundledFmt=1 -DNoBundledLottie=1", INSTALL_FMT: "y", INSTALL_LOTTIE: "y", RUN_TESTS: "n" }
-          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoWebp=1 -DNoTranslations=1 -DNoBundledFmt=1 -DNoBundledLottie=1", INSTALL_FMT: "y", INSTALL_LOTTIE: "y", RUN_TESTS: "n" }
+          - { CMAKE_FLAGS: "-DNoVoip=1", INSTALL_LOTTIE: "n", RUN_TESTS: "y", USE_CUSTOM_CREDENTIALS: "y" }
+          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoWebp=1", INSTALL_LOTTIE: "n", RUN_TESTS: "n", USE_CUSTOM_CREDENTIALS: "n" }
+          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoTranslations=1", INSTALL_LOTTIE: "n", RUN_TESTS: "y", USE_CUSTOM_CREDENTIALS: "n" }
+          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoLottie=1", INSTALL_LOTTIE: "n", RUN_TESTS: "n", USE_CUSTOM_CREDENTIALS: "n" }
+          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoBundledFmt=1 -DNoBundledLottie=1", INSTALL_FMT: "y", INSTALL_LOTTIE: "y", RUN_TESTS: "n", USE_CUSTOM_CREDENTIALS: "n" }
+          - { CMAKE_FLAGS: "-DNoVoip=1 -DNoWebp=1 -DNoTranslations=1 -DNoBundledFmt=1 -DNoBundledLottie=1", INSTALL_FMT: "y", INSTALL_LOTTIE: "y", RUN_TESTS: "n", USE_CUSTOM_CREDENTIALS: "n" }
 
     steps:
       - uses: actions/checkout@v7
@@ -91,26 +91,67 @@ jobs:
       - name: Restore or create TDLib build
         run: ./.github/ga_build_td.sh "${TD_TAG}" "${TD_MARK}"
 
+      - name: Prepare synthetic custom application credentials
+        if: matrix.USE_CUSTOM_CREDENTIALS == 'y'
+        run: |
+          env -i PATH="${PATH}" RUNNER_TEMP="${RUNNER_TEMP}" sh -eu <<'EOF'
+          credential_dir="${RUNNER_TEMP}/tdlib-purple-custom-credentials"
+          umask 077
+          mkdir -m 700 "${credential_dir}"
+          printf '%s\n' '123456789' > "${credential_dir}/api-id"
+          printf '%s\n' '0123456789abcdef0123456789abcdef' \
+            > "${credential_dir}/api-hash"
+          chmod 600 "${credential_dir}/api-id" "${credential_dir}/api-hash"
+          EOF
+
       - name: Configure
         run: |
-          cmake -S . -B build -GNinja \
+          credential_flags=()
+          if [ "${{ matrix.USE_CUSTOM_CREDENTIALS }}" = "y" ]; then
+            credential_dir="${RUNNER_TEMP}/tdlib-purple-custom-credentials"
+            credential_flags=(
+              -DTDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS=ON
+              -DTDLIB_PURPLE_API_ID_FILE="${credential_dir}/api-id"
+              -DTDLIB_PURPLE_API_HASH_FILE="${credential_dir}/api-hash"
+            )
+          fi
+          env -i PATH="${PATH}" HOME="${HOME}" LANG=C LC_ALL=C \
+            cmake -S . -B build -GNinja \
             -DCMAKE_CXX_FLAGS="-DGLIB_DISABLE_DEPRECATION_WARNINGS -Werror -Wall -Wextra -Wformat=2 -Wformat-signedness -Wno-unused-parameter -Wno-parentheses" \
             -DTd_DIR=td_destdir/usr/local/lib/cmake/Td \
+            "${credential_flags[@]}" \
             ${{ matrix.CMAKE_FLAGS }}
 
       - name: Build plugin
-        run: cmake --build build --target telegram-tdlib
+        run: |
+          env -i PATH="${PATH}" HOME="${HOME}" LANG=C LC_ALL=C \
+            cmake --build build --target telegram-tdlib
 
       - name: Build tests
         if: matrix.RUN_TESTS == 'y'
-        run: cmake --build build --target tests
+        run: |
+          env -i PATH="${PATH}" HOME="${HOME}" LANG=C LC_ALL=C \
+            cmake --build build --target tests
 
       - name: Run tests
         if: matrix.RUN_TESTS == 'y'
-        run: cmake --build build --target run-tests
+        run: |
+          env -i PATH="${PATH}" HOME="${HOME}" LANG=C LC_ALL=C \
+            cmake --build build --target run-tests
 
       - name: Test installation
-        run: DESTDIR=tdprpl_destdir cmake --build build --target install
+        run: |
+          env -i PATH="${PATH}" HOME="${HOME}" LANG=C LC_ALL=C \
+            DESTDIR=tdprpl_destdir cmake --build build --target install
+
+      - name: Remove synthetic custom application credentials
+        if: always() && matrix.USE_CUSTOM_CREDENTIALS == 'y'
+        run: |
+          env -i PATH="${PATH}" RUNNER_TEMP="${RUNNER_TEMP}" sh -eu <<'EOF'
+          credential_dir="${RUNNER_TEMP}/tdlib-purple-custom-credentials"
+          rm -f "${credential_dir}/api-id" "${credential_dir}/api-hash"
+          rmdir "${credential_dir}"
+          EOF
 
   build_and_test_purple3:
     runs-on: ubuntu-24.04
@@ -273,10 +314,22 @@ jobs:
             HOME=/github/home USER=root LANG=C LC_ALL=C \
             GITHUB_WORKSPACE="${GITHUB_WORKSPACE}" \
             sh -eu <<'EOF'
+          credential_dir="$(mktemp -d /tmp/tdlib-purple3-credentials.XXXXXX)"
+          chmod 700 "${credential_dir}"
+          trap 'rm -f "${credential_dir}/api-id" \
+            "${credential_dir}/api-hash"; rmdir "${credential_dir}"' EXIT
+          umask 077
+          printf '%s\n' '123456789' > "${credential_dir}/api-id"
+          printf '%s\n' '0123456789abcdef0123456789abcdef' \
+            > "${credential_dir}/api-hash"
+          chmod 600 "${credential_dir}/api-id" "${credential_dir}/api-hash"
           meson devenv -C /tmp/pidgin-build \
             --workdir "${GITHUB_WORKSPACE}" \
             cmake -S purple3 -B /tmp/tdlib-purple3-debug -G Ninja \
               -DCMAKE_BUILD_TYPE=Debug \
+              -DTDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS=ON \
+              -DTDLIB_PURPLE_API_ID_FILE="${credential_dir}/api-id" \
+              -DTDLIB_PURPLE_API_HASH_FILE="${credential_dir}/api-hash" \
               -DTd_DIR="${GITHUB_WORKSPACE}/td_destdir/usr/local/lib/cmake/Td"
           meson devenv -C /tmp/pidgin-build \
             --workdir "${GITHUB_WORKSPACE}" \

@@ -1,5 +1,5 @@
 /*
- * tdlib-purple - Unofficial Telegram protocol plugin for libpurple
+ * tdlib-purple - Telegram client for libpurple using TDLib
  * Copyright (C) tdlib-purple contributors
  *
  * This program is free software; you can redistribute it and/or modify it
@@ -871,8 +871,7 @@ test_plugin_load_and_unload(void)
     protocol = purple_protocol_manager_find(protocol_manager,
                                             TELEGRAM_TDLIB_PLUGIN_ID);
     g_assert_true(PURPLE_IS_PROTOCOL(protocol));
-    g_assert_cmpstr(purple_protocol_get_name(protocol), ==,
-                    "Unofficial Telegram");
+    g_assert_cmpstr(purple_protocol_get_name(protocol), ==, "Telegram");
     g_assert_cmpstr(purple_protocol_get_icon_name(protocol), ==,
                     "im-telegram");
     g_assert_cmpstr(purple_protocol_get_icon_resource_path(protocol), ==,

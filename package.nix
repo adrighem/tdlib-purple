@@ -20,7 +20,7 @@ stdenv.mkDerivation {
 
   meta = with lib; {
     homepage = "https://github.com/adrighem/tdlib-purple";
-    description = "Unofficial Telegram plugin for libpurple using TDLib";
+    description = "Telegram client for libpurple using TDLib";
     license = licenses.gpl3Plus;
     maintainers = [ ];
     platforms = platforms.unix;

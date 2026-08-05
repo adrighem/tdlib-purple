@@ -15,16 +15,33 @@ if [ "${1:-}" = "uninstall" ]; then
   exit 0
 fi
 
-if [ -n "${TDLIB_PURPLE_API_ID_FILE:-}" ] || \
+require_custom_credentials="${TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS:-OFF}"
+case "${require_custom_credentials^^}" in
+  1|ON|TRUE|YES)
+    require_custom_credentials=ON
+    ;;
+  0|OFF|FALSE|NO)
+    require_custom_credentials=OFF
+    ;;
+  *)
+    echo "TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS must be ON or OFF." >&2
+    exit 2
+    ;;
+esac
+
+CREDENTIAL_FLAGS=(
+  "-DTDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS:BOOL=$require_custom_credentials"
+)
+
+if [ "$require_custom_credentials" = ON ] || \
+   [ -n "${TDLIB_PURPLE_API_ID_FILE:-}" ] || \
    [ -n "${TDLIB_PURPLE_API_HASH_FILE:-}" ]; then
   : "${TDLIB_PURPLE_API_ID_FILE:?set both credential file paths or neither}"
   : "${TDLIB_PURPLE_API_HASH_FILE:?set both credential file paths or neither}"
-  CREDENTIAL_FLAGS=(
+  CREDENTIAL_FLAGS+=(
     "-DTDLIB_PURPLE_API_ID_FILE=$TDLIB_PURPLE_API_ID_FILE"
     "-DTDLIB_PURPLE_API_HASH_FILE=$TDLIB_PURPLE_API_HASH_FILE"
   )
-else
-  CREDENTIAL_FLAGS=()
 fi
 
 git submodule update --init --recursive

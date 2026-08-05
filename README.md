@@ -1,7 +1,7 @@
-# Unofficial Telegram for Purple
+# Telegram for Purple
 
-An unofficial libpurple plugin for Telegram chats in Pidgin, Finch, BitlBee,
-and other Purple clients. Uses Telegram's API through TDLib.
+A Telegram client for libpurple using TDLib, available in Pidgin, Finch,
+BitlBee, and other Purple clients.
 
 [Download the latest release](https://github.com/adrighem/tdlib-purple/releases/latest)
 
@@ -12,7 +12,7 @@ and other Purple clients. Uses Telegram's API through TDLib.
 | Purple 2, including Pidgin 2 and BitlBee | The primary, usable plugin. |
 | Purple 3, including Pidgin 3 development builds | Developer preview. QR authorization reaches the ready state, but contacts and messages are not exposed yet. |
 
-The installed plugin and protocol are displayed as **Unofficial Telegram**.
+The installed plugin and protocol are displayed as **Telegram**.
 Package, library, and internal protocol identifiers retain the `tdlib-purple`
 and `telegram-tdlib` names so upgrades and existing accounts remain compatible.
 
@@ -33,15 +33,15 @@ and controls:
 
 Forum-enabled groups keep General on the existing room identity. Other topics
 appear as separate rooms, and sends, uploads, failures, and read receipts stay
-within the selected topic. Use an official Telegram client for topic
+within the selected topic. Use another Telegram client for topic
 administration and notification settings.
 
 Unsupported rich-text styling is shown as plain text instead of being discarded.
-Official packages are built without voice or video calling support.
+Project release packages are built without voice or video calling support.
 
 ## Install
 
-Official releases provide five credentialed Linux x86-64 packages and one
+Project releases provide five Linux x86-64 packages and one
 complete source archive:
 
 | System | Asset |
@@ -96,14 +96,14 @@ Fully quit and restart the Purple client after installing or upgrading the
 plugin. A client that was already running may continue using the old library
 until it exits.
 
-Official release packages and source releases use the maintained default
+Project release packages and source archives use the maintained default
 Telegram application provider. Users and downstream packagers do not need to
 obtain or enter an API ID or API hash.
 
 ## Add a Telegram account in Pidgin 2
 
 1. Open **Accounts > Manage Accounts > Add**.
-2. Select **Unofficial Telegram** as the protocol.
+2. Select **Telegram** as the protocol.
 3. Enter your phone number in international form, using digits and an optional
    leading `+`, with no spaces.
 4. Save and enable the account.
@@ -112,7 +112,7 @@ obtain or enter an API ID or API hash.
 
 Leave the API ID and API hash compatibility overrides in the Advanced tab
 empty. They exist only for older Purple 2 account configurations and are not
-needed with an official package.
+needed with a project release package.
 
 Telegram session data is stored inside your Purple profile. Treat that profile
 as private data and include it in backups only when the backup is protected.
@@ -125,7 +125,7 @@ This message means the installed plugin binary is broken or obsolete. It is not
 an account-password problem, and a credentialless build is never a supported
 variant.
 
-Install the latest official package, make sure an older copy of
+Install the latest project release package, make sure an older copy of
 `libtelegram-tdlib.so` is not taking precedence in another plugin directory,
 then fully quit and restart the client.
 
@@ -145,7 +145,7 @@ when prompted.
 ### Forum-topic limitations
 
 The plugin routes messages to existing topics but does not manage topic
-administration, notification, or mute settings. Use an official Telegram client
+administration, notification, or mute settings. Use another Telegram client
 for those operations.
 
 ## Building from source
@@ -163,13 +163,31 @@ therefore needs no credential arguments:
 ```
 
 Packagers that intentionally use a different Telegram application may override
-the defaults with two separate owner-only files outside the source tree:
+the defaults with two separate owner-only files outside the source tree. A
+downstream pipeline that must always use its custom identity should also enable
+fail-closed custom mode:
 
 ```sh
 TDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
 TDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash \
+TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS=ON \
   ./build_and_install.sh
 ```
+
+Direct CMake builds use the corresponding cache options:
+
+```sh
+cmake -S . -B build \
+  -DTDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS=ON \
+  -DTDLIB_PURPLE_API_ID_FILE=/path/to/api_id \
+  -DTDLIB_PURPLE_API_HASH_FILE=/path/to/api_hash
+```
+
+`TDLIB_PURPLE_REQUIRE_CUSTOM_CREDENTIALS=ON` makes configuration fail unless
+both custom files are supplied and valid. It prevents a downstream build from
+silently falling back to the maintained project identity. It enforces
+application identity; it is not a secrecy control. Telegram API IDs and hashes
+are public identifiers embedded in the resulting plugin.
 
 The API ID file must contain a positive decimal integer no greater than
 `2147483647`. The API hash file must contain exactly 32 hexadecimal characters.
@@ -177,11 +195,9 @@ On Unix, both files must be regular files owned by the build user, with no group
 or other permission bits. Mode `0600` is recommended.
 
 Both override paths must be supplied together. Only file paths enter CMake, and
-the private values must not appear in CMake arguments, logs, caches, test
-output, or bug reports. Generated source, objects, and plugin binaries contain
-extractable application credentials. Use a separate build directory and avoid
-compiler caches, remote compilation, and automatic compiler-crash uploads when
-building with a private override.
+the identifiers are embedded in generated source, objects, and plugin binaries.
+The file ownership and mode checks protect build input integrity and reduce
+accidental identity reuse; they do not make the identifiers secret.
 
 To uninstall a build installed by the convenience script:
 
@@ -201,11 +217,11 @@ smallest relevant log excerpt.
 
 Debug logs can contain names, phone numbers, chat titles, message text, and
 authorization data. Remove private data before sharing a log publicly. Never
-share API credentials, login codes, session files, cookies, or tokens.
+share login codes, session files, cookies, or tokens.
 
 ## License and acknowledgments
 
-Except where a file or directory states otherwise, Unofficial Telegram for
+Except where a file or directory states otherwise, Telegram for
 Purple is free software under the GNU General Public License, version 3 or (at
 your option) any later version. See [LICENSE](LICENSE).
 
@@ -218,5 +234,5 @@ This project is powered by TDLib and builds on earlier work by the
 [original tdlib-purple project](https://github.com/ars3niy/tdlib-purple) and
 [Ben Wiederhake's continuation](https://github.com/BenWiederhake/tdlib-purple).
 
-This is an independent, unofficial project and is not affiliated with or
-endorsed by Telegram.
+This project is independently maintained and is not affiliated with or endorsed
+by Telegram.
