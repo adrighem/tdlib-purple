@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.0.2](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v2.0.1...tdlib-purple-v2.0.2) (2026-08-05)
+
+
+### Bug Fixes
+
+* add QR onboarding and remote logout recovery ([5ac54a2](https://github.com/adrighem/tdlib-purple/commit/5ac54a249ac415c0b4c0b638718db3a9dd8206ad))
+* finish remote logout before reconnecting ([fb56694](https://github.com/adrighem/tdlib-purple/commit/fb566943195cdbb5bc2924905940806182591f68)), closes [#19](https://github.com/adrighem/tdlib-purple/issues/19)
+* harden Telegram application identity handling ([b1f526e](https://github.com/adrighem/tdlib-purple/commit/b1f526e5340546fc4afec0cf873e5a9286abeb2f)), closes [#8](https://github.com/adrighem/tdlib-purple/issues/8)
+* recover accounts after remote logout ([1c326be](https://github.com/adrighem/tdlib-purple/commit/1c326be248d8f383a43a8fa855b0a48e78d4e807)), closes [#19](https://github.com/adrighem/tdlib-purple/issues/19)
+
 ## [2.0.1](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v2.0.0...tdlib-purple-v2.0.1) (2026-08-03)
 
 
