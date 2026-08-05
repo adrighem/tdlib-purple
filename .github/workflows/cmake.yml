@@ -57,6 +57,7 @@ jobs:
             libopus-dev \
             libpng-dev \
             libpurple-dev \
+            libqrencode-dev \
             libwebp-dev \
             libwebrtc-audio-processing-dev \
             lzop \

@@ -20,6 +20,22 @@ using namespace td::td_api;
 namespace td {
 namespace td_api {
 
+void TestTransceiver::close(TdPollingBackend::CloseCallback callback)
+{
+    if (callback)
+        m_closeCallbacks.push_back(std::move(callback));
+}
+
+void TestTransceiver::completeClose(TdPollingBackend::CloseResult result)
+{
+    std::vector<TdPollingBackend::CloseCallback> callbacks;
+    callbacks.swap(m_closeCallbacks);
+    for (TdPollingBackend::CloseCallback &callback : callbacks) {
+        if (callback)
+            callback(result);
+    }
+}
+
 static void compare(const TextEntityType &actual, const TextEntityType &expected)
 {
     ASSERT_EQ(expected.get_id(), actual.get_id());

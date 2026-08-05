@@ -683,6 +683,18 @@ private:
         });
     }
 
+    void notifyReauthorizationRequired() noexcept
+    {
+        if (m_reauthorizationNotified)
+            return;
+        m_reauthorizationNotified = true;
+        notifyConnection([this](PurpleConnection *connection) {
+            if (m_callbacks.reauthorization_required) {
+                m_callbacks.reauthorization_required(connection);
+            }
+        });
+    }
+
     void notifyClosed(TelegramTdlibSessionCloseResult result) noexcept
     {
         notifyConnection([this, result](PurpleConnection *connection) {
@@ -760,6 +772,18 @@ private:
         }
     }
 
+    void requestReauthorization()
+    {
+        if (m_reauthorizationRequested || m_explicitClose ||
+            m_phase == Phase::Closing || m_phase == Phase::Settled) {
+            return;
+        }
+        m_reauthorizationRequested = true;
+        if (m_controller)
+            m_controller->shutdown();
+        beginClose();
+    }
+
     void backendFailed()
     {
         if (m_phase == Phase::Connecting) {
@@ -829,6 +853,16 @@ private:
         case TdPollingBackend::CloseResult::Failed:
             m_closeResult = TELEGRAM_TDLIB_SESSION_CLOSE_FAILED;
             break;
+        }
+        if (m_reauthorizationRequested) {
+            if (result == TdPollingBackend::CloseResult::Closed) {
+                notifyReauthorizationRequired();
+            } else if (m_connectOutcomeSelected) {
+                notifyRuntimeFailure();
+            } else {
+                notifyConnectFailure(
+                    TELEGRAM_TDLIB_SESSION_FAILURE_BACKEND);
+            }
         }
         if (m_explicitClose && !m_closeNotified) {
             m_closeNotified = true;
@@ -942,14 +976,19 @@ private:
         beginClose();
     }
 
-    void onAuthorizationFailed(const TdAuthFailure &) override
+    void onAuthorizationFailed(const TdAuthFailure &failure) override
     {
+        if (failure.type == TdAuthFailureType::TerminalState &&
+            failure.state == TdAuthState::LoggingOut) {
+            requestReauthorization();
+            return;
+        }
         authorizationFailed();
     }
 
     void onLoggingOut() override
     {
-        authorizationFailed();
+        requestReauthorization();
     }
 
     void onClosing() override
@@ -982,6 +1021,8 @@ private:
     Phase m_phase = Phase::New;
     bool m_connectOutcomeSelected = false;
     bool m_runtimeFailureNotified = false;
+    bool m_reauthorizationRequested = false;
+    bool m_reauthorizationNotified = false;
     bool m_explicitClose = false;
     bool m_closeStarted = false;
     bool m_closeNotified = false;

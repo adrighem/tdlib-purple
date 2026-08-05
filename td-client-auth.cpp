@@ -5,6 +5,7 @@
 #include "format.h"
 
 #include <utility>
+#include <set>
 
 namespace {
 
@@ -12,6 +13,82 @@ struct ReconnectContext {
     std::string accountName;
     std::string protocolId;
 };
+
+struct ControlledDisconnectContext {
+    PurpleAccount *account;
+    PurpleConnection *connection;
+    std::string accountName;
+    std::string protocolId;
+};
+
+std::set<PurpleAccount *> &reauthorizationProbes()
+{
+    static std::set<PurpleAccount *> probes;
+    return probes;
+}
+
+static gboolean controlledDisconnectIdle(gpointer data)
+{
+    ControlledDisconnectContext *context =
+        static_cast<ControlledDisconnectContext *>(data);
+    if (!context)
+        return FALSE;
+
+    PurpleAccount *account = purple_accounts_find(
+        context->accountName.c_str(), context->protocolId.c_str());
+    if (account == context->account &&
+        purple_account_get_connection(account) == context->connection &&
+        !purple_account_is_disconnected(account)) {
+        purple_account_disconnect(account);
+    }
+    return FALSE;
+}
+
+bool scheduleControlledDisconnect(
+    PurpleAccount *account,
+    PurpleConnection *connection) noexcept
+{
+    const char *accountName = account
+        ? purple_account_get_username(account)
+        : nullptr;
+    const char *protocolId = account
+        ? purple_account_get_protocol_id(account)
+        : nullptr;
+    if (!account || !connection || !accountName || !protocolId)
+        return false;
+
+    ControlledDisconnectContext *context = nullptr;
+    try {
+        context = new ControlledDisconnectContext{
+            account, connection, accountName, protocolId};
+    } catch (...) {
+        return false;
+    }
+    return moduleActivityAddIdle(
+               controlledDisconnectIdle,
+               context,
+               [](gpointer data) {
+                   delete static_cast<ControlledDisconnectContext *>(data);
+               }) != 0;
+}
+
+void notifyAndDisconnect(
+    PurpleAccount *account,
+    PurpleConnection *connection,
+    const char *message) noexcept
+{
+    const bool scheduled = scheduleControlledDisconnect(account, connection);
+    purple_notify_error(
+        account,
+        _("Telegram authorization required"),
+        message ? message : _("Telegram authorization could not be restarted safely"),
+        nullptr);
+    if (!scheduled && account &&
+        purple_account_get_connection(account) == connection &&
+        !purple_account_is_disconnected(account)) {
+        purple_account_disconnect(account);
+    }
+}
 
 static gboolean restartOnboardingIdle(gpointer data)
 {
@@ -537,10 +614,22 @@ void PurpleTdClient::onQrLinkChanged(
     TdAuthPromptId prompt,
     const std::string &link)
 {
-    (void)link;
     m_lastAuthPromptType = TdAuthPromptType::QrCode;
+    if (!m_qrPresenter) {
+        m_authController->failPrompt(
+            prompt, TdAuthPresentationFailure::Unsupported);
+        return;
+    }
+
+    const Purple2QrPresentationResult result =
+        m_qrPresenter->show(prompt, link);
+    if (result == Purple2QrPresentationResult::Presented)
+        return;
     m_authController->failPrompt(
-        prompt, TdAuthPresentationFailure::Unsupported);
+        prompt,
+        result == Purple2QrPresentationResult::Unsupported
+            ? TdAuthPresentationFailure::Unsupported
+            : TdAuthPresentationFailure::Failed);
 }
 
 void PurpleTdClient::onRegistrationRequired(
@@ -570,6 +659,8 @@ void PurpleTdClient::onPromptClosed(
     TdAuthPromptType,
     TdAuthPromptCloseReason)
 {
+    if (m_qrPresenter)
+        m_qrPresenter->closePrompt(prompt);
     closeAuthPrompt(prompt);
 }
 
@@ -580,6 +671,11 @@ void PurpleTdClient::onRequestFailed(
         // Purple 2 takes its fixed phone number from the account identity, so
         // redisplaying the same automatic value would only create a loop.
         m_authController->shutdown();
+        if (m_reauthorizationProbe) {
+            failReauthorization(
+                _("Telegram rejected authorization for the recovery attempt"));
+            return;
+        }
         purple_connection_error(
             purple_account_get_connection(m_account),
             failure.errorCode == 0
@@ -614,6 +710,8 @@ void PurpleTdClient::onRequestFailed(
 
 void PurpleTdClient::onAuthorizationReady()
 {
+    cancelPendingReauthorization(m_account);
+    m_reauthorizationProbe = false;
     purple_debug_misc(
         config::pluginId,
         "Authorization state update: ready\n");
@@ -622,6 +720,11 @@ void PurpleTdClient::onAuthorizationReady()
 
 void PurpleTdClient::onAuthorizationCancelled()
 {
+    if (m_reauthorizationProbe) {
+        failReauthorization(_("Telegram authorization was cancelled"));
+        return;
+    }
+
     const char *message = _("Authentication was cancelled");
     switch (m_lastAuthPromptType) {
     case TdAuthPromptType::EmailAddress:
@@ -651,6 +754,17 @@ void PurpleTdClient::onAuthorizationCancelled()
 
 void PurpleTdClient::onAuthorizationFailed(const TdAuthFailure &failure)
 {
+    if (failure.type == TdAuthFailureType::TerminalState &&
+        failure.state == TdAuthState::LoggingOut) {
+        beginReauthorization();
+        return;
+    }
+
+    if (m_reauthorizationProbe) {
+        failReauthorization(
+            _("Telegram authorization could not be restarted safely"));
+        return;
+    }
     if (failure.type == TdAuthFailureType::RequestRejected &&
         failure.errorCode == 400 &&
         (failure.errorMessage.find("api_id") != std::string::npos ||
@@ -693,7 +807,8 @@ void PurpleTdClient::onAuthorizationFailed(const TdAuthFailure &failure)
         break;
     case TdAuthFailureType::PresentationUnavailable:
         if (m_lastAuthPromptType == TdAuthPromptType::QrCode) {
-            message = _("QR authentication is not supported by Purple 2");
+            message = _(
+                "QR authentication requires a graphical libpurple client");
         } else if (
             m_lastAuthPromptType == TdAuthPromptType::PremiumPurchase) {
             message = _(
@@ -704,7 +819,9 @@ void PurpleTdClient::onAuthorizationFailed(const TdAuthFailure &failure)
         }
         break;
     case TdAuthFailureType::PresentationFailed:
-        message = _("Required authentication input was empty");
+        message = m_lastAuthPromptType == TdAuthPromptType::QrCode
+            ? _("The QR authentication code could not be displayed")
+            : _("Required authentication input was empty");
         break;
     case TdAuthFailureType::TerminalState:
         message = _("Telegram authorization ended before login completed");
@@ -729,17 +846,220 @@ void PurpleTdClient::reportAuthorizationEnded()
 
 void PurpleTdClient::onLoggingOut()
 {
-    reportAuthorizationEnded();
+    beginReauthorization();
 }
 
 void PurpleTdClient::onClosing()
 {
+    if (m_reauthorizationPending)
+        return;
+    if (m_reauthorizationProbe) {
+        failReauthorization(
+            _("Telegram authorization could not be restarted safely"));
+        return;
+    }
     reportAuthorizationEnded();
 }
 
 void PurpleTdClient::onClosed()
 {
+    if (m_reauthorizationPending)
+        return;
+    if (m_reauthorizationProbe) {
+        failReauthorization(
+            _("Telegram authorization could not be restarted safely"));
+        return;
+    }
     reportAuthorizationEnded();
+}
+
+bool PurpleTdClient::hasPendingReauthorization(
+    PurpleAccount *account) noexcept
+{
+    return account && reauthorizationProbes().count(account) != 0;
+}
+
+void PurpleTdClient::cancelPendingReauthorization(
+    PurpleAccount *account) noexcept
+{
+    if (account)
+        reauthorizationProbes().erase(account);
+}
+
+bool PurpleTdClient::failPendingReauthorization(
+    PurpleAccount *account,
+    const char *message) noexcept
+{
+    if (!hasPendingReauthorization(account))
+        return false;
+    cancelPendingReauthorization(account);
+    notifyAndDisconnect(
+        account,
+        account ? purple_account_get_connection(account) : nullptr,
+        message);
+    return true;
+}
+
+void PurpleTdClient::accountConnectionClosing() noexcept
+{
+    if (!m_preserveReauthorizationProbe)
+        cancelPendingReauthorization(m_account);
+}
+
+void PurpleTdClient::failReauthorization(const char *message) noexcept
+{
+    if (m_authLifecycleErrorReported)
+        return;
+    m_authLifecycleErrorReported = true;
+    m_reauthorizationPending = false;
+    m_reauthorizationProbe = false;
+    m_preserveReauthorizationProbe = false;
+    cancelPendingReauthorization(m_account);
+    notifyAndDisconnect(
+        m_account,
+        purple_account_get_connection(m_account),
+        message);
+}
+
+void PurpleTdClient::beginReauthorization()
+{
+    if (m_reauthorizationPending)
+        return;
+    m_reauthorizationPending = true;
+
+    if (!m_reauthorizationProbe) {
+        bool inserted = false;
+        try {
+            inserted = reauthorizationProbes().insert(m_account).second;
+        } catch (...) {
+            m_reauthorizationPending = false;
+            failReauthorization(
+                _("Telegram authorization could not be restarted safely"));
+            return;
+        }
+        if (!inserted) {
+            failReauthorization(
+                _("Telegram requested authorization again repeatedly"));
+            return;
+        }
+    }
+
+    if (m_authController)
+        m_authController->shutdown();
+    if (m_qrPresenter)
+        m_qrPresenter->closeAll();
+    closeAuthPrompt();
+
+    const std::weak_ptr<LifetimeState> lifetime = m_lifetime;
+    m_transceiver.shutdown(
+        [this, lifetime](TdPollingBackend::CloseResult result) {
+            const std::shared_ptr<LifetimeState> current = lifetime.lock();
+            if (!current || !current->alive)
+                return;
+            reauthorizationBackendClosed(result);
+        });
+}
+
+void PurpleTdClient::reauthorizationBackendClosed(
+    TdPollingBackend::CloseResult result)
+{
+    if (!m_reauthorizationPending)
+        return;
+    if (result != TdPollingBackend::CloseResult::Closed ||
+        m_reauthorizationProbe) {
+        failReauthorization(
+            result == TdPollingBackend::CloseResult::Closed
+                ? _("Telegram requested authorization again repeatedly")
+                : _("Telegram authorization could not be restarted safely"));
+        return;
+    }
+
+    PurpleConnection *connection =
+        purple_account_get_connection(m_account);
+    const char *accountName = purple_account_get_username(m_account);
+    const char *protocolId = purple_account_get_protocol_id(m_account);
+    if (!connection || !accountName || !protocolId) {
+        failReauthorization(
+            _("Telegram authorization could not be restarted safely"));
+        return;
+    }
+
+    ReauthorizationContext *context = nullptr;
+    try {
+        context = new ReauthorizationContext{
+            this,
+            m_lifetime,
+            m_account,
+            connection,
+            accountName,
+            protocolId,
+        };
+    } catch (...) {
+    }
+    if (!context) {
+        failReauthorization(
+            _("Telegram authorization could not be restarted safely"));
+        return;
+    }
+    if (moduleActivityAddIdle(
+            reconnectForReauthorization,
+            context,
+            [](gpointer data) {
+                delete static_cast<ReauthorizationContext *>(data);
+            }) == 0) {
+        failReauthorization(
+            _("Telegram authorization could not be restarted safely"));
+    }
+}
+
+gboolean PurpleTdClient::reconnectForReauthorization(gpointer data)
+{
+    ReauthorizationContext *context =
+        static_cast<ReauthorizationContext *>(data);
+    if (!context)
+        return FALSE;
+
+    PurpleAccount *account = purple_accounts_find(
+        context->accountName.c_str(), context->protocolId.c_str());
+    if (account != context->account ||
+        !hasPendingReauthorization(context->account)) {
+        cancelPendingReauthorization(context->account);
+        return FALSE;
+    }
+
+    const char *ui = purple_core_get_ui();
+    if (!ui || !purple_account_get_enabled(account, ui)) {
+        cancelPendingReauthorization(account);
+        return FALSE;
+    }
+
+    if (!context->disconnectStarted) {
+        const std::shared_ptr<LifetimeState> lifetime =
+            context->lifetime.lock();
+        if (!lifetime || !lifetime->alive || !context->client ||
+            purple_account_get_connection(account) != context->connection ||
+            purple_connection_get_protocol_data(context->connection) !=
+                context->client) {
+            cancelPendingReauthorization(account);
+            return FALSE;
+        }
+
+        PurpleTdClient *client = context->client;
+        context->client = nullptr;
+        context->disconnectStarted = true;
+        client->m_preserveReauthorizationProbe = true;
+        purple_account_disconnect(account);
+        return TRUE;
+    }
+
+    // Disconnect callbacks may disable/remove the account or start another
+    // connection. Re-resolve on a later main-loop turn before reconnecting.
+    if (!purple_account_is_disconnected(account)) {
+        cancelPendingReauthorization(account);
+        return FALSE;
+    }
+    purple_account_connect(account);
+    return FALSE;
 }
 
 void PurpleTdClient::notifyAuthError(

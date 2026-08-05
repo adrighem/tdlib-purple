@@ -11,6 +11,7 @@
 enum class TdAuthMode : std::uint8_t {
     PhoneNumber,
     QrCode,
+    QrCodeWithPhoneFallback,
 };
 
 // Immutable, Purple-neutral snapshot used to initialize one TDLib

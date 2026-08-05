@@ -426,6 +426,11 @@ static void tgprpl_login (PurpleAccount *acct)
     PurpleConnection *gc = purple_account_get_connection(acct);
     TdlibPurpleApplicationCredentials applicationCredentials = {};
     if (!resolveApplicationCredentials(acct, &applicationCredentials)) {
+        if (PurpleTdClient::failPendingReauthorization(
+                acct,
+                _("Telegram application credentials are missing or invalid"))) {
+            return;
+        }
         purple_connection_error(
             gc,
             _("Telegram application credentials are missing or invalid"));
@@ -437,6 +442,10 @@ static void tgprpl_login (PurpleAccount *acct)
         tdClient = new PurpleTdClient(
             acct, g_testBackend, applicationCredentials);
     } catch (...) {
+        if (PurpleTdClient::failPendingReauthorization(
+                acct, _("Telegram session could not be started"))) {
+            return;
+        }
         purple_connection_error(
             gc, _("Telegram session could not be started"));
         return;
@@ -456,7 +465,11 @@ static void tgprpl_login (PurpleAccount *acct)
 static void tgprpl_close (PurpleConnection *gc)
 {
     purple_signals_disconnect_by_handle(purple_connection_get_account(gc));
-    delete static_cast<PurpleTdClient *>(purple_connection_get_protocol_data(gc));
+    PurpleTdClient *client = static_cast<PurpleTdClient *>(
+        purple_connection_get_protocol_data(gc));
+    if (client)
+        client->accountConnectionClosing();
+    delete client;
     purple_connection_set_protocol_data(gc, NULL);
 }
 

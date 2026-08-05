@@ -35,6 +35,139 @@ static std::map<PurpleCmdId, std::string> g_registeredCommands;
 static PurpleCmdId g_nextCommandId = 1;
 static unsigned g_commandRegistrationFailureCountdown = 0;
 
+struct IconRequest {
+    void *handle = nullptr;
+    void *userData = nullptr;
+    PurpleRequestActionCb callback = nullptr;
+    std::vector<unsigned char> icon;
+    bool closed = false;
+};
+
+static std::vector<IconRequest> g_iconRequests;
+static bool g_requestUiOperations = false;
+static bool g_requestIconActions = false;
+static bool g_requestCloseRequests = false;
+static bool g_requestIconHandleAvailable = true;
+
+static void *requestActionWithIconCapability(
+    const char *, const char *, const char *, int,
+    PurpleAccount *, const char *, PurpleConversation *,
+    gconstpointer, gsize, void *, size_t, va_list)
+{
+    return nullptr;
+}
+
+static void closeRequestCapability(PurpleRequestType, void *)
+{
+}
+
+static PurpleRequestUiOps g_requestUiOps = {};
+static bool g_simulateAccountLifecycle = false;
+static unsigned g_accountDisconnectCount = 0;
+static unsigned g_accountConnectCount = 0;
+static bool g_disableAccountDuringDisconnect = false;
+static std::map<PurpleAccount *, bool> g_accountEnabled;
+static std::string g_uiName = "pidgin";
+
+void resetPurpleAccountLifecycle()
+{
+    g_simulateAccountLifecycle = false;
+    g_accountDisconnectCount = 0;
+    g_accountConnectCount = 0;
+    g_disableAccountDuringDisconnect = false;
+}
+
+void setPurpleAccountLifecycleSimulation(bool enabled)
+{
+    g_simulateAccountLifecycle = enabled;
+}
+
+void setPurpleAccountEnabled(PurpleAccount *account, bool enabled)
+{
+    g_accountEnabled[account] = enabled;
+}
+
+void setPurpleAccountDisableDuringDisconnect(bool enabled)
+{
+    g_disableAccountDuringDisconnect = enabled;
+}
+
+unsigned purpleAccountDisconnectCount()
+{
+    return g_accountDisconnectCount;
+}
+
+unsigned purpleAccountConnectCount()
+{
+    return g_accountConnectCount;
+}
+
+void setPurpleRequestUiCapabilities(
+    bool uiOperations,
+    bool iconActions,
+    bool closeRequests)
+{
+    g_requestUiOperations = uiOperations;
+    g_requestIconActions = iconActions;
+    g_requestCloseRequests = closeRequests;
+    g_requestUiOps.request_action_with_icon = iconActions
+        ? requestActionWithIconCapability
+        : nullptr;
+    g_requestUiOps.close_request = closeRequests
+        ? closeRequestCapability
+        : nullptr;
+}
+
+void setPurpleRequestIconHandleAvailable(bool available)
+{
+    g_requestIconHandleAvailable = available;
+}
+
+void resetPurpleRequestUi()
+{
+    for (IconRequest &request : g_iconRequests)
+        std::fill(request.icon.begin(), request.icon.end(), 0);
+    g_iconRequests.clear();
+    g_requestIconHandleAvailable = true;
+    setPurpleRequestUiCapabilities(false, false, false);
+}
+
+std::size_t purpleRequestIconCount()
+{
+    return g_iconRequests.size();
+}
+
+std::size_t purpleRequestIconSize(std::size_t index)
+{
+    return index < g_iconRequests.size()
+        ? g_iconRequests[index].icon.size()
+        : 0;
+}
+
+std::vector<unsigned char> purpleRequestIconCopy(std::size_t index)
+{
+    return index < g_iconRequests.size()
+        ? g_iconRequests[index].icon
+        : std::vector<unsigned char>();
+}
+
+bool purpleRequestIconClosed(std::size_t index)
+{
+    return index < g_iconRequests.size() && g_iconRequests[index].closed;
+}
+
+void invokePurpleRequestIconAction(std::size_t index)
+{
+    ASSERT_LT(index, g_iconRequests.size());
+    if (index >= g_iconRequests.size())
+        return;
+    PurpleRequestActionCb callback = g_iconRequests[index].callback;
+    void *userData = g_iconRequests[index].userData;
+    ASSERT_NE(callback, nullptr);
+    if (callback)
+        callback(userData, 0);
+}
+
 std::size_t registeredPurpleCommandCount()
 {
     return g_registeredCommands.size();
@@ -125,6 +258,7 @@ PurpleAccount *purple_account_new(const char *username, const char *protocol_id)
 
     g_accounts.emplace_back();
     g_accounts.back().account = account;
+    g_accountEnabled[account] = true;
 
     return account;
 }
@@ -142,11 +276,38 @@ PurpleBlistNode root = {
 
 void purple_account_disconnect(PurpleAccount *account)
 {
+    ++g_accountDisconnectCount;
     EVENT(ConnectionErrorEvent, account->gc, "mock_disconnect");
+    if (g_simulateAccountLifecycle && account->gc && g_plugin &&
+        g_plugin->info && g_plugin->info->extra_info) {
+        PurplePluginProtocolInfo *protocol =
+            static_cast<PurplePluginProtocolInfo *>(
+                g_plugin->info->extra_info);
+        if (protocol->close)
+            protocol->close(account->gc);
+        account->gc->state = PURPLE_DISCONNECTED;
+        if (g_disableAccountDuringDisconnect)
+            g_accountEnabled[account] = false;
+    }
+}
+
+gboolean purple_account_is_disconnected(const PurpleAccount *account)
+{
+    return !account || !account->gc ||
+        account->gc->state == PURPLE_DISCONNECTED;
 }
 
 void purple_account_connect(PurpleAccount *account)
 {
+    ++g_accountConnectCount;
+    if (g_simulateAccountLifecycle && account->gc && g_plugin &&
+        g_plugin->info && g_plugin->info->extra_info) {
+        PurplePluginProtocolInfo *protocol =
+            static_cast<PurplePluginProtocolInfo *>(
+                g_plugin->info->extra_info);
+        if (protocol->login)
+            protocol->login(account);
+    }
 }
 
 void purple_account_destroy(PurpleAccount *account)
@@ -164,6 +325,7 @@ void purple_account_destroy(PurpleAccount *account)
     while (!it->chats.empty())
         purple_blist_remove_chat(it->chats.back());
     g_accounts.erase(it);
+    g_accountEnabled.erase(account);
     if (g_accounts.empty()) {
         g_list_free(g_chatConversations);
         g_chatConversations = nullptr;
@@ -176,6 +338,17 @@ void purple_account_destroy(PurpleAccount *account)
 const char *purple_account_get_protocol_id(const PurpleAccount *account)
 {
     return "";
+}
+
+gboolean purple_account_get_enabled(
+    const PurpleAccount *account,
+    const char *)
+{
+    const auto enabled = g_accountEnabled.find(
+        const_cast<PurpleAccount *>(account));
+    return enabled == g_accountEnabled.end() || enabled->second
+        ? TRUE
+        : FALSE;
 }
 
 PurpleAccount *purple_accounts_find(const char *name, const char *protocol)
@@ -910,6 +1083,64 @@ void *purple_request_action(void *handle, const char *title, const char *primary
     return NULL;
 }
 
+void *purple_request_action_with_icon(
+    void *handle,
+    const char *title,
+    const char *primary,
+    const char *secondary,
+    int default_action,
+    PurpleAccount *account,
+    const char *who,
+    PurpleConversation *conv,
+    gconstpointer icon_data,
+    gsize icon_size,
+    void *user_data,
+    size_t action_count,
+    ...)
+{
+    (void)default_action;
+    std::vector<std::string> buttons;
+    std::vector<PurpleRequestActionCb> callbacks;
+    va_list arguments;
+    va_start(arguments, action_count);
+    for (size_t index = 0; index < action_count; ++index) {
+        const char *button = va_arg(arguments, const char *);
+        PurpleRequestActionCb callback =
+            va_arg(arguments, PurpleRequestActionCb);
+        buttons.emplace_back(button ? button : "");
+        callbacks.push_back(callback);
+    }
+    va_end(arguments);
+
+    EVENT(
+        RequestActionEvent,
+        handle,
+        title,
+        primary,
+        secondary,
+        account,
+        who,
+        conv,
+        user_data,
+        buttons,
+        callbacks);
+
+    IconRequest request;
+    request.handle = reinterpret_cast<void *>(
+        static_cast<uintptr_t>(0x1000 + g_iconRequests.size()));
+    request.userData = user_data;
+    request.callback = callbacks.empty() ? nullptr : callbacks.front();
+    if (icon_data && icon_size > 0) {
+        const unsigned char *bytes =
+            static_cast<const unsigned char *>(icon_data);
+        request.icon.assign(bytes, bytes + icon_size);
+    }
+    g_iconRequests.push_back(std::move(request));
+    return g_requestIconHandleAvailable
+        ? g_iconRequests.back().handle
+        : nullptr;
+}
+
 void *purple_request_input(void *handle, const char *title, const char *primary,
 	const char *secondary, const char *default_value, gboolean multiline,
 	gboolean masked, gchar *hint,
@@ -928,6 +1159,23 @@ void *purple_request_input(void *handle, const char *title, const char *primary,
 void purple_request_close_with_handle(void *handle)
 {
     g_purpleEvents.closeInputRequests(handle);
+}
+
+void purple_request_close(PurpleRequestType type, void *uihandle)
+{
+    if (type != PURPLE_REQUEST_ACTION || !uihandle)
+        return;
+    for (IconRequest &request : g_iconRequests) {
+        if (request.handle == uihandle) {
+            request.closed = true;
+            return;
+        }
+    }
+}
+
+PurpleRequestUiOps *purple_request_get_ui_ops(void)
+{
+    return g_requestUiOperations ? &g_requestUiOps : nullptr;
 }
 
 PurpleRoomlist *purple_roomlist_new(PurpleAccount *account)
@@ -1979,6 +2227,11 @@ GHashTable *purple_core_get_ui_info()
     return uiInfo;
 }
 
+const char *purple_core_get_ui(void)
+{
+    return g_uiName.c_str();
+}
+
 void setUiName(const char *name)
 {
     if (!uiInfo)
@@ -1986,6 +2239,7 @@ void setUiName(const char *name)
 
     static char nameKey[] = "name";
     g_hash_table_insert(uiInfo, nameKey, const_cast<char *>(name));
+    g_uiName = name ? name : "";
 
 }
 

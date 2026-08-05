@@ -129,6 +129,10 @@ public:
 
     GMainContext *transportContext() override;
     GSource *createTimeoutSource(unsigned interval) override;
+    void close(TdPollingBackend::CloseCallback callback) override;
+    void completeClose(
+        TdPollingBackend::CloseResult result =
+            TdPollingBackend::CloseResult::Closed);
 
     const std::string &getInputPhotoPath(unsigned index) const { return m_inputPhotoPaths.at(index); }
     std::string addInputPhoto(const void *data, size_t size);
@@ -156,6 +160,7 @@ private:
     std::vector<std::string>        m_inputPhotoPaths;
     GMainContext                   *m_transportContext;
     std::vector<GSource *>          m_timeoutSources;
+    std::vector<TdPollingBackend::CloseCallback> m_closeCallbacks;
 };
 
 // Functions in td::td_api namespace

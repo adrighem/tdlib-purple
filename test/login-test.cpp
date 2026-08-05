@@ -1,5 +1,6 @@
 #include "fixture.h"
 #include "application-credentials-test-backend.h"
+#include "libpurple-mock.h"
 #include "purple-info.h"
 #include "td-client.h"
 #include "tdlib-purple.h"
@@ -759,7 +760,7 @@ TEST_F(LoginTest, UnsupportedQrAuthenticationFailsExplicitly)
 
     prpl.verifyEvents(ConnectionErrorEvent(
         connection,
-        "QR authentication is not supported by Purple 2"));
+        "QR authentication requires a graphical libpurple client"));
     tgl.verifyNoRequests();
 }
 
@@ -775,6 +776,162 @@ TEST_F(LoginTest, TerminalAuthorizationStateFailsBeforeReady)
     tgl.update(make_object<updateAuthorizationState>(
         make_object<authorizationStateClosed>()));
     prpl.verifyNoEvents();
+}
+
+TEST_F(LoginTest, LoggingOutReconnectsOnceAfterPhysicalClose)
+{
+    startAuthorization();
+    setPurpleAccountLifecycleSimulation(true);
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateReady>()));
+    prpl.verifyEvents(
+        ConnectionSetStateEvent(connection, PURPLE_CONNECTED));
+    tgl.verifyRequest(getContacts());
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateLoggingOut>()));
+    EXPECT_EQ(purpleAccountDisconnectCount(), 0U);
+    EXPECT_EQ(purpleAccountConnectCount(), 0U);
+    prpl.verifyNoEvents();
+
+    tgl.completeClose();
+    EXPECT_EQ(purpleAccountDisconnectCount(), 0U);
+    g_main_context_iteration(nullptr, FALSE);
+
+    EXPECT_EQ(purpleAccountDisconnectCount(), 1U);
+    EXPECT_EQ(purpleAccountConnectCount(), 0U);
+    prpl.verifyEvents(
+        ConnectionErrorEvent(connection, "mock_disconnect"));
+    g_main_context_iteration(nullptr, FALSE);
+
+    EXPECT_EQ(purpleAccountConnectCount(), 1U);
+    prpl.verifyEvents(
+        ConnectionSetStateEvent(connection, PURPLE_CONNECTING),
+        ConnectionUpdateProgressEvent(connection, 1, 2));
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateWaitPhoneNumber>()));
+    tgl.verifyRequest(setAuthenticationPhoneNumber(
+        "+" + selfPhoneNumber, nullptr));
+}
+
+TEST_F(LoginTest, ReauthorizationProbeDoesNotLoop)
+{
+    startAuthorization();
+    setPurpleAccountLifecycleSimulation(true);
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateLoggingOut>()));
+    prpl.verifyNoEvents();
+    tgl.completeClose();
+    g_main_context_iteration(nullptr, FALSE);
+    prpl.verifyEvents(
+        ConnectionErrorEvent(connection, "mock_disconnect"));
+    g_main_context_iteration(nullptr, FALSE);
+    prpl.verifyEvents(
+        ConnectionSetStateEvent(connection, PURPLE_CONNECTING),
+        ConnectionUpdateProgressEvent(connection, 1, 2));
+    ASSERT_EQ(purpleAccountConnectCount(), 1U);
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateLoggingOut>()));
+    prpl.verifyNoEvents();
+    prpl.captureNotifyEvents();
+    tgl.completeClose();
+
+    prpl.verifyEvents(NotifyMessageEvent(
+        account,
+        PURPLE_NOTIFY_MSG_ERROR,
+        "Telegram authorization required",
+        "Telegram requested authorization again repeatedly",
+        nullptr));
+    EXPECT_EQ(purpleAccountDisconnectCount(), 1U);
+    EXPECT_EQ(purpleAccountConnectCount(), 1U);
+    EXPECT_TRUE(purple_account_get_enabled(account, purple_core_get_ui()));
+
+    g_main_context_iteration(nullptr, FALSE);
+    prpl.verifyEvents(
+        ConnectionErrorEvent(connection, "mock_disconnect"));
+    EXPECT_EQ(purpleAccountDisconnectCount(), 2U);
+    EXPECT_EQ(purpleAccountConnectCount(), 1U);
+}
+
+TEST_F(LoginTest, ReauthorizationCloseFailureDisconnectsWithoutReconnect)
+{
+    startAuthorization();
+    setPurpleAccountLifecycleSimulation(true);
+    prpl.captureNotifyEvents();
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateLoggingOut>()));
+    tgl.completeClose(TdPollingBackend::CloseResult::Failed);
+    prpl.verifyEvents(NotifyMessageEvent(
+        account,
+        PURPLE_NOTIFY_MSG_ERROR,
+        "Telegram authorization required",
+        "Telegram authorization could not be restarted safely",
+        nullptr));
+
+    g_main_context_iteration(nullptr, FALSE);
+    prpl.verifyEvents(
+        ConnectionErrorEvent(connection, "mock_disconnect"));
+    EXPECT_EQ(purpleAccountDisconnectCount(), 1U);
+    EXPECT_EQ(purpleAccountConnectCount(), 0U);
+    EXPECT_TRUE(purple_account_get_enabled(account, purple_core_get_ui()));
+}
+
+TEST_F(LoginTest, DisabledAccountCancelsPendingReauthorization)
+{
+    startAuthorization();
+    setPurpleAccountLifecycleSimulation(true);
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateLoggingOut>()));
+    setPurpleAccountEnabled(account, false);
+    tgl.completeClose();
+    g_main_context_iteration(nullptr, FALSE);
+
+    EXPECT_EQ(purpleAccountDisconnectCount(), 0U);
+    EXPECT_EQ(purpleAccountConnectCount(), 0U);
+    prpl.verifyNoEvents();
+}
+
+TEST_F(LoginTest, DisableDuringDisconnectCancelsReauthorization)
+{
+    startAuthorization();
+    setPurpleAccountLifecycleSimulation(true);
+    setPurpleAccountDisableDuringDisconnect(true);
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateLoggingOut>()));
+    tgl.completeClose();
+    g_main_context_iteration(nullptr, FALSE);
+    prpl.verifyEvents(
+        ConnectionErrorEvent(connection, "mock_disconnect"));
+    g_main_context_iteration(nullptr, FALSE);
+
+    EXPECT_EQ(purpleAccountDisconnectCount(), 1U);
+    EXPECT_EQ(purpleAccountConnectCount(), 0U);
+    prpl.verifyNoEvents();
+}
+
+TEST_F(LoginTest, DirectClosingAfterReadyDoesNotReconnect)
+{
+    startAuthorization();
+    setPurpleAccountLifecycleSimulation(true);
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateReady>()));
+    prpl.verifyEvents(
+        ConnectionSetStateEvent(connection, PURPLE_CONNECTED));
+    tgl.verifyRequest(getContacts());
+
+    tgl.update(make_object<updateAuthorizationState>(
+        make_object<authorizationStateClosing>()));
+
+    prpl.verifyEvents(ConnectionErrorEvent(
+        connection, "Telegram authorization ended"));
+    EXPECT_EQ(purpleAccountDisconnectCount(), 0U);
+    EXPECT_EQ(purpleAccountConnectCount(), 0U);
 }
 
 TEST_F(LoginTest, FutureAuthorizationStateFailsExplicitly)

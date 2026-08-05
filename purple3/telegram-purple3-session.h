@@ -39,6 +39,7 @@ typedef struct {
     void (*connect_failed)(PurpleConnection *connection,
                            TelegramTdlibSessionFailure failure);
     void (*runtime_failed)(PurpleConnection *connection);
+    void (*reauthorization_required)(PurpleConnection *connection);
     void (*closed)(PurpleConnection *connection,
                    TelegramTdlibSessionCloseResult result);
 } TelegramTdlibSessionCallbacks;

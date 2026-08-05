@@ -102,6 +102,13 @@ void ITransceiverBackend::receive(td::Client::Response response)
     }
 }
 
+void ITransceiverBackend::close(
+    TdPollingBackend::CloseCallback callback)
+{
+    if (callback)
+        callback(TdPollingBackend::CloseResult::Closed);
+}
+
 TdTransceiver::TdTransceiver(
     PurpleTdClient *owner,
     PurpleAccount *account,
@@ -269,21 +276,34 @@ const std::string &TdTransceiver::databasePath() const
     return m_databasePath;
 }
 
-void TdTransceiver::shutdown()
+void TdTransceiver::shutdown(TdPollingBackend::CloseCallback callback)
 {
-    if (m_shutdown)
+    if (m_shutdown) {
+        if (m_testBackend) {
+            m_testBackend->close(std::move(callback));
+        } else if (m_backend) {
+            m_backend->close(std::move(callback));
+        } else if (callback) {
+            callback(TdPollingBackend::CloseResult::Failed);
+        }
         return;
+    }
     m_shutdown = true;
 
     if (m_acceptBackendFailures) {
         m_acceptBackendFailures->store(
             false, std::memory_order_release);
     }
-    if (m_testBackend)
+    if (m_testBackend) {
         m_testBackend->setReceiver(TdTransport::ReceiveCallback());
+    }
     if (m_transport)
         m_transport->shutdown();
-    if (m_backend)
-        m_backend->close();
+    if (m_testBackend)
+        m_testBackend->close(std::move(callback));
+    else if (m_backend)
+        m_backend->close(std::move(callback));
+    else if (callback)
+        callback(TdPollingBackend::CloseResult::Failed);
     m_owner = nullptr;
 }

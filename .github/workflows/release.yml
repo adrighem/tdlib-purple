@@ -55,6 +55,7 @@ jobs:
             libopus-dev \
             libpng-dev \
             libpurple-dev \
+            libqrencode-dev \
             libssl-dev \
             libwebp-dev \
             lzop \
@@ -142,6 +143,7 @@ jobs:
                 libopus-dev \
                 libpng-dev \
                 libpurple-dev \
+                libqrencode-dev \
                 libssl-dev \
                 libwebp-dev \
                 lzop \
@@ -235,6 +237,7 @@ jobs:
                 libpng-devel \
                 libpurple-devel \
                 libwebp-devel \
+                qrencode-devel \
                 lzop \
                 make \
                 ninja-build \

@@ -29,7 +29,7 @@ and controls:
 | Media | Send and receive files, configurable inline downloads, static stickers, and animated stickers when image support is available |
 | Rich text | Bold, italic, underline, strikethrough, inline code, preformatted text, block quotes, spoilers, and supported links |
 | Privacy | Optional secret chats, self-destructing-message display, and read-receipt controls where the client supports them |
-| Account access | Phone-number sign-in, Telegram authentication codes, and masked two-step-verification password prompts |
+| Account access | QR sign-in in graphical Purple 2 clients, automatic phone fallback where QR presentation is unavailable, Telegram authentication codes, and masked two-step-verification password prompts |
 
 Forum-enabled groups keep General on the existing room identity. Other topics
 appear as separate rooms, and sends, uploads, failures, and read receipts stay
@@ -107,7 +107,12 @@ obtain or enter an API ID or API hash.
 3. Enter your phone number in international form, using digits and an optional
    leading `+`, with no spaces.
 4. Save and enable the account.
-5. Enter the authentication code delivered by Telegram.
+5. In a graphical client, scan the displayed QR code with Telegram on another
+   device. At the start of sign-in, a client that cannot present QR images
+   automatically uses the account phone number and asks for the authentication
+   code instead. If Telegram has already committed the session to a QR-only
+   step, the plugin stops with a clear error so another QR-capable client can
+   finish it safely.
 6. Enter your Telegram two-step-verification password if requested.
 
 Leave the API ID and API hash compatibility overrides in the Advanced tab
@@ -153,6 +158,10 @@ for those operations.
 Source builds require CMake 3.16 or newer, Python 3.8 or newer, and TDLib 1.8.65
 or an API-compatible newer version. The pinned TDLib submodule is the supported
 and tested schema.
+
+Purple 2 QR presentation is enabled automatically when both libpng and
+libqrencode development packages are available. Builds without either library
+remain usable and automatically use phone-number authentication.
 
 The maintained Telegram application provider is enabled by default for direct
 checkouts, source releases, Nix builds, and both Purple adapters. A normal build

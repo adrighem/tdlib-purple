@@ -703,7 +703,8 @@ private:
 
     void handlePhoneNumber(std::int32_t rawStateId)
     {
-        if (m_configuration.mode() == TdAuthMode::PhoneNumber) {
+        if (m_configuration.mode() == TdAuthMode::PhoneNumber ||
+            m_phoneFallbackCommitted) {
             ChallengeSnapshot challenge;
             challenge.type = TdAuthPromptType::PhoneNumber;
             handleChallengeState(
@@ -810,6 +811,19 @@ private:
         std::int32_t rawStateId,
         const std::string &link)
     {
+        if (m_phoneFallbackCommitted) {
+            failAuthorization(
+                TdAuthFailureType::UnsupportedState,
+                TdAuthState::WaitOtherDeviceConfirmation,
+                TdAuthOperation::None,
+                rawStateId,
+                0,
+                "",
+                TdAuthPromptCloseReason::Failed);
+            return;
+        }
+        m_qrFlowCommitted = true;
+
         std::string fingerprint;
         if (!fingerprintLink(link, fingerprint)) {
             failAuthorization(
@@ -1133,6 +1147,22 @@ private:
         if (response && response->get_id() == ok::ID)
             return;
 
+        if (response && response->get_id() == error::ID &&
+            operation == TdAuthOperation::RequestQrCode &&
+            m_configuration.mode() ==
+                TdAuthMode::QrCodeWithPhoneFallback &&
+            m_state == TdAuthState::WaitPhoneNumber &&
+            !m_qrFlowCommitted && !m_phoneFallbackCommitted) {
+            m_phoneFallbackCommitted = true;
+            ChallengeSnapshot challenge;
+            challenge.type = TdAuthPromptType::PhoneNumber;
+            handleChallengeState(
+                TdAuthState::WaitPhoneNumber,
+                m_rawStateId,
+                std::move(challenge));
+            return;
+        }
+
         if (response && response->get_id() == error::ID && retryable) {
             const std::int32_t errorCode =
                 static_cast<const error &>(*response).code_;
@@ -1454,6 +1484,8 @@ private:
     std::string m_qrFingerprint;
     std::size_t m_qrLinkLength = 0;
     bool m_qrRequested = false;
+    bool m_qrFlowCommitted = false;
+    bool m_phoneFallbackCommitted = false;
 
     bool m_requestPending = false;
     TdAuthOperation m_pendingOperation = TdAuthOperation::None;

@@ -49,6 +49,8 @@ CommTest::~CommTest()
 }
 
 void CommTest::SetUp() {
+    resetPurpleRequestUi();
+    resetPurpleAccountLifecycle();
     setUiName("pidgin");
 }
 void CommTest::TearDown()
@@ -58,6 +60,8 @@ void CommTest::TearDown()
     tgl.verifyNoRequests();
     prpl.verifyNoEvents();
     tgl.runTimeouts();
+    resetPurpleRequestUi();
+    resetPurpleAccountLifecycle();
 }
 
 void CommTest::login(std::vector<object_ptr<Object>> &&extraUpdates,
