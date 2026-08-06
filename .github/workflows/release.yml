@@ -91,8 +91,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - distro_id: debian-stable
-            image: debian:stable
+          - distro_id: debian-13
+            image: debian:13
           - distro_id: ubuntu-24.04-lts
             image: ubuntu:24.04
     steps:
@@ -271,6 +271,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ needs.release-please.outputs.tag_name }}
         run: gh release edit "${TAG_NAME}" --draft=false --repo "$GITHUB_REPOSITORY"
+
+  publish-apt-repository:
+    needs:
+      - release-please
+      - publish-release
+    if: ${{ needs.release-please.outputs.release_created == 'true' && needs.publish-release.result == 'success' }}
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/apt-repository.yml
 
   cleanup-failed-release:
     needs:
