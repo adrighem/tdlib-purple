@@ -278,6 +278,7 @@ jobs:
       - publish-release
     if: ${{ needs.release-please.outputs.release_created == 'true' && needs.publish-release.result == 'success' }}
     permissions:
+      actions: read
       contents: read
       pages: write
       id-token: write
