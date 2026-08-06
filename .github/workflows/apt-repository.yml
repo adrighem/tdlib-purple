@@ -1,0 +1,216 @@
+name: Publish APT repository
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: apt-repository-pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: ${{ github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Install repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils dpkg-dev
+
+      - name: Download retained Debian packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          package_dir="${RUNNER_TEMP}/apt-packages"
+          mkdir -p "${package_dir}"
+          mapfile -t release_tags < <(
+            gh release list \
+              --repo "${GITHUB_REPOSITORY}" \
+              --limit 100 \
+              --json tagName,isDraft,isPrerelease,publishedAt \
+              --jq '[.[] | select(.isDraft == false and .isPrerelease == false)] | sort_by(.publishedAt) | reverse | .[:2] | .[].tagName'
+          )
+          if [ "${#release_tags[@]}" -eq 0 ]; then
+            echo "No published stable releases found." >&2
+            exit 1
+          fi
+          for release_index in "${!release_tags[@]}"; do
+            release_tag="${release_tags[$release_index]}"
+            if [[ ! "${release_tag}" =~ ^(tdlib-purple-)?v[0-9]+(\.[0-9]+)+$ ]]; then
+              echo "Unsupported stable release tag: ${release_tag}" >&2
+              exit 1
+            fi
+            release_dir="${package_dir}/${release_tag//\//_}"
+            mkdir -p "${release_dir}"
+            mapfile -t release_assets < <(
+              gh api \
+                "repos/${GITHUB_REPOSITORY}/releases/tags/${release_tag}" \
+                --jq '.assets[] | select(.name | test("^tdlib-purple_.*\\.deb$")) | [.name, .digest] | @tsv'
+            )
+            if [ "${#release_assets[@]}" -eq 0 ]; then
+              if [ "$release_index" -eq 0 ]; then
+                echo "Newest stable release has no Debian packages." >&2
+                exit 1
+              fi
+              echo "No Debian packages retained from ${release_tag}."
+              continue
+            fi
+            if [ "$release_index" -eq 0 ] &&
+               [ "${#release_assets[@]}" -ne 2 ]; then
+              echo "Newest stable release must contain two Debian packages." >&2
+              exit 1
+            fi
+            debian_asset_count=0
+            ubuntu_asset_count=0
+            for release_asset in "${release_assets[@]}"; do
+              IFS=$'\t' read -r asset_name asset_digest <<< "${release_asset}"
+              if [[ ! "${asset_name}" =~ ^tdlib-purple_[0-9A-Za-z.+:~-]+_(debian-13|debian-stable|ubuntu-24\.04-lts)_amd64\.deb$ ]] ||
+                 [[ ! "${asset_digest}" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                echo "Release ${release_tag} has invalid Debian asset metadata." >&2
+                exit 1
+              fi
+              case "${asset_name}" in
+                *_debian-13_amd64.deb|*_debian-stable_amd64.deb)
+                  debian_asset_count=$((debian_asset_count + 1))
+                  ;;
+                *_ubuntu-24.04-lts_amd64.deb)
+                  ubuntu_asset_count=$((ubuntu_asset_count + 1))
+                  ;;
+              esac
+              gh release download "${release_tag}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --pattern "${asset_name}" \
+                --dir "${release_dir}"
+              actual_digest="$(sha256sum "${release_dir}/${asset_name}")"
+              actual_digest="${actual_digest%% *}"
+              if [ "${actual_digest}" != "${asset_digest#sha256:}" ]; then
+                echo "Release asset digest mismatch: ${asset_name}" >&2
+                exit 1
+              fi
+            done
+            if [ "$release_index" -eq 0 ] &&
+               { [ "$debian_asset_count" -ne 1 ] ||
+                 [ "$ubuntu_asset_count" -ne 1 ]; }; then
+              echo "Newest stable release must contain one package for each supported suite." >&2
+              exit 1
+            fi
+          done
+
+      - name: Build unsigned repository
+        run: |
+          site_dir="${RUNNER_TEMP}/apt-site"
+          mkdir -p "${site_dir}"
+          ./.github/scripts/build-apt-repository.sh \
+            "${RUNNER_TEMP}/apt-packages" "${site_dir}"
+
+      - name: Upload unsigned repository
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: unsigned-apt-repository
+          path: ${{ runner.temp }}/apt-site
+          retention-days: 1
+
+  sign:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: apt-repository
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download unsigned repository
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: unsigned-apt-repository
+          path: ${{ runner.temp }}/apt-site
+
+      - name: Import repository signing key
+        env:
+          APT_SIGNING_PRIVATE_KEY: ${{ secrets.APT_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          : "${APT_SIGNING_PRIVATE_KEY:?Configure APT_SIGNING_PRIVATE_KEY in the apt-repository environment}"
+          signing_home="${RUNNER_TEMP}/apt-signing-home"
+          install -d -m 0700 "${signing_home}"
+          printf '%s' "${APT_SIGNING_PRIVATE_KEY}" |
+            GNUPGHOME="${signing_home}" gpg --batch --quiet --import
+
+      - name: Sign repository
+        env:
+          APT_SIGNING_KEY_PASSPHRASE: ${{ secrets.APT_SIGNING_KEY_PASSPHRASE }}
+          EXPECTED_SIGNING_KEY_FINGERPRINT: ${{ vars.APT_SIGNING_KEY_FINGERPRINT }}
+        run: |
+          set -euo pipefail
+          : "${EXPECTED_SIGNING_KEY_FINGERPRINT:?Configure APT_SIGNING_KEY_FINGERPRINT in the apt-repository environment}"
+          : "${APT_SIGNING_KEY_PASSPHRASE:?Configure APT_SIGNING_KEY_PASSPHRASE in the apt-repository environment}"
+          export GNUPGHOME="${RUNNER_TEMP}/apt-signing-home"
+          mapfile -t fingerprints < <(
+            gpg --batch --with-colons --list-secret-keys |
+              awk -F: '
+                $1 == "sec" { want_fingerprint = 1; next }
+                want_fingerprint && $1 == "fpr" {
+                  print $10
+                  want_fingerprint = 0
+                }
+              '
+          )
+          if [ "${#fingerprints[@]}" -ne 1 ]; then
+            echo "APT signing key bundle must contain exactly one primary secret key." >&2
+            exit 1
+          fi
+          fingerprint="${fingerprints[0]}"
+          if [[ ! "${fingerprint}" =~ ^[0-9A-F]{40,64}$ ]]; then
+            echo "Imported APT signing key has an invalid fingerprint." >&2
+            exit 1
+          fi
+          if [ "${fingerprint}" != "${EXPECTED_SIGNING_KEY_FINGERPRINT}" ]; then
+            echo "Imported APT signing key has unexpected fingerprint." >&2
+            exit 1
+          fi
+          APT_SIGNING_KEY_FINGERPRINT="${fingerprint}" \
+            ./.github/scripts/sign-apt-repository.sh \
+            "${RUNNER_TEMP}/apt-site"
+
+      - name: Remove repository signing key
+        if: always()
+        run: |
+          signing_home="${RUNNER_TEMP}/apt-signing-home"
+          if [ -d "${signing_home}" ]; then
+            GNUPGHOME="${signing_home}" gpgconf --kill all || true
+            find "${signing_home}" -depth -mindepth 1 -delete
+            rmdir "${signing_home}"
+          fi
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ${{ runner.temp }}/apt-site
+
+  deploy:
+    needs: sign
+    runs-on: ubuntu-24.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy APT repository
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0

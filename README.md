@@ -46,7 +46,7 @@ complete source archive:
 
 | System | Asset |
 | --- | --- |
-| Debian stable | `tdlib-purple_*_debian-stable_amd64.deb` |
+| Debian 13 | `tdlib-purple_*_debian-13_amd64.deb` |
 | Ubuntu 24.04 LTS | `tdlib-purple_*_ubuntu-24.04-lts_amd64.deb` |
 | Fedora 44 | `tdlib-purple-*_fedora-44_x86_64.rpm` |
 | Enterprise Linux 9 compatible | `tdlib-purple-*_el9_x86_64.rpm` |
@@ -58,17 +58,57 @@ Download the package for your system from the
 
 ### Debian or Ubuntu
 
-Install the downloaded package with APT. For example:
+Install from the signed project APT repository to receive future updates.
+First install the repository key:
 
 ```sh
-# Debian stable
-sudo apt install ./tdlib-purple_*_debian-stable_amd64.deb
-
-# Ubuntu 24.04 LTS
-sudo apt install ./tdlib-purple_*_ubuntu-24.04-lts_amd64.deb
+sudo apt update
+sudo apt install ca-certificates curl
+sudo install -d -m 0755 /etc/apt/keyrings
+keyring_tmp="$(mktemp)"
+curl -fsSLo "$keyring_tmp" \
+  https://adrighem.github.io/tdlib-purple/apt/tdlib-purple-archive-keyring.gpg || \
+  { rm -f "$keyring_tmp"; exit 1; }
+sudo install -m 0644 "$keyring_tmp" \
+  /etc/apt/keyrings/tdlib-purple-archive-keyring.gpg
+rm -f "$keyring_tmp"
 ```
 
-Run only the command for your distribution.
+Then install the source definition for your distribution.
+
+Debian 13:
+
+```sh
+sources_tmp="$(mktemp)"
+curl -fsSLo "$sources_tmp" \
+  https://adrighem.github.io/tdlib-purple/apt/tdlib-purple-debian-13.sources || \
+  { rm -f "$sources_tmp"; exit 1; }
+sudo install -m 0644 "$sources_tmp" \
+  /etc/apt/sources.list.d/tdlib-purple.sources
+rm -f "$sources_tmp"
+```
+
+Ubuntu 24.04 LTS:
+
+```sh
+sources_tmp="$(mktemp)"
+curl -fsSLo "$sources_tmp" \
+  https://adrighem.github.io/tdlib-purple/apt/tdlib-purple-ubuntu-24.04.sources || \
+  { rm -f "$sources_tmp"; exit 1; }
+sudo install -m 0644 "$sources_tmp" \
+  /etc/apt/sources.list.d/tdlib-purple.sources
+rm -f "$sources_tmp"
+```
+
+Install the package:
+
+```sh
+sudo apt update
+sudo apt install tdlib-purple
+```
+
+Normal APT upgrades then install newer project releases. Release assets remain
+available for manual installation.
 
 ### Fedora or Enterprise Linux
 

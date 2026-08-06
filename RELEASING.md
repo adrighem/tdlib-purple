@@ -12,12 +12,15 @@ This project uses release-please to manage release pull requests, changelog upda
    application provider, then uploads:
    - `tdlib-purple-<version>-source.tar.xz`
    - `tdlib-purple-<version>-linux-x86_64.tar.xz`
-   - `tdlib-purple_<version>-1_debian-stable_amd64.deb`
+   - `tdlib-purple_<version>-1_debian-13_amd64.deb`
    - `tdlib-purple_<version>-1_ubuntu-24.04-lts_amd64.deb`
    - `tdlib-purple-<version>-1_fedora-44_x86_64.rpm`
    - `tdlib-purple-<version>-1_el9_x86_64.rpm`
 6. The workflow publishes the draft only after every asset job succeeds. A
    failed asset job deletes the incomplete draft and tag.
+7. The APT repository workflow retains Debian packages from the newest two
+   stable releases, signs fresh repository metadata, and deploys the complete
+   repository to GitHub Pages.
 
 `fix:` commits produce patch releases, `feat:` commits produce minor releases, and commits with `!` produce major releases.
 
@@ -59,6 +62,35 @@ is created, so downstream package builds need no extra credential setup.
 All binary packages contain the GPL and bundled dependency license notices.
 The `.deb` packages are built in distro-specific environments and use `dpkg-shlibdeps` to derive runtime dependencies from the built plugin.
 The RPM packages target Fedora 44 and Enterprise Linux 9 via AlmaLinux 9. Fedora 44 tracks the current Fedora stable release; EL9 is the conservative Red Hat compatible baseline for broad enterprise users.
+
+## APT Repository
+
+GitHub Pages must use GitHub Actions as its publishing source. Create a
+protected `apt-repository` environment containing these secrets before the
+first repository deployment:
+
+- `APT_SIGNING_PRIVATE_KEY`: ASCII-armored private key for a dedicated archive
+  signing key.
+- `APT_SIGNING_KEY_PASSPHRASE`: passphrase for that key.
+
+Set the environment variable `APT_SIGNING_KEY_FINGERPRINT` to the full primary
+fingerprint. Publication fails if the imported key does not match it.
+Restrict both `apt-repository` and `github-pages` environments to the `master`
+branch.
+
+Keep an offline backup of the signing key. The workflow imports it into a
+temporary GnuPG home, publishes only the minimal public key, then removes the
+temporary key material. Never reuse a personal signing key.
+
+The Release workflow invokes the reusable APT workflow after publishing a
+stable release. Run **Publish APT repository** manually once to bootstrap Pages
+from existing releases or to repair a failed deployment. Repository metadata
+uses separate `debian-13` and `ubuntu-24.04` suites and retains packages from
+up to the newest two stable releases for rollback.
+
+Before the first run, open **Settings**, **Pages**, then select **GitHub
+Actions** as the publishing source. GitHub does not allow the repository token
+to enable Pages automatically.
 
 ## Windows Assets
 
