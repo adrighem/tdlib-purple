@@ -557,6 +557,14 @@ static void tgprpl_add_buddy (PurpleConnection *gc, PurpleBuddy *buddy, PurpleGr
     const char  *alias       = purple_buddy_get_alias(buddy);
     const char  *groupName   = group ? purple_group_get_name(group) : NULL;
 
+    /* A name in the id<n> or secret<n> form belongs to someone tdlib has already told us about, so
+     * this is the UI filing an existing buddy into a group rather than a request to add a contact.
+     * Telegram has no contact groups to file it into, and passing the name on would ask the server
+     * to resolve a username spelled like one of our own ids. */
+    if (purpleBuddyNameToUserId(phoneNumber).valid() ||
+        purpleBuddyNameToSecretChatId(phoneNumber).valid())
+        return;
+
     std::string  phoneNumberStr = phoneNumber;
     std::string  aliasStr       = alias ? alias : "";
 
