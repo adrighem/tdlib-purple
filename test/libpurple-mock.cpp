@@ -956,6 +956,24 @@ PurpleBuddy *purple_find_buddy(PurpleAccount *account, const char *name)
     return NULL;
 }
 
+GSList *purple_find_buddies(PurpleAccount *account, const char *name)
+{
+    if (!purple_account_is_connected(account))
+        return NULL;
+
+    auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),
+                                 [account](const AccountInfo &info) { return info.account == account; });
+    EXPECT_FALSE(pAccount == g_accounts.end()) << "Looking for buddies with unknown account";
+
+    GSList *result = NULL;
+    if (pAccount != g_accounts.end())
+        for (PurpleBuddy *buddy: pAccount->buddies)
+            if (!name || !strcmp(purple_buddy_get_name(buddy), name))
+                result = g_slist_prepend(result, buddy);
+
+    return g_slist_reverse(result);
+}
+
 PurpleConversation *purple_find_chat(const PurpleConnection *gc, int id)
 {
     auto pAccount = std::find_if(g_accounts.begin(), g_accounts.end(),

@@ -581,7 +581,19 @@ static void tgprpl_request_delete_contact (PurpleConnection *gc, PurpleBuddy *bu
 {
     g_return_if_fail(buddy);
 
-    RequestData *data = new RequestData(purple_connection_get_account(gc));
+    PurpleAccount *account = purple_connection_get_account(gc);
+
+    /* libpurple keeps one node per group and calls this before dropping the one being removed, so
+     * more than one node means the contact lives on in the other groups: the UI is unfiling it from
+     * a group, not asking for it to be deleted. */
+    GSList *nodes     = purple_find_buddies(account, purple_buddy_get_name(buddy));
+    guint   nodeCount = g_slist_length(nodes);
+    g_slist_free(nodes);
+
+    if (nodeCount > 1)
+        return;
+
+    RequestData *data = new RequestData(account);
     data->stringData = purple_buddy_get_name(buddy);
 
     // TRANSLATOR: Buddy deletion confirmation, title
