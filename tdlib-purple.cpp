@@ -467,10 +467,16 @@ static void tgprpl_close (PurpleConnection *gc)
     purple_signals_disconnect_by_handle(purple_connection_get_account(gc));
     PurpleTdClient *client = static_cast<PurpleTdClient *>(
         purple_connection_get_protocol_data(gc));
+    // Cleared before the client is touched rather than after. Anything that
+    // reaches this function again while the first call is still on the stack
+    // would otherwise find the protocol data still set, take the same pointer,
+    // and close and delete it a second time. A user interface can get there:
+    // closing emits purple events, and one may react by closing the
+    // connection.
+    purple_connection_set_protocol_data(gc, NULL);
     if (client)
         client->accountConnectionClosing();
     delete client;
-    purple_connection_set_protocol_data(gc, NULL);
 }
 
 static int tgprpl_send_im (PurpleConnection *gc, const char *who, const char *message, PurpleMessageFlags flags)
