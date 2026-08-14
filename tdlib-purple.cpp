@@ -604,15 +604,22 @@ static void tgprpl_request_delete_contact (PurpleConnection *gc, PurpleBuddy *bu
     RequestData *data = new RequestData(account);
     data->stringData = purple_buddy_get_name(buddy);
 
-    // TRANSLATOR: Buddy deletion confirmation, title
-//     purple_request_yes_no(gc, _("Remove contact"),
-//                           // TRANSLATOR: Buddy deletion confirmation, content
-//                           _("Remove from global contact list and delete chat history from the server?\n"),
-//                           NULL,
-//                           0, purple_connection_get_account(gc), purple_buddy_get_name(buddy),
-//                           NULL, data, request_delete_contact_on_server_yes,
-//                           cancelRequest);
-    request_delete_contact_on_server_yes(data, 0);
+    PurpleRequestUiOps *ops = purple_request_get_ui_ops();
+    bool hasUi = ops && (ops->request_action || ops->request_action_with_icon || ops->request_yes_no);
+
+    if (hasUi) {
+        // TRANSLATOR: Buddy deletion confirmation dialog, title
+        purple_request_action(gc, _("Remove contact"),
+                              // TRANSLATOR: Buddy deletion confirmation dialog, primary content
+                              _("Remove from global contact list and delete chat history from the server?"),
+                              // TRANSLATOR: Buddy deletion confirmation dialog, secondary content
+                              _("This cannot be undone."),
+                              0, account, purple_buddy_get_name(buddy), NULL, data, 2,
+                              _("_Delete"), request_delete_contact_on_server_yes,
+                              _("_Cancel"), cancelRequest);
+    } else {
+        request_delete_contact_on_server_yes(data, 0);
+    }
 }
 
 static std::array<const char *, 3> invitePrefixes {

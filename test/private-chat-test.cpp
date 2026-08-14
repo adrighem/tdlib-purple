@@ -1429,8 +1429,6 @@ TEST_F(PrivateChatTest, DeleteContact)
 
     pluginInfo().remove_buddy(connection, dup, NULL);
     purple_buddy_destroy(dup);
-    //prpl.verifyEvents(RequestActionEvent(connection, account, purpleUserName(0).c_str(), NULL, 2));
-    //prpl.requestedAction("_Yes");
 
     tgl.verifyRequestsV(
         make_object<deleteChatHistory>(chatIds[0], true, false),
@@ -1445,6 +1443,40 @@ TEST_F(PrivateChatTest, DeleteContact)
     tgl.update(makeUpdateChatList(chatIds[0], make_object<chatListArchive>()));
     tgl.update(makeUpdateRemoveFromChatList(chatIds[0], make_object<chatListMain>()));
     tgl.update(makeUpdateRemoveFromChatList(chatIds[0], make_object<chatListArchive>()));
+}
+
+TEST_F(PrivateChatTest, DeleteContactWithPrompt)
+{
+    setPurpleRequestUiCapabilities(true, false, false);
+    loginWithOneContact();
+
+    PurpleBuddy *buddy = purple_find_buddy(account, purpleUserName(0).c_str());
+    ASSERT_NE(nullptr, buddy);
+    PurpleBuddy *dup   = purple_buddy_new(account, buddy->name, buddy->alias);
+    purple_blist_remove_buddy(buddy);
+    prpl.discardEvents();
+
+    pluginInfo().remove_buddy(connection, dup, NULL);
+    purple_buddy_destroy(dup);
+
+    prpl.verifyEvents(RequestActionEvent(connection, account, purpleUserName(0).c_str(), NULL, 2));
+    prpl.requestedAction("_Delete");
+
+    tgl.verifyRequestsV(
+        make_object<deleteChatHistory>(chatIds[0], true, false),
+        make_object<removeContacts>(std::vector<int64_t>(1, userIds[0]))
+    );
+
+    auto userUpdate1 = standardUpdateUser(0);
+    userUpdate1->user_->is_contact_ = true;
+    tgl.update(std::move(userUpdate1));
+    tgl.update(standardUpdateUser(0));
+    tgl.update(make_object<updateChatTitle>(chatIds[0], "New Title"));
+    tgl.update(makeUpdateChatList(chatIds[0], make_object<chatListArchive>()));
+    tgl.update(makeUpdateRemoveFromChatList(chatIds[0], make_object<chatListMain>()));
+    tgl.update(makeUpdateRemoveFromChatList(chatIds[0], make_object<chatListArchive>()));
+
+    setPurpleRequestUiCapabilities(false, false, false);
 }
 
 // TODO: test moving from main to archive or vice versa now that it's not atomic
