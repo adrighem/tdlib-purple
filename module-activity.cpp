@@ -14,6 +14,15 @@ std::atomic<unsigned> &activityCount()
     return count;
 }
 
+GMainContext *&activityContext()
+{
+    // Borrowed, and only ever read and written on the thread the sources are
+    // dispatched on. A raw pointer rather than a reference so that null keeps
+    // meaning the default context.
+    static GMainContext *context = nullptr;
+    return context;
+}
+
 struct TrackedSource {
     TrackedSource(
         GSourceFunc sourceCallback,
@@ -93,7 +102,14 @@ guint attachTrackedSource(
     // callback state explicitly before making the source dispatchable.
     tracked->published.store(true, std::memory_order_release);
     const guint id =
-        g_source_attach(source, g_main_context_default());
+        g_source_attach(source, activityContext());
+    // Attaching is not enough on its own: something has to notice. GLib signals
+    // the context's wakeup for an attach from a thread other than the owner,
+    // and not at all for one from the owner, which is where most of these come
+    // from. A context driven from a foreign event loop has nothing sitting in
+    // poll() to notice by itself, so it is told either way.
+    if (activityContext())
+        g_main_context_wakeup(activityContext());
     if (id == 0)
         g_source_destroy(source);
     g_source_unref(source);
@@ -137,6 +153,25 @@ ModuleActivityGuard &ModuleActivityGuard::operator=(
 bool moduleActivityPending() noexcept
 {
     return activityCount().load(std::memory_order_acquire) != 0;
+}
+
+void moduleActivitySetContext(GMainContext *context)
+{
+    activityContext() = context;
+}
+
+gboolean moduleActivityRemove(guint id)
+{
+    if (id == 0)
+        return FALSE;
+
+    GSource *source =
+        g_main_context_find_source_by_id(activityContext(), id);
+    if (!source)
+        return FALSE;
+
+    g_source_destroy(source);
+    return TRUE;
 }
 
 guint moduleActivityAddIdle(

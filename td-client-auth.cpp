@@ -1004,7 +1004,10 @@ void PurpleTdClient::cancelReauthorizationCleanupTimeout() noexcept
 {
     if (m_reauthorizationCleanupTimeout == 0)
         return;
-    g_source_remove(m_reauthorizationCleanupTimeout);
+    // The timeout came from moduleActivityAddTimeout, so it goes back the same
+    // way: the id belongs to whichever context that attached to, which is not
+    // necessarily the default one g_source_remove looks in.
+    moduleActivityRemove(m_reauthorizationCleanupTimeout);
     m_reauthorizationCleanupTimeout = 0;
 }
 
