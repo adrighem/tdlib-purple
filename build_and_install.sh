@@ -45,15 +45,19 @@ if [ "$require_custom_credentials" = ON ] || \
 fi
 
 git submodule update --init --recursive
-pushd td
-  rm -rf build
-  mkdir build
-  pushd build
-    cmake -DCMAKE_BUILD_TYPE=Release ..
-    make -j "${JOBS}"
-    make install DESTDIR=destdir
+if [ ! -f td/build/destdir/usr/local/lib/cmake/Td/TdConfig.cmake ]; then
+  pushd td
+    rm -rf build
+    mkdir build
+    pushd build
+      cmake -DCMAKE_BUILD_TYPE=Release ..
+      make -j "${JOBS}"
+      make install DESTDIR=destdir
+    popd
   popd
-popd
+else
+  echo "Precompiled TDLib found in td/build/destdir. Skipping td rebuild."
+fi
 
 rm -rf build
 mkdir build

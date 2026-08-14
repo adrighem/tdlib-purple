@@ -605,7 +605,7 @@ static void tgprpl_request_delete_contact (PurpleConnection *gc, PurpleBuddy *bu
     data->stringData = purple_buddy_get_name(buddy);
 
     PurpleRequestUiOps *ops = purple_request_get_ui_ops();
-    bool hasUi = ops && (ops->request_action || ops->request_action_with_icon || ops->request_yes_no);
+    bool hasUi = ops && (ops->request_action || ops->request_action_with_icon);
 
     if (hasUi) {
         // TRANSLATOR: Buddy deletion confirmation dialog, title

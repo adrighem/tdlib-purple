@@ -57,6 +57,14 @@ static void *requestActionWithIconCapability(
     return nullptr;
 }
 
+static void *requestActionCapability(
+    const char *, const char *, const char *, int,
+    PurpleAccount *, const char *, PurpleConversation *,
+    void *, size_t, va_list)
+{
+    return nullptr;
+}
+
 static void closeRequestCapability(PurpleRequestType, void *)
 {
 }
@@ -110,6 +118,9 @@ void setPurpleRequestUiCapabilities(
     g_requestUiOperations = uiOperations;
     g_requestIconActions = iconActions;
     g_requestCloseRequests = closeRequests;
+    g_requestUiOps.request_action = uiOperations
+        ? requestActionCapability
+        : nullptr;
     g_requestUiOps.request_action_with_icon = iconActions
         ? requestActionWithIconCapability
         : nullptr;
