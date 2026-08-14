@@ -33,6 +33,7 @@ add_executable(tests EXCLUDE_FROM_ALL
     application-credentials-test.cpp
     application-credentials-test-backend.c
     purple2-qr-presenter-test.cpp
+    purple2-scheduler-test.cpp
 
     ${TDLIB_PURPLE_COMMON_SOURCES}
 )
