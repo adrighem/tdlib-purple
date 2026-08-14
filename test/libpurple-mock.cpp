@@ -5,6 +5,8 @@
 #include <vector>
 #include <algorithm>
 #include <gtest/gtest.h>
+#include <poll.h>
+#include <thread>
 
 struct AccountInfo {
     PurpleAccount                     *account;
@@ -185,7 +187,279 @@ void failPurpleCommandRegistrationAfter(
         callsUntilFailure;
 }
 
+// The user interface's event loop ------------------------------------------
+
+namespace {
+
+struct RecordedWatch {
+    guint                 handle;
+    int                   fd;
+    PurpleInputCondition  condition;
+    PurpleInputFunction   callback;
+    gpointer              userData;
+};
+
+struct RecordedTimeout {
+    guint        handle;
+    unsigned     interval;
+    unsigned     dueAt;
+    GSourceFunc  callback;
+    gpointer     userData;
+};
+
+PurpleEventLoopMode          g_eventLoopMode = PurpleEventLoopMode::None;
+PurpleEventLoopUiOps         g_eventLoopUiOps = {};
+std::vector<RecordedWatch>   g_eventLoopWatches;
+std::vector<RecordedTimeout> g_eventLoopTimeouts;
+guint                        g_eventLoopNextHandle = 1;
+unsigned                     g_eventLoopNow = 0;
+unsigned                     g_eventLoopThreadViolations = 0;
+unsigned                     g_eventLoopStaleRemovals = 0;
+std::thread::id              g_eventLoopThread;
+
+void noteEventLoopCall()
+{
+    if (std::this_thread::get_id() != g_eventLoopThread)
+        g_eventLoopThreadViolations++;
+}
+
+// Only ever compared against null. Nothing calls through the ops table: the
+// purple_ wrappers below are the implementation, exactly as in libpurple, where
+// these members exist so a user interface can say what it supports.
+guint opsTimeoutAdd(guint, GSourceFunc, gpointer) { return 0; }
+guint opsTimeoutAddSeconds(guint, GSourceFunc, gpointer) { return 0; }
+gboolean opsTimeoutRemove(guint) { return FALSE; }
+guint opsInputAdd(
+    int, PurpleInputCondition, PurpleInputFunction, gpointer)
+{
+    return 0;
+}
+gboolean opsInputRemove(guint) { return FALSE; }
+
+} // namespace
+
+void setPurpleEventLoopMode(PurpleEventLoopMode mode)
+{
+    g_eventLoopMode = mode;
+
+    const bool present = (mode != PurpleEventLoopMode::None);
+    g_eventLoopUiOps.timeout_add = present ? opsTimeoutAdd : nullptr;
+    g_eventLoopUiOps.timeout_add_seconds =
+        present ? opsTimeoutAddSeconds : nullptr;
+    g_eventLoopUiOps.timeout_remove = present ? opsTimeoutRemove : nullptr;
+    g_eventLoopUiOps.input_add = present ? opsInputAdd : nullptr;
+    g_eventLoopUiOps.input_remove = present ? opsInputRemove : nullptr;
+}
+
+void resetPurpleEventLoop()
+{
+    g_eventLoopWatches.clear();
+    g_eventLoopTimeouts.clear();
+    g_eventLoopNextHandle = 1;
+    g_eventLoopNow = 0;
+    g_eventLoopThreadViolations = 0;
+    g_eventLoopStaleRemovals = 0;
+    g_eventLoopThread = std::this_thread::get_id();
+    setPurpleEventLoopMode(PurpleEventLoopMode::None);
+}
+
+std::size_t purpleEventLoopWatchCount()
+{
+    return g_eventLoopWatches.size();
+}
+
+std::size_t purpleEventLoopTimeoutCount()
+{
+    return g_eventLoopTimeouts.size();
+}
+
+std::vector<PurpleInputCondition> purpleEventLoopWatchConditions()
+{
+    std::vector<PurpleInputCondition> conditions;
+
+    for (const RecordedWatch &watch : g_eventLoopWatches)
+        conditions.push_back(watch.condition);
+
+    return conditions;
+}
+
+std::size_t purpleEventLoopRunReadyWatches()
+{
+    const std::vector<RecordedWatch> watches = g_eventLoopWatches;
+    std::size_t ran = 0;
+
+    for (const RecordedWatch &watch : watches) {
+        struct pollfd descriptor;
+        descriptor.fd = watch.fd;
+        descriptor.events =
+            (watch.condition == PURPLE_INPUT_READ) ? POLLIN : POLLOUT;
+        descriptor.revents = 0;
+
+        if (poll(&descriptor, 1, 0) <= 0 || !descriptor.revents)
+            continue;
+
+        // The watch may have been removed by an earlier callback in this same
+        // sweep, which is what a real event loop would notice too.
+        const auto live = std::find_if(
+            g_eventLoopWatches.begin(),
+            g_eventLoopWatches.end(),
+            [&watch](const RecordedWatch &candidate) {
+                return candidate.handle == watch.handle;
+            });
+        if (live == g_eventLoopWatches.end())
+            continue;
+
+        watch.callback(watch.userData, watch.fd, watch.condition);
+        ran++;
+    }
+
+    return ran;
+}
+
+std::size_t purpleEventLoopAdvance(unsigned milliseconds)
+{
+    g_eventLoopNow += milliseconds;
+
+    std::size_t ran = 0;
+    for (;;) {
+        auto due = g_eventLoopTimeouts.end();
+        for (auto it = g_eventLoopTimeouts.begin();
+             it != g_eventLoopTimeouts.end();
+             ++it) {
+            if (it->dueAt <= g_eventLoopNow &&
+                (due == g_eventLoopTimeouts.end() ||
+                 it->dueAt < due->dueAt)) {
+                due = it;
+            }
+        }
+
+        if (due == g_eventLoopTimeouts.end())
+            break;
+
+        const RecordedTimeout timeout = *due;
+        g_eventLoopTimeouts.erase(due);
+
+        if (timeout.callback(timeout.userData)) {
+            RecordedTimeout again = timeout;
+            again.dueAt = g_eventLoopNow + again.interval;
+            g_eventLoopTimeouts.push_back(again);
+        }
+
+        ran++;
+    }
+
+    return ran;
+}
+
+int purpleEventLoopShortestTimeout()
+{
+    int shortest = -1;
+
+    for (const RecordedTimeout &timeout : g_eventLoopTimeouts) {
+        if (shortest < 0 || static_cast<int>(timeout.interval) < shortest)
+            shortest = static_cast<int>(timeout.interval);
+    }
+
+    return shortest;
+}
+
+unsigned purpleEventLoopThreadViolations()
+{
+    return g_eventLoopThreadViolations;
+}
+
+unsigned purpleEventLoopStaleRemovals()
+{
+    return g_eventLoopStaleRemovals;
+}
+
 extern "C" {
+
+PurpleEventLoopUiOps *purple_eventloop_get_ui_ops(void)
+{
+    return (g_eventLoopMode == PurpleEventLoopMode::None)
+               ? nullptr
+               : &g_eventLoopUiOps;
+}
+
+guint purple_timeout_add(
+    guint interval, GSourceFunc function, gpointer data)
+{
+    noteEventLoopCall();
+
+    RecordedTimeout timeout;
+    timeout.handle = g_eventLoopNextHandle++;
+    timeout.interval = interval;
+    timeout.dueAt = g_eventLoopNow + interval;
+    timeout.callback = function;
+    timeout.userData = data;
+    g_eventLoopTimeouts.push_back(timeout);
+
+    return timeout.handle;
+}
+
+guint purple_timeout_add_seconds(
+    guint interval, GSourceFunc function, gpointer data)
+{
+    return purple_timeout_add(interval * 1000, function, data);
+}
+
+gboolean purple_timeout_remove(guint handle)
+{
+    noteEventLoopCall();
+
+    for (auto it = g_eventLoopTimeouts.begin();
+         it != g_eventLoopTimeouts.end();
+         ++it) {
+        if (it->handle == handle) {
+            g_eventLoopTimeouts.erase(it);
+            return TRUE;
+        }
+    }
+
+    if (handle != 0)
+        g_eventLoopStaleRemovals++;
+
+    return FALSE;
+}
+
+guint purple_input_add(
+    int fd,
+    PurpleInputCondition condition,
+    PurpleInputFunction function,
+    gpointer data)
+{
+    noteEventLoopCall();
+
+    RecordedWatch watch;
+    watch.handle = g_eventLoopNextHandle++;
+    watch.fd = fd;
+    watch.condition = condition;
+    watch.callback = function;
+    watch.userData = data;
+    g_eventLoopWatches.push_back(watch);
+
+    return watch.handle;
+}
+
+gboolean purple_input_remove(guint handle)
+{
+    noteEventLoopCall();
+
+    for (auto it = g_eventLoopWatches.begin();
+         it != g_eventLoopWatches.end();
+         ++it) {
+        if (it->handle == handle) {
+            g_eventLoopWatches.erase(it);
+            return TRUE;
+        }
+    }
+
+    if (handle != 0)
+        g_eventLoopStaleRemovals++;
+
+    return FALSE;
+}
 
 #define EVENT(type, ...) g_purpleEvents.addEvent(std::make_unique<type>(__VA_ARGS__))
 

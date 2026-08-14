@@ -50,6 +50,7 @@ CommTest::~CommTest()
 
 void CommTest::SetUp() {
     resetPurpleRequestUi();
+    resetPurpleEventLoop();
     resetPurpleAccountLifecycle();
     setUiName("pidgin");
 }
@@ -61,6 +62,7 @@ void CommTest::TearDown()
     prpl.verifyNoEvents();
     tgl.runTimeouts();
     resetPurpleRequestUi();
+    resetPurpleEventLoop();
     resetPurpleAccountLifecycle();
 }
 
