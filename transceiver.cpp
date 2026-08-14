@@ -1,6 +1,7 @@
 #include "transceiver.h"
 
 #include "config.h"
+#include "purple2-scheduler.h"
 #include "translate.h"
 
 #include <stdexcept>
@@ -11,6 +12,33 @@ namespace {
 
 constexpr unsigned CLOSE_TIMEOUT_SECONDS = 10;
 constexpr double POLL_TIMEOUT_SECONDS = 0.1;
+
+// Pushes a context for as long as it is in scope, and does nothing at all when
+// there is none. A guard rather than a pair of calls because what sits between
+// them can throw, and a thread default left pushed would follow this thread
+// into everything it does afterwards.
+class ThreadDefaultContext {
+public:
+    explicit ThreadDefaultContext(GMainContext *context)
+        : m_context(context)
+    {
+        if (m_context)
+            g_main_context_push_thread_default(m_context);
+    }
+
+    ~ThreadDefaultContext()
+    {
+        if (m_context)
+            g_main_context_pop_thread_default(m_context);
+    }
+
+    ThreadDefaultContext(const ThreadDefaultContext &) = delete;
+    ThreadDefaultContext &operator=(
+        const ThreadDefaultContext &) = delete;
+
+private:
+    GMainContext *m_context;
+};
 
 std::string purple2SessionKey(const std::string &databasePath)
 {
@@ -155,6 +183,14 @@ TdTransceiver::TdTransceiver(
     if (!g_thread_supported())
         g_thread_init(NULL);
 #endif
+
+    /* Both of the objects below capture, at construction, the context they will
+     * dispatch on, and both take the thread default when they are not told
+     * otherwise. Putting the scheduler's context there is what places their work
+     * somewhere that is actually driven. With no scheduler installed this is a
+     * null context and nothing is pushed, so they capture the thread default
+     * exactly as they did before. */
+    ThreadDefaultContext dispatchContext(purple2SchedulerContext());
 
     m_backend.reset(new TdPollingBackend(
         purple2SessionKey(m_databasePath),

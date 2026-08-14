@@ -6,6 +6,7 @@
 #include "buildopt.h"
 #include "telegram-application-credentials.h"
 #include "module-activity.h"
+#include "purple2-scheduler.h"
 #include <purple.h>
 
 #include <cstdint>
@@ -1122,6 +1123,7 @@ static void disableRuntimeCallbacks()
 {
     PurpleTdClient::setTdlibFatalErrorCallback(nullptr);
     PurpleTdClient::setStickerConversionCallback(false);
+    purple2SchedulerUninstall();
 }
 
 static void enableRuntimeCallbacks()
@@ -1129,6 +1131,10 @@ static void enableRuntimeCallbacks()
     PurpleTdClient::setTdlibFatalErrorCallback(
         tdlibFatalErrorCallback);
     PurpleTdClient::setStickerConversionCallback(true);
+    // Here rather than in load and unload because these two run on every path
+    // through them, including the one where unload finds work still in flight
+    // and puts everything back.
+    purple2SchedulerInstall();
 }
 
 static gboolean tgprpl_load(PurplePlugin *)
