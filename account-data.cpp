@@ -61,7 +61,7 @@ UserId purpleBuddyNameToUserId(const char *s)
 
 SecretChatId purpleBuddyNameToSecretChatId(const char *s)
 {
-    if (strncmp(s, "secret", 2))
+    if (strncmp(s, "secret", 6))
         return SecretChatId::invalid;
     return SecretChatId::fromString(s+6);
 }
