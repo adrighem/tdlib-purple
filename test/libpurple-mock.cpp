@@ -49,6 +49,14 @@ static bool g_requestIconActions = false;
 static bool g_requestCloseRequests = false;
 static bool g_requestIconHandleAvailable = true;
 
+static void *requestActionCapability(
+    const char *, const char *, const char *, int,
+    PurpleAccount *, const char *, PurpleConversation *,
+    void *, size_t, va_list)
+{
+    return nullptr;
+}
+
 static void *requestActionWithIconCapability(
     const char *, const char *, const char *, int,
     PurpleAccount *, const char *, PurpleConversation *,
