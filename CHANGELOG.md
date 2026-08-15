@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.1.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v2.0.2...tdlib-purple-v2.1.0) (2026-08-15)
+
+
+### Features
+
+* conditionally restore contact delete confirmation prompt ([38df864](https://github.com/adrighem/tdlib-purple/commit/38df864bfaa5c42b48dee65f9d2f5f1a0661cf98)), closes [#27](https://github.com/adrighem/tdlib-purple/issues/27)
+* drive the plugin's GLib context from libpurple's event loop ([fee7b71](https://github.com/adrighem/tdlib-purple/commit/fee7b71157fec1cf78fd9624323924f7bfe495be))
+* drive the plugin's GLib context from libpurple's event loop ([4740a27](https://github.com/adrighem/tdlib-purple/commit/4740a2730fda41d20c955bcce072c8c6bc5e2396))
+
+
+### Bug Fixes
+
+* check request ui ops members that exist ([92d6145](https://github.com/adrighem/tdlib-purple/commit/92d6145460d0c1364f2d66eb7fee3bd10c9e7ae4))
+* check request ui ops members that exist ([48a7f57](https://github.com/adrighem/tdlib-purple/commit/48a7f572e38b37aba857f7ba417957a895ce8150))
+* clear the connection's protocol data before closing the client ([d5aac83](https://github.com/adrighem/tdlib-purple/commit/d5aac83f4f74f50004016bce1fb1b2ac0a9a96c8))
+* clear the connection's protocol data before closing the client ([b745388](https://github.com/adrighem/tdlib-purple/commit/b7453882489a4e42ec4903ee5b202a06f332ad3e))
+* compare the whole "secret" prefix when parsing a buddy name ([0f53360](https://github.com/adrighem/tdlib-purple/commit/0f533600e3beec7a687861904efbbae89c84983c))
+* dispatch on a context something actually drives ([f2e5292](https://github.com/adrighem/tdlib-purple/commit/f2e5292f0618312da8e3e08afcff5dc7643b157b))
+* do not delete a contact that is only unfiled from one group ([9235333](https://github.com/adrighem/tdlib-purple/commit/9235333ddb894a40f1c865557c3b0bccaeae387c))
+* do not delete a contact that is only unfiled from one group ([dea4cfe](https://github.com/adrighem/tdlib-purple/commit/dea4cfe1b81dc6febbff068b76a769eb0cfde42f))
+* do not look up a username when filing a known contact into a group ([ad0b08f](https://github.com/adrighem/tdlib-purple/commit/ad0b08f6a3d7d11dbe1d0814904f2e97ab7d96e2))
+* do not look up a username when filing a known contact into a group ([567642e](https://github.com/adrighem/tdlib-purple/commit/567642e6835c3bc48985bf81acf949984d01d04b))
+* resolve purple2 compiler error and correct request test mock ([58709c5](https://github.com/adrighem/tdlib-purple/commit/58709c5e1e054bd31b62d96ae9ec7d89b34a7614)), closes [#27](https://github.com/adrighem/tdlib-purple/issues/27)
+* **test:** remove duplicated requestActionCapability definition in mock ([a4e8626](https://github.com/adrighem/tdlib-purple/commit/a4e8626132ed58bcf6adcdb2358897f1deac9e11))
+* wake the context a source was just attached to ([783b585](https://github.com/adrighem/tdlib-purple/commit/783b585b0ab35f52209081cc4941d033cccdba8d))
+
 ## [2.0.2](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v2.0.1...tdlib-purple-v2.0.2) (2026-08-05)
 
 
