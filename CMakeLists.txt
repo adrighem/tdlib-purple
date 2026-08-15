@@ -79,6 +79,7 @@ set(TDLIB_PURPLE_COMMON_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/td-transport.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/td-polling-backend.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/module-activity.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/purple2-scheduler.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/transceiver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/account-data.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/purple-info.cpp

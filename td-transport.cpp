@@ -41,6 +41,22 @@ struct MainContextUnref {
 using MainContextPtr =
     std::unique_ptr<GMainContext, MainContextUnref>;
 
+// Attaching a source is not enough on its own: something has to notice that it
+// is there. GLib signals a context's wakeup when the attach comes from a thread
+// other than the one owning the context, and not at all when it comes from the
+// owner, because a GLib main loop rechecks on its way round anyway. A context
+// driven from a foreign event loop has to be told in both cases: nothing is
+// sitting in poll() to notice by itself. g_main_context_wakeup does not consult
+// the owner, and under a GLib main loop it costs one write to a descriptor that
+// is usually signalled already.
+guint attachAndWake(GSource *source, GMainContext *context)
+{
+    const guint sourceId = g_source_attach(source, context);
+    g_main_context_wakeup(context);
+    return sourceId;
+}
+
+
 } // namespace
 
 TdTransport::DeliveryReceipt::DeliveryReceipt(
@@ -403,7 +419,7 @@ void scheduleDispatchLocked(
     state->dispatchSource = source;
     if (state->attachedSourceCount++ == 0)
         state->sourceLifetime = state;
-    g_source_attach(source, state->context);
+    attachAndWake(source, state->context);
 }
 
 void deleteTimeoutToken(gpointer userData)
@@ -570,7 +586,7 @@ bool installTimeout(
             request->second.timeout.swap(timeout);
 
             if (attachment == TimeoutAttachment::AfterSend ||
-                g_source_attach(source.get(), state->context) != 0) {
+                attachAndWake(source.get(), state->context) != 0) {
                 installed = true;
             } else {
                 request->second.timeout.swap(timeout);
@@ -645,7 +661,7 @@ bool attachPreparedTimeout(
     if (attachedContext)
         return attachedContext == state->context;
 
-    return g_source_attach(source, state->context) != 0;
+    return attachAndWake(source, state->context) != 0;
 }
 
 bool enqueueUpdate(

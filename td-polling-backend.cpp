@@ -29,6 +29,22 @@ GMainContext *captureThreadDefaultContext()
 #endif
 }
 
+// Attaching a source is not enough on its own: something has to notice that it
+// is there. GLib signals a context's wakeup when the attach comes from a thread
+// other than the one owning the context, and not at all when it comes from the
+// owner, because a GLib main loop rechecks on its way round anyway. A context
+// driven from a foreign event loop has to be told in both cases: nothing is
+// sitting in poll() to notice by itself. g_main_context_wakeup does not consult
+// the owner, and under a GLib main loop it costs one write to a descriptor that
+// is usually signalled already.
+guint attachAndWake(GSource *source, GMainContext *context)
+{
+    const guint sourceId = g_source_attach(source, context);
+    g_main_context_wakeup(context);
+    return sourceId;
+}
+
+
 class ClientManagerPollingClient final : public TdPollingClient {
 public:
     ClientManagerPollingClient()
@@ -497,7 +513,7 @@ bool scheduleFailureCallback(
         runFailureCallback,
         token,
         discardSourcePayload);
-    if (g_source_attach(source, context) == 0) {
+    if (attachAndWake(source, context) == 0) {
         payload->failureCallback.swap(callback);
         g_source_destroy(source);
         g_source_unref(source);
@@ -533,7 +549,7 @@ bool scheduleResultCallback(
         runResultCallback,
         token,
         discardSourcePayload);
-    if (g_source_attach(source, context) == 0) {
+    if (attachAndWake(source, context) == 0) {
         g_source_destroy(source);
         g_source_unref(source);
         return false;
@@ -695,8 +711,10 @@ bool scheduleWorkerFinalization(
             attacher && *attacher
                 ? (*attacher)(
                       source, record->state->context)
-                : g_source_attach(
+                : attachAndWake(
                       source, record->state->context);
+        if (attacher && *attacher)
+            g_main_context_wakeup(record->state->context);
     } catch (...) {
         return false;
     }
@@ -896,7 +914,7 @@ DeadlineInstallResult installPreparedDeadline(
             !state->logicalResultReported;
         if (needed && !state->deadlineSource) {
             state->deadlineSource = source;
-            if (g_source_attach(source, state->context) != 0) {
+            if (attachAndWake(source, state->context) != 0) {
                 installed = true;
             } else {
                 state->deadlineSource = nullptr;
@@ -996,7 +1014,7 @@ void scheduleLogicalFailureDelivery(
         reportLogicalFailureOnContext,
         token,
         discardSourcePayload);
-    if (g_source_attach(source, state->context) == 0) {
+    if (attachAndWake(source, state->context) == 0) {
         g_source_destroy(source);
         g_source_unref(source);
         {
