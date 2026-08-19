@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.1.1](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v2.1.0...tdlib-purple-v2.1.1) (2026-08-19)
+
+
+### Bug Fixes
+
+* **ci:** inherit secrets in apt-repository call and enforce standard test locale ([10122a1](https://github.com/adrighem/tdlib-purple/commit/10122a1b8fdcfa50427353c729d9d1daf2a34971))
+
 ## [2.1.0](https://github.com/adrighem/tdlib-purple/compare/tdlib-purple-v2.0.2...tdlib-purple-v2.1.0) (2026-08-15)
 
 
