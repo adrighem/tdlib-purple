@@ -2,6 +2,9 @@
 
 set -euo pipefail
 
+export LC_ALL=C
+export LANG=C
+
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 work_dir="$(mktemp -d)"
 trap 'rm -rf "$work_dir"' EXIT
