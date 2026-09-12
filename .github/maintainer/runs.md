@@ -22,3 +22,4 @@
   - Synchronized local master with origin/master.
   - Reopened, monitored, and merged PR #32 (chore(master): release tdlib-purple 2.1.1).
   - Applied `"include-commit-authors": true` in `release-please-config.json` per repository policy.
+  - Merged upstream/master using strategy 'ours' to reconcile historical fork divergence.
