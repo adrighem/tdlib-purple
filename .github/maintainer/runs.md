@@ -15,3 +15,10 @@
   - Triaged, built, tested, and merged PR #29 (fix: check request ui ops members that exist) by @KnutMann.
   - Triaged and merged PR #30 (fix: clear the connection's protocol data before closing the client) by @KnutMann.
   - Triaged and merged PR #31 (feat: drive the plugin's GLib context from libpurple's event loop) by @KnutMann. Closes ISSUE #26.
+
+## Run [2026-09-12]
+- **Target Repository:** `adrighem/tdlib-purple`
+- **Actions Completed:**
+  - Synchronized local master with origin/master.
+  - Reopened, monitored, and merged PR #32 (chore(master): release tdlib-purple 2.1.1).
+  - Applied `"include-commit-authors": true` in `release-please-config.json` per repository policy.
