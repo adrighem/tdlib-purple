@@ -4,7 +4,7 @@
 
 stdenv.mkDerivation {
   pname = "tdlib-purple";
-  version = "2.1.0"; # x-release-please-version
+  version = "2.1.1"; # x-release-please-version
 
   src = ./.;
 
